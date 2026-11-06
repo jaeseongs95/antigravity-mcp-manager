@@ -6,7 +6,7 @@ Add, edit, authenticate (OAuth / Bearer / API Key / Basic), toggle, and manage *
 
 ---
 
-## Key Features (`v1.4.1`)
+## Key Features (`v1.4.3`)
 
 - **100% English Default UI + Automatic Korean Localization via `ko-thought-translator`**:
   - Built with clean English UI defaults (`MCP Servers`, `Add Custom MCP Server`, `Connect <ServerName> ↗`, `Advanced OAuth Settings`, etc.) for global users, and seamlessly localizes into Korean when the `ko-thought-translator` patch is active.

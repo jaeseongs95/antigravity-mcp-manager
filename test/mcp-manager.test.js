@@ -846,9 +846,12 @@ test('createModalController and mountMcpManager render English UI, prevent Mutat
   settingsModal.appendChild(contentArea);
   doc.body.appendChild(settingsModal);
 
-  // Also add a remote control iframe with its own Customizations button
+  // Also add a remote control iframe with its own Customizations button and a legacy beside-edit-btn to ensure it gets cleaned up
   const iframeDoc = makeDoc();
   const addMcpParent = makeEl('div');
+  const legacyBesideEditBtn = makeEl('button');
+  legacyBesideEditBtn.setAttribute('data-agy-custom-mcp-btn', 'beside-edit-btn');
+  addMcpParent.appendChild(legacyBesideEditBtn);
   const nativeAddBtn = makeEl('button');
   nativeAddBtn.setAttribute('data-testid', 'add-mcp-button');
   addMcpParent.appendChild(nativeAddBtn);
@@ -911,11 +914,17 @@ test('createModalController and mountMcpManager render English UI, prevent Mutat
   assert.equal(injectedPane.style.display, 'none');
   assert.equal(nativeGeneralPane.style.display, '');
 
-  // Verify remote iframe was also automatically mounted and injected "+ Custom MCP" beside [data-testid="add-mcp-button"]
+  // Verify remote iframe was also automatically mounted and injected "+ Custom MCP" beside [data-testid="add-mcp-button"],
+  // and removed any legacy beside-edit-btn gear button from the section header
   assert.ok(iframeWin.agyMcpManager);
   const remoteCustomBtn = addMcpParent.querySelector('[data-agy-custom-mcp-btn="beside-add-btn"]');
   assert.ok(remoteCustomBtn);
   assert.equal(remoteCustomBtn.textContent, '+ Custom MCP');
+  assert.equal(
+    addMcpParent.querySelector('[data-agy-custom-mcp-btn="beside-edit-btn"]'),
+    null,
+    'Redundant beside-edit-btn gear button in MCP Servers header must be removed and never injected'
+  );
 });
 
 test('fetchHostInstalledPluginInfo and ensureRemoteCompanionScripts respect single-plugin vs multi-plugin host installations', async () => {

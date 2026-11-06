@@ -10,7 +10,7 @@ const {
   createModalController,
 } = require('./modal-ui');
 
-const MCP_MANAGER_VERSION = 'v1.4.2';
+const MCP_MANAGER_VERSION = 'v1.4.3';
 const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
 function extractServerNameFromRow(row) {
@@ -51,10 +51,16 @@ function cleanupLegacyStatusBarArtifacts(win, doc) {
     }
     if (doc && typeof doc.querySelectorAll === 'function') {
       doc
-        .querySelectorAll('[data-agy-adapter-id="mcp-manager"], [data-testid="agy-statusbar-mcp-btn"]')
+        .querySelectorAll(
+          `[data-agy-adapter-id="mcp-manager"], [data-testid="agy-statusbar-mcp-btn"], [${NATIVE_BTN_ATTR}="beside-edit-btn"]`
+        )
         .forEach((el) => {
           try {
-            el.remove();
+            if (typeof el.remove === 'function') {
+              el.remove();
+            } else if (el.parentNode) {
+              el.parentNode.removeChild(el);
+            }
           } catch (_e) {
             // ignore
           }
@@ -479,6 +485,14 @@ function mountMcpManager(env = {}) {
     addMcpBtns.forEach((nativeBtn) => {
       const parent = nativeBtn.parentElement;
       if (!parent) return;
+      const legacyBesideEdit = parent.querySelector(`[${NATIVE_BTN_ATTR}="beside-edit-btn"]`);
+      if (legacyBesideEdit) {
+        if (typeof legacyBesideEdit.remove === 'function') {
+          legacyBesideEdit.remove();
+        } else if (legacyBesideEdit.parentNode) {
+          legacyBesideEdit.parentNode.removeChild(legacyBesideEdit);
+        }
+      }
       if (!parent.querySelector(`[${NATIVE_BTN_ATTR}="beside-add-btn"]`)) {
         const customBtn = doc.createElement('button');
         customBtn.type = 'button';
@@ -492,21 +506,6 @@ function mountMcpManager(env = {}) {
           modal.openEditPopup('', { createNew: true });
         });
         parent.insertBefore(customBtn, nativeBtn);
-      }
-      if (!parent.querySelector(`[${NATIVE_BTN_ATTR}="beside-edit-btn"]`)) {
-        const editBtn = doc.createElement('button');
-        editBtn.type = 'button';
-        editBtn.className = 'agy-mcp-btn';
-        editBtn.style.marginLeft = '6px';
-        editBtn.setAttribute(NATIVE_BTN_ATTR, 'beside-edit-btn');
-        editBtn.textContent = '⚙️ Edit Settings';
-        editBtn.title = 'Edit custom MCP server settings & OAuth authentication';
-        editBtn.addEventListener('click', (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          modal.openEditPopup();
-        });
-        parent.insertBefore(editBtn, nativeBtn);
       }
     });
 

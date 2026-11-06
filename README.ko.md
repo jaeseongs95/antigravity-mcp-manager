@@ -6,7 +6,7 @@
 
 ---
 
-## 주요 기능 (`v1.4.1`)
+## 주요 기능 (`v1.4.3`)
 
 1. **전 세계 사용자를 위한 영어(English) 기본 UI + `ko-thought-translator` 한글 패치 자동 연동**
    - 기본 UI는 영어(`MCP Servers`, `Add Custom MCP Server`, `Connect <ServerName> ↗`, `Advanced OAuth Settings` 등)로 표시되며, `ko-thought-translator` 한글 번역 패치가 활성화되면 자동으로 자연스러운 한국어 UI로 변환됩니다.
