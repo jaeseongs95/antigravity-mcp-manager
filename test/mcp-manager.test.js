@@ -641,8 +641,19 @@ test('createModalController and mountMcpManager render English UI, prevent Mutat
         this.listeners.get(ev).push(fn);
       },
       click() {
+        const evObj = { target: this, preventDefault() {}, stopPropagation() {} };
+        const ancestors = [];
+        let p = this.parentElement;
+        while (p) {
+          ancestors.unshift(p);
+          p = p.parentElement;
+        }
+        for (const anc of ancestors) {
+          const ancFns = anc.listeners && anc.listeners.get('click') ? anc.listeners.get('click') : [];
+          for (const fn of ancFns) fn(evObj);
+        }
         const fns = this.listeners.get('click') || [];
-        for (const fn of fns) fn({ target: this, preventDefault() {}, stopPropagation() {} });
+        for (const fn of fns) fn(evObj);
       },
       closest(sel) {
         let cur = this;
@@ -666,6 +677,11 @@ test('createModalController and mountMcpManager render English UI, prevent Mutat
           if (sel.startsWith('#')) return node.id === sel.slice(1);
           if (sel === '.grow.w-full') return node.className === 'grow w-full';
           if (sel.startsWith('.')) return (node.className || '').split(/\s+/).includes(sel.slice(1));
+          const mTagPrefixAttr = /^([a-z0-9_-]+)\[([^=\]^]+)\^="([^"]+)"\]$/i.exec(sel);
+          if (mTagPrefixAttr) {
+            const val = node.getAttribute(mTagPrefixAttr[2]) || '';
+            return node.tagName === mTagPrefixAttr[1].toUpperCase() && val.startsWith(mTagPrefixAttr[3]);
+          }
           const mTagAttr = /^([a-z0-9_-]+)\[([^=\]]+)="([^"]+)"\]$/i.exec(sel);
           if (mTagAttr) {
             return node.tagName === mTagAttr[1].toUpperCase() && node.getAttribute(mTagAttr[2]) === mTagAttr[3];
@@ -800,6 +816,11 @@ test('createModalController and mountMcpManager render English UI, prevent Mutat
   modelsWrap.className = 'relative group/nav-item mx-2';
   const modelsBtn = makeEl('button', mutationCounter);
   modelsBtn.setAttribute('data-testid', 'settings-nav-item-Models');
+  modelsBtn.className = 'bg-sidebar-secondary';
+  const modelsSpan = makeEl('span', mutationCounter);
+  modelsSpan.className = 'text-foreground font-medium';
+  modelsSpan.textContent = 'Models';
+  modelsBtn.appendChild(modelsSpan);
   modelsWrap.appendChild(modelsBtn);
 
   // Exact KoTranslator DOM structure (`navWrap > button[data-testid="settings-nav-item-KoTranslator"]`)
@@ -869,8 +890,11 @@ test('createModalController and mountMcpManager render English UI, prevent Mutat
     false
   );
 
-  // Click MCP Servers tab -> opens #agy-mcp-settings-pane with English content
+  // Click MCP Servers tab -> opens #agy-mcp-settings-pane with English content and clears highlight on Models tab
   mcpNavBtn.click();
+  assert.equal(mcpNavBtn.classList.contains('bg-sidebar-secondary'), true, 'MCP Servers tab must be highlighted when active');
+  assert.equal(modelsBtn.classList.contains('bg-sidebar-secondary'), false, 'Models tab must NOT stay highlighted when MCP Servers is active');
+  assert.equal(modelsSpan.classList.contains('text-secondary-foreground'), true);
   const injectedPane = contentArea.querySelector('#agy-mcp-settings-pane');
   assert.ok(injectedPane);
   assert.equal(injectedPane.style.display, 'block');
@@ -878,6 +902,14 @@ test('createModalController and mountMcpManager render English UI, prevent Mutat
   const settingsAddBtn = injectedPane.querySelector('[data-testid="agy-mcp-settings-add-btn"]');
   assert.ok(settingsAddBtn);
   assert.equal(settingsAddBtn.textContent, '+ Add Custom MCP Server');
+
+  // Click Models tab back -> restores highlight on Models tab and clears highlight on MCP Servers tab
+  modelsBtn.click();
+  assert.equal(modelsBtn.classList.contains('bg-sidebar-secondary'), true, 'Models tab highlight must be restored when clicked back');
+  assert.equal(modelsSpan.classList.contains('text-foreground'), true);
+  assert.equal(mcpNavBtn.classList.contains('bg-sidebar-secondary'), false, 'MCP Servers tab highlight must be cleared when switching back to Models');
+  assert.equal(injectedPane.style.display, 'none');
+  assert.equal(nativeGeneralPane.style.display, '');
 
   // Verify remote iframe was also automatically mounted and injected "+ Custom MCP" beside [data-testid="add-mcp-button"]
   assert.ok(iframeWin.agyMcpManager);

@@ -10,7 +10,7 @@ const {
   createModalController,
 } = require('./modal-ui');
 
-const MCP_MANAGER_VERSION = 'v1.4.1';
+const MCP_MANAGER_VERSION = 'v1.4.2';
 const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
 function extractServerNameFromRow(row) {
@@ -241,6 +241,32 @@ function mountMcpManager(env = {}) {
       modelsNavBtn.parentElement;
     if (!navGroup) return;
 
+    const setNavBtnActiveVisual = (btnEl, isActive) => {
+      if (!btnEl) return;
+      const sp = btnEl.querySelector?.('span');
+      if (isActive) {
+        btnEl.classList?.add?.('bg-sidebar-secondary');
+        if (sp) {
+          sp.classList?.remove?.('text-secondary-foreground');
+          sp.classList?.add?.('text-foreground', 'font-medium');
+        }
+      } else {
+        btnEl.classList?.remove?.('bg-sidebar-secondary');
+        if (sp) {
+          sp.classList?.remove?.('text-foreground', 'font-medium');
+          sp.classList?.add?.('text-secondary-foreground');
+        }
+      }
+    };
+
+    const syncExclusiveNavHighlight = (activeTestId) => {
+      const allNavBtns = settingsModal.querySelectorAll('button[data-testid^="settings-nav-item-"]');
+      allNavBtns.forEach((b) => {
+        const tid = b.getAttribute?.('data-testid') || '';
+        setNavBtnActiveVisual(b, tid === activeTestId);
+      });
+    };
+
     // IMPORTANT: If button already exists in settingsModal, DO NOT move or re-append it!
     // Re-appending inside MutationObserver causes an infinite microtask loop that freezes the app.
     let mcpNavBtn = settingsModal.querySelector('button[data-testid="settings-nav-item-McpManager"]');
@@ -275,17 +301,6 @@ function mountMcpManager(env = {}) {
         const contentContainer = settingsModal.querySelector('.grow.w-full');
         if (!contentContainer) return;
 
-        // Deactivate KoTranslator button styling if present
-        const currentKoBtn = settingsModal.querySelector('button[data-testid="settings-nav-item-KoTranslator"]');
-        if (currentKoBtn) {
-          currentKoBtn.classList?.remove?.('bg-sidebar-secondary');
-          const koSpan = currentKoBtn.querySelector?.('span');
-          if (koSpan) {
-            koSpan.classList?.remove?.('text-foreground');
-            koSpan.classList?.add?.('text-secondary-foreground');
-          }
-        }
-
         // Hide other panes (preserving native display in `data-agy-prev-display` compatible with KoTranslator)
         Array.from(contentContainer.children).forEach((child) => {
           if (child.id === 'agy-mcp-settings-pane') return;
@@ -310,9 +325,8 @@ function mountMcpManager(env = {}) {
         pane.style.display = 'block';
         modal.renderSettingsPageContent(pane);
 
-        mcpNavBtn.classList?.add?.('bg-sidebar-secondary');
-        labelSpan.classList?.remove?.('text-secondary-foreground');
-        labelSpan.classList?.add?.('text-foreground');
+        // Exclusively highlight "MCP Servers" and clear highlight on all other nav tabs (e.g., "Models", "KoTranslator")
+        syncExclusiveNavHighlight('settings-nav-item-McpManager');
       };
 
       mcpNavBtn.addEventListener('click', (e) => {
@@ -344,15 +358,9 @@ function mountMcpManager(env = {}) {
             pane.removeAttribute('data-agy-prev-display');
           }
 
-          const currentMcpBtn = settingsModal.querySelector('button[data-testid="settings-nav-item-McpManager"]');
-          if (currentMcpBtn) {
-            currentMcpBtn.classList?.remove?.('bg-sidebar-secondary');
-            const sp = currentMcpBtn.querySelector?.('span');
-            if (sp) {
-              sp.classList?.remove?.('text-foreground');
-              sp.classList?.add?.('text-secondary-foreground');
-            }
-          }
+          // Exclusively highlight the clicked tab (whether native like "Models" or "KoTranslator")
+          // and clear highlight on all other tabs so two tabs never look pressed simultaneously
+          syncExclusiveNavHighlight(testId);
 
           // Restore native children if switching from MCP pane to a native tab (not KoTranslator)
           if (wasMcpPaneVisible && testId !== 'settings-nav-item-KoTranslator') {
