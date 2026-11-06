@@ -4,7 +4,7 @@ const schema = require('./mcp-config-schema');
 const { createHostMcpBridge } = require('./host-mcp-bridge');
 const { ensureModalStyles, createModalController } = require('./modal-ui');
 
-const MCP_MANAGER_VERSION = 'v1.0.1';
+const MCP_MANAGER_VERSION = 'v1.1.0';
 const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
 function cleanupLegacyStatusBarArtifacts(win, doc) {

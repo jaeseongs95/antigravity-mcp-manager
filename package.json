@@ -1,6 +1,6 @@
 {
   "name": "antigravity-mcp-manager",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Custom MCP Server Manager (Stdio & Streamable HTTP UI, Quick Templates, Raw mcp_config.json Editor, Per-Tool Toggle, and StatusBarAdapter + Native Customizations UI integration) for Google Antigravity IDE.",
   "main": "src/index.js",
   "scripts": {

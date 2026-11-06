@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Antigravity Custom MCP Server Manager
 // @namespace    https://github.com/jaeseongs95/antigravity-mcp-manager
-// @version      1.0.0
+// @version      1.1.0
 // @description  Add, edit, toggle, and manage custom Stdio & HTTP MCP servers (mcp_config.json) directly inside the Antigravity 2.0 native app.
 // @match        https://antigravity.google.com/*
 // @match        https://*.antigravity.google.com/*
@@ -202,6 +202,218 @@
       return 'stdio';
     }
 
+    function sanitizeServerName(raw) {
+      if (!raw || typeof raw !== 'string') return '';
+      const cleaned = raw
+        .trim()
+        .toLowerCase()
+        .replace(/^@[^/]+\//, '')
+        .replace(/@[0-9a-z._-]+$/i, '')
+        .replace(/^(?:mcp-server-|server-|mcp-)/, '')
+        .replace(/[^a-z0-9._-]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+      return cleaned || '';
+    }
+
+    function deriveServerNameFromUrl(urlStr) {
+      try {
+        const u = new URL(urlStr);
+        const hostParts = u.hostname.toLowerCase().split('.').filter(Boolean);
+        const ignored = new Set(['www', 'mcp', 'api', 'server', 'com', 'org', 'net', 'io', 'dev', 'ai', 'app', 'co', 'kr']);
+        const meaningfulHost = hostParts.filter((p) => !ignored.has(p));
+        const pathParts = u.pathname
+          .split('/')
+          .map((p) => sanitizeServerName(p))
+          .filter((p) => p && p !== 'mcp' && p !== 'sse' && p !== 'v1' && p !== 'v2');
+
+        if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') {
+          const suffix = pathParts[0] || (u.port ? `${u.port}` : 'local');
+          return sanitizeServerName(`local-${suffix}`) || 'local-mcp';
+        }
+        if (meaningfulHost.length > 0 && pathParts.length > 0) {
+          return sanitizeServerName(`${meaningfulHost[0]}-${pathParts[pathParts.length - 1]}`);
+        }
+        if (meaningfulHost.length > 0) {
+          return sanitizeServerName(meaningfulHost.join('-'));
+        }
+        if (pathParts.length > 0) {
+          return sanitizeServerName(pathParts[pathParts.length - 1]);
+        }
+        return sanitizeServerName(u.hostname) || 'remote-mcp';
+      } catch {
+        return 'remote-mcp';
+      }
+    }
+
+    function deriveServerNameFromCommandAndArgs(command, args) {
+      const list = Array.isArray(args) ? args : [];
+      for (let i = list.length - 1; i >= 0; i--) {
+        const token = String(list[i] || '').trim();
+        if (!token || token.startsWith('-')) continue;
+        if (/^https?:\/\//i.test(token)) {
+          return deriveServerNameFromUrl(token);
+        }
+        if (token.startsWith('github:')) {
+          const repoPart = token.slice('github:'.length).split('/').pop();
+          const name = sanitizeServerName(repoPart);
+          if (name) return name;
+        }
+        if (token.startsWith('@') || token.includes('mcp') || i === 0) {
+          const base = token.replace(/\\/g, '/').split('/').pop().replace(/\.(?:js|mjs|cjs|py|ts)$/i, '');
+          const name = sanitizeServerName(base);
+          if (name) return name;
+        }
+      }
+      return sanitizeServerName(command) || 'custom-mcp';
+    }
+
+    const KNOWN_UVX_PACKAGES = new Set([
+      'mcp-server-fetch',
+      'mcp-server-sqlite',
+      'mcp-server-git',
+      'mcp-server-time',
+      'mcp-server-sentry',
+    ]);
+
+    function parseSmartMcpInput(rawInput) {
+      if (typeof rawInput !== 'string' || !rawInput.trim()) {
+        return {
+          ok: false,
+          error: 'Please enter an MCP server URL, package name, command, or JSON snippet.',
+        };
+      }
+      const trimmed = rawInput.trim();
+
+      // 1. JSON snippet (`{ "mcpServers": ... }`, `{ "my-server": { ... } }`, or `{ "url": "..." }`)
+      if (trimmed.startsWith('{')) {
+        try {
+          const obj = JSON.parse(trimmed);
+          if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+            if (typeof obj.url === 'string' || typeof obj.serverUrl === 'string' || typeof obj.command === 'string') {
+              const isHttp = Boolean(obj.url || obj.serverUrl);
+              const url = obj.url || obj.serverUrl || '';
+              const serverName = sanitizeServerName(obj.name || obj.serverName) ||
+                (isHttp ? deriveServerNameFromUrl(url) : deriveServerNameFromCommandAndArgs(obj.command, obj.args));
+              return validateAndBuildServerSpec({
+                serverName,
+                transport: isHttp ? 'http' : 'stdio',
+                command: obj.command,
+                args: obj.args,
+                env: obj.env,
+                cwd: obj.cwd,
+                url,
+                headers: obj.headers,
+                disabled: Boolean(obj.disabled),
+              });
+            }
+            const norm = normalizeMcpConfigObject(obj);
+            if (norm.ok && norm.config && norm.config.mcpServers) {
+              const entries = Object.entries(norm.config.mcpServers);
+              if (entries.length > 0) {
+                const [firstName, firstSpec] = entries[0];
+                return {
+                  ok: true,
+                  serverName: firstName,
+                  spec: firstSpec,
+                  multipleServers: entries.length > 1 ? norm.config.mcpServers : null,
+                };
+              }
+            }
+          }
+        } catch (e) {
+          return { ok: false, error: `Invalid JSON input: ${e.message}` };
+        }
+      }
+
+      // 2. Single-token URL (`http://...` or `https://...`)
+      if (/^https?:\/\/\S+$/i.test(trimmed)) {
+        try {
+          const u = new URL(trimmed);
+          const host = u.hostname.toLowerCase();
+
+          // 2a. GitHub repository URL -> convert to npx package spec
+          if (host === 'github.com' || host === 'www.github.com') {
+            const parts = u.pathname.split('/').filter(Boolean);
+            // Official modelcontextprotocol/servers tree link
+            const srcIdx = parts.indexOf('src');
+            if (parts[0] === 'modelcontextprotocol' && parts[1] === 'servers' && srcIdx !== -1 && parts[srcIdx + 1]) {
+              const subPkg = parts[srcIdx + 1];
+              const pkgName = `@modelcontextprotocol/server-${subPkg}`;
+              return validateAndBuildServerSpec({
+                serverName: sanitizeServerName(subPkg) || 'mcp-server',
+                transport: 'stdio',
+                command: 'npx',
+                args: ['-y', pkgName],
+              });
+            }
+            if (parts.length >= 2) {
+              const owner = parts[0];
+              const repo = parts[1].replace(/\.git$/i, '');
+              return validateAndBuildServerSpec({
+                serverName: sanitizeServerName(repo) || sanitizeServerName(owner) || 'github-mcp',
+                transport: 'stdio',
+                command: 'npx',
+                args: ['-y', `github:${owner}/${repo}`],
+              });
+            }
+          }
+
+          // 2b. npmjs.com package URL -> convert to npx -y <pkg>
+          if ((host === 'npmjs.com' || host === 'www.npmjs.com') && u.pathname.startsWith('/package/')) {
+            const pkgName = u.pathname.slice('/package/'.length).replace(/\/+$/, '');
+            if (pkgName) {
+              return validateAndBuildServerSpec({
+                serverName: deriveServerNameFromCommandAndArgs('npx', [pkgName]),
+                transport: 'stdio',
+                command: 'npx',
+                args: ['-y', pkgName],
+              });
+            }
+          }
+
+          // 2c. Standard remote Streamable HTTP / SSE MCP server endpoint
+          const serverName = deriveServerNameFromUrl(trimmed);
+          return validateAndBuildServerSpec({
+            serverName,
+            transport: 'http',
+            url: trimmed,
+          });
+        } catch {
+          return { ok: false, error: 'Invalid URL format.' };
+        }
+      }
+
+      // 3. Bare package name (`@scope/pkg` or `mcp-server-*`)
+      if (/^(?:@[a-z0-9-~][a-z0-9-._~]*\/[a-z0-9-._~]+|mcp-server-[a-z0-9-._~]+|[a-z0-9-._~]+-mcp(?:-server)?)(?:@[^\s]+)?$/i.test(trimmed)) {
+        const barePkg = trimmed.replace(/@[^@/]+$/, '');
+        const isUvx = KNOWN_UVX_PACKAGES.has(barePkg.toLowerCase());
+        const command = isUvx ? 'uvx' : 'npx';
+        const args = isUvx ? [trimmed] : ['-y', trimmed];
+        return validateAndBuildServerSpec({
+          serverName: deriveServerNameFromCommandAndArgs(command, args),
+          transport: 'stdio',
+          command,
+          args,
+        });
+      }
+
+      // 4. Full command line (`npx -y @playwright/mcp@latest`, `uvx mcp-server-fetch`, `node server.js`, etc.)
+      const tokens = parseArgsInput(trimmed);
+      if (tokens.length > 0) {
+        const command = tokens[0];
+        const args = tokens.slice(1);
+        const serverName = deriveServerNameFromCommandAndArgs(command, args);
+        return validateAndBuildServerSpec({
+          serverName,
+          transport: 'stdio',
+          command,
+          args,
+        });
+      }
+
+      return { ok: false, error: 'Could not recognize MCP server address or command.' };
+    }
+
     function validateAndBuildServerSpec({
       serverName,
       transport,
@@ -217,7 +429,47 @@
       disabled,
       existingSpec,
     }) {
-      const cleanName = typeof serverName === 'string' ? serverName.trim() : '';
+      let cleanName = typeof serverName === 'string' ? serverName.trim() : '';
+      const rawCmd = typeof command === 'string' ? command.trim() : '';
+      const rawUrl = typeof url === 'string' ? url.trim() : '';
+      const rawArgsStr = typeof args === 'string' ? args.trim() : (typeof argsText === 'string' ? argsText.trim() : '');
+
+      // Smart fallback: if the user pasted a URL or full command into serverName, command, or args
+      if (/^https?:\/\/\S+$/i.test(cleanName) && !rawUrl) {
+        return parseSmartMcpInput(cleanName);
+      }
+      if (transport !== 'http' && !rawUrl) {
+        if (/^https?:\/\/\S+$/i.test(rawCmd)) {
+          const smart = parseSmartMcpInput(rawCmd);
+          if (smart.ok) {
+            if (cleanName && /^[a-zA-Z0-9._-]+$/.test(cleanName)) smart.serverName = cleanName;
+            return smart;
+          }
+        }
+        if ((rawCmd === 'npx' || !rawCmd) && /^https?:\/\/\S+$/i.test(rawArgsStr)) {
+          const smart = parseSmartMcpInput(rawArgsStr);
+          if (smart.ok) {
+            if (cleanName && /^[a-zA-Z0-9._-]+$/.test(cleanName)) smart.serverName = cleanName;
+            return smart;
+          }
+        }
+        if (rawCmd.includes(' ') && !rawArgsStr) {
+          const smart = parseSmartMcpInput(rawCmd);
+          if (smart.ok) {
+            if (cleanName && /^[a-zA-Z0-9._-]+$/.test(cleanName)) smart.serverName = cleanName;
+            return smart;
+          }
+        }
+      }
+
+      if (!cleanName) {
+        if (transport === 'http' || /^https?:\/\/.+/i.test(rawUrl)) {
+          cleanName = deriveServerNameFromUrl(rawUrl);
+        } else {
+          const parsedArgsCandidate = parseArgsInput(args !== undefined ? args : argsText);
+          cleanName = deriveServerNameFromCommandAndArgs(command, parsedArgsCandidate);
+        }
+      }
       if (!cleanName) {
         return { ok: false, error: 'Server name is required (e.g. "filesystem" or "my-mcp-server").' };
       }
@@ -357,6 +609,10 @@
       formatKeyValueForInput,
       formatKeyValueForEditor: formatKeyValueForInput,
       detectTransport,
+      sanitizeServerName,
+      deriveServerNameFromUrl,
+      deriveServerNameFromCommandAndArgs,
+      parseSmartMcpInput,
       validateAndBuildServerSpec,
       normalizeMcpConfigObject,
     };
@@ -865,6 +1121,7 @@
 
     const {
       QUICK_TEMPLATES,
+      parseSmartMcpInput,
       validateAndBuildServerSpec,
       formatArgsForEditor,
       formatKeyValueForEditor,
@@ -1321,7 +1578,114 @@
         populateFormFromSpec('', { command: 'npx', args: [], env: {} });
       }
 
+      function renderSmartAutoAddBar(container) {
+        const box = doc.createElement('div');
+        box.className = 'agy-mcp-card';
+        box.style.background = 'rgba(79, 70, 229, 0.09)';
+        box.style.borderColor = 'rgba(99, 102, 241, 0.38)';
+
+        const label = doc.createElement('div');
+        label.className = 'agy-mcp-label';
+        label.textContent = '⚡ Quick Auto-Add (Enter MCP Server URL, GitHub/npm Address, Command, or JSON):';
+        box.appendChild(label);
+
+        const row = doc.createElement('div');
+        row.style.display = 'flex';
+        row.style.gap = '8px';
+        row.style.alignItems = 'center';
+        row.style.flexWrap = 'wrap';
+
+        const input = doc.createElement('input');
+        input.type = 'text';
+        input.className = 'agy-mcp-input';
+        input.style.flex = '1';
+        input.style.minWidth = '240px';
+        input.setAttribute('data-testid', 'agy-mcp-smart-input');
+        input.placeholder = 'https://mcp.example.com/mcp, https://github.com/owner/repo, @playwright/mcp, or npx -y ...';
+
+        async function handleQuickConnect() {
+          const parsed = parseSmartMcpInput(input.value);
+          if (!parsed.ok) {
+            setBanner('error', parsed.error);
+            return;
+          }
+          try {
+            if (parsed.multipleServers) {
+              const names = Object.keys(parsed.multipleServers);
+              setBanner('info', `Saving ${names.length} MCP servers (${names.join(', ')})...`);
+              const nextServers = {
+                ...((cachedConfig.config && cachedConfig.config.mcpServers) || {}),
+                ...parsed.multipleServers,
+              };
+              const writeRes = await bridge.writeMcpConfig({
+                ...(cachedConfig.config || {}),
+                mcpServers: nextServers,
+              });
+              if (writeRes && writeRes.ok === false) {
+                setBanner('error', writeRes.error);
+                return;
+              }
+              await reloadData();
+              setBanner('success', `Automatically configured and connected ${names.length} servers: ${names.join(', ')}.`);
+            } else {
+              setBanner('info', `Auto-configuring "${parsed.serverName}"...`);
+              const res = await bridge.upsertCustomServer(parsed.serverName, parsed.spec);
+              if (res && res.ok === false) {
+                setBanner('error', res.error);
+                return;
+              }
+              await reloadData();
+              setBanner('success', `Automatically added and connected "${parsed.serverName}".`);
+            }
+            input.value = '';
+            activeTab = 'servers';
+            renderModalContent();
+          } catch (err) {
+            setBanner('error', err.message || String(err));
+          }
+        }
+
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            handleQuickConnect();
+          }
+        });
+
+        const autoConnectBtn = doc.createElement('button');
+        autoConnectBtn.type = 'button';
+        autoConnectBtn.className = 'agy-mcp-btn primary';
+        autoConnectBtn.setAttribute('data-testid', 'agy-mcp-smart-add-btn');
+        autoConnectBtn.textContent = 'Auto-Add & Connect';
+        autoConnectBtn.addEventListener('click', handleQuickConnect);
+
+        const fillFormBtn = doc.createElement('button');
+        fillFormBtn.type = 'button';
+        fillFormBtn.className = 'agy-mcp-btn';
+        fillFormBtn.setAttribute('data-testid', 'agy-mcp-smart-fill-btn');
+        fillFormBtn.textContent = 'Auto-Fill Form';
+        fillFormBtn.addEventListener('click', () => {
+          const parsed = parseSmartMcpInput(input.value);
+          if (!parsed.ok) {
+            setBanner('error', parsed.error);
+            return;
+          }
+          populateFormFromSpec(parsed.serverName, parsed.spec);
+          activeTab = 'editor';
+          setBanner('info', `Auto-filled form for "${parsed.serverName}". Review or add env vars below, then click Save & Connect Server.`);
+          renderModalContent();
+        });
+
+        row.appendChild(input);
+        row.appendChild(autoConnectBtn);
+        row.appendChild(fillFormBtn);
+        box.appendChild(row);
+        container.appendChild(box);
+      }
+
       function renderServersTab(container) {
+        renderSmartAutoAddBar(container);
+
         const topActions = doc.createElement('div');
         topActions.style.display = 'flex';
         topActions.style.justifyContent = 'space-between';
@@ -1544,6 +1908,8 @@
       }
 
       function renderEditorTab(container) {
+        renderSmartAutoAddBar(container);
+
         const templateSection = doc.createElement('div');
         templateSection.className = 'agy-mcp-field';
         const tplLabel = doc.createElement('div');
@@ -1589,11 +1955,11 @@
         nameField.className = 'agy-mcp-field';
         const nameLabel = doc.createElement('label');
         nameLabel.className = 'agy-mcp-label';
-        nameLabel.textContent = 'Server Name (ID)';
+        nameLabel.textContent = 'Server Name (Optional — auto-filled from URL/Command)';
         const nameInput = doc.createElement('input');
         nameInput.className = 'agy-mcp-input';
         nameInput.setAttribute('data-field', 'serverName');
-        nameInput.placeholder = 'e.g. filesystem, github, my-mcp';
+        nameInput.placeholder = 'Auto-detected if left blank (e.g. filesystem, github)';
         nameInput.value = editingForm.serverName;
         nameInput.addEventListener('input', (e) => {
           editingForm.serverName = e.target.value;
@@ -2039,7 +2405,7 @@
     const { createHostMcpBridge } = require('./host-mcp-bridge');
     const { ensureModalStyles, createModalController } = require('./modal-ui');
 
-    const MCP_MANAGER_VERSION = 'v1.0.1';
+    const MCP_MANAGER_VERSION = 'v1.1.0';
     const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
     function cleanupLegacyStatusBarArtifacts(win, doc) {

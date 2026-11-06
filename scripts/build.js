@@ -49,7 +49,7 @@ function buildBundle() {
     `// ==UserScript==\n` +
     `// @name         Antigravity Custom MCP Server Manager\n` +
     `// @namespace    https://github.com/jaeseongs95/antigravity-mcp-manager\n` +
-    `// @version      1.0.0\n` +
+    `// @version      1.1.0\n` +
     `// @description  Add, edit, toggle, and manage custom Stdio & HTTP MCP servers (mcp_config.json) directly inside the Antigravity 2.0 native app.\n` +
     `// @match        https://antigravity.google.com/*\n` +
     `// @match        https://*.antigravity.google.com/*\n` +

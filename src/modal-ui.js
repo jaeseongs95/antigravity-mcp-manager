@@ -2,6 +2,7 @@
 
 const {
   QUICK_TEMPLATES,
+  parseSmartMcpInput,
   validateAndBuildServerSpec,
   formatArgsForEditor,
   formatKeyValueForEditor,
@@ -458,7 +459,114 @@ function createModalController({ doc, bridge, onStateChanged }) {
     populateFormFromSpec('', { command: 'npx', args: [], env: {} });
   }
 
+  function renderSmartAutoAddBar(container) {
+    const box = doc.createElement('div');
+    box.className = 'agy-mcp-card';
+    box.style.background = 'rgba(79, 70, 229, 0.09)';
+    box.style.borderColor = 'rgba(99, 102, 241, 0.38)';
+
+    const label = doc.createElement('div');
+    label.className = 'agy-mcp-label';
+    label.textContent = '⚡ Quick Auto-Add (Enter MCP Server URL, GitHub/npm Address, Command, or JSON):';
+    box.appendChild(label);
+
+    const row = doc.createElement('div');
+    row.style.display = 'flex';
+    row.style.gap = '8px';
+    row.style.alignItems = 'center';
+    row.style.flexWrap = 'wrap';
+
+    const input = doc.createElement('input');
+    input.type = 'text';
+    input.className = 'agy-mcp-input';
+    input.style.flex = '1';
+    input.style.minWidth = '240px';
+    input.setAttribute('data-testid', 'agy-mcp-smart-input');
+    input.placeholder = 'https://mcp.example.com/mcp, https://github.com/owner/repo, @playwright/mcp, or npx -y ...';
+
+    async function handleQuickConnect() {
+      const parsed = parseSmartMcpInput(input.value);
+      if (!parsed.ok) {
+        setBanner('error', parsed.error);
+        return;
+      }
+      try {
+        if (parsed.multipleServers) {
+          const names = Object.keys(parsed.multipleServers);
+          setBanner('info', `Saving ${names.length} MCP servers (${names.join(', ')})...`);
+          const nextServers = {
+            ...((cachedConfig.config && cachedConfig.config.mcpServers) || {}),
+            ...parsed.multipleServers,
+          };
+          const writeRes = await bridge.writeMcpConfig({
+            ...(cachedConfig.config || {}),
+            mcpServers: nextServers,
+          });
+          if (writeRes && writeRes.ok === false) {
+            setBanner('error', writeRes.error);
+            return;
+          }
+          await reloadData();
+          setBanner('success', `Automatically configured and connected ${names.length} servers: ${names.join(', ')}.`);
+        } else {
+          setBanner('info', `Auto-configuring "${parsed.serverName}"...`);
+          const res = await bridge.upsertCustomServer(parsed.serverName, parsed.spec);
+          if (res && res.ok === false) {
+            setBanner('error', res.error);
+            return;
+          }
+          await reloadData();
+          setBanner('success', `Automatically added and connected "${parsed.serverName}".`);
+        }
+        input.value = '';
+        activeTab = 'servers';
+        renderModalContent();
+      } catch (err) {
+        setBanner('error', err.message || String(err));
+      }
+    }
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        handleQuickConnect();
+      }
+    });
+
+    const autoConnectBtn = doc.createElement('button');
+    autoConnectBtn.type = 'button';
+    autoConnectBtn.className = 'agy-mcp-btn primary';
+    autoConnectBtn.setAttribute('data-testid', 'agy-mcp-smart-add-btn');
+    autoConnectBtn.textContent = 'Auto-Add & Connect';
+    autoConnectBtn.addEventListener('click', handleQuickConnect);
+
+    const fillFormBtn = doc.createElement('button');
+    fillFormBtn.type = 'button';
+    fillFormBtn.className = 'agy-mcp-btn';
+    fillFormBtn.setAttribute('data-testid', 'agy-mcp-smart-fill-btn');
+    fillFormBtn.textContent = 'Auto-Fill Form';
+    fillFormBtn.addEventListener('click', () => {
+      const parsed = parseSmartMcpInput(input.value);
+      if (!parsed.ok) {
+        setBanner('error', parsed.error);
+        return;
+      }
+      populateFormFromSpec(parsed.serverName, parsed.spec);
+      activeTab = 'editor';
+      setBanner('info', `Auto-filled form for "${parsed.serverName}". Review or add env vars below, then click Save & Connect Server.`);
+      renderModalContent();
+    });
+
+    row.appendChild(input);
+    row.appendChild(autoConnectBtn);
+    row.appendChild(fillFormBtn);
+    box.appendChild(row);
+    container.appendChild(box);
+  }
+
   function renderServersTab(container) {
+    renderSmartAutoAddBar(container);
+
     const topActions = doc.createElement('div');
     topActions.style.display = 'flex';
     topActions.style.justifyContent = 'space-between';
@@ -681,6 +789,8 @@ function createModalController({ doc, bridge, onStateChanged }) {
   }
 
   function renderEditorTab(container) {
+    renderSmartAutoAddBar(container);
+
     const templateSection = doc.createElement('div');
     templateSection.className = 'agy-mcp-field';
     const tplLabel = doc.createElement('div');
@@ -726,11 +836,11 @@ function createModalController({ doc, bridge, onStateChanged }) {
     nameField.className = 'agy-mcp-field';
     const nameLabel = doc.createElement('label');
     nameLabel.className = 'agy-mcp-label';
-    nameLabel.textContent = 'Server Name (ID)';
+    nameLabel.textContent = 'Server Name (Optional — auto-filled from URL/Command)';
     const nameInput = doc.createElement('input');
     nameInput.className = 'agy-mcp-input';
     nameInput.setAttribute('data-field', 'serverName');
-    nameInput.placeholder = 'e.g. filesystem, github, my-mcp';
+    nameInput.placeholder = 'Auto-detected if left blank (e.g. filesystem, github)';
     nameInput.value = editingForm.serverName;
     nameInput.addEventListener('input', (e) => {
       editingForm.serverName = e.target.value;

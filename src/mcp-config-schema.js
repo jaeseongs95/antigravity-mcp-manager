@@ -186,6 +186,218 @@ function detectTransport(spec) {
   return 'stdio';
 }
 
+function sanitizeServerName(raw) {
+  if (!raw || typeof raw !== 'string') return '';
+  const cleaned = raw
+    .trim()
+    .toLowerCase()
+    .replace(/^@[^/]+\//, '')
+    .replace(/@[0-9a-z._-]+$/i, '')
+    .replace(/^(?:mcp-server-|server-|mcp-)/, '')
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return cleaned || '';
+}
+
+function deriveServerNameFromUrl(urlStr) {
+  try {
+    const u = new URL(urlStr);
+    const hostParts = u.hostname.toLowerCase().split('.').filter(Boolean);
+    const ignored = new Set(['www', 'mcp', 'api', 'server', 'com', 'org', 'net', 'io', 'dev', 'ai', 'app', 'co', 'kr']);
+    const meaningfulHost = hostParts.filter((p) => !ignored.has(p));
+    const pathParts = u.pathname
+      .split('/')
+      .map((p) => sanitizeServerName(p))
+      .filter((p) => p && p !== 'mcp' && p !== 'sse' && p !== 'v1' && p !== 'v2');
+
+    if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') {
+      const suffix = pathParts[0] || (u.port ? `${u.port}` : 'local');
+      return sanitizeServerName(`local-${suffix}`) || 'local-mcp';
+    }
+    if (meaningfulHost.length > 0 && pathParts.length > 0) {
+      return sanitizeServerName(`${meaningfulHost[0]}-${pathParts[pathParts.length - 1]}`);
+    }
+    if (meaningfulHost.length > 0) {
+      return sanitizeServerName(meaningfulHost.join('-'));
+    }
+    if (pathParts.length > 0) {
+      return sanitizeServerName(pathParts[pathParts.length - 1]);
+    }
+    return sanitizeServerName(u.hostname) || 'remote-mcp';
+  } catch {
+    return 'remote-mcp';
+  }
+}
+
+function deriveServerNameFromCommandAndArgs(command, args) {
+  const list = Array.isArray(args) ? args : [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const token = String(list[i] || '').trim();
+    if (!token || token.startsWith('-')) continue;
+    if (/^https?:\/\//i.test(token)) {
+      return deriveServerNameFromUrl(token);
+    }
+    if (token.startsWith('github:')) {
+      const repoPart = token.slice('github:'.length).split('/').pop();
+      const name = sanitizeServerName(repoPart);
+      if (name) return name;
+    }
+    if (token.startsWith('@') || token.includes('mcp') || i === 0) {
+      const base = token.replace(/\\/g, '/').split('/').pop().replace(/\.(?:js|mjs|cjs|py|ts)$/i, '');
+      const name = sanitizeServerName(base);
+      if (name) return name;
+    }
+  }
+  return sanitizeServerName(command) || 'custom-mcp';
+}
+
+const KNOWN_UVX_PACKAGES = new Set([
+  'mcp-server-fetch',
+  'mcp-server-sqlite',
+  'mcp-server-git',
+  'mcp-server-time',
+  'mcp-server-sentry',
+]);
+
+function parseSmartMcpInput(rawInput) {
+  if (typeof rawInput !== 'string' || !rawInput.trim()) {
+    return {
+      ok: false,
+      error: 'Please enter an MCP server URL, package name, command, or JSON snippet.',
+    };
+  }
+  const trimmed = rawInput.trim();
+
+  // 1. JSON snippet (`{ "mcpServers": ... }`, `{ "my-server": { ... } }`, or `{ "url": "..." }`)
+  if (trimmed.startsWith('{')) {
+    try {
+      const obj = JSON.parse(trimmed);
+      if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+        if (typeof obj.url === 'string' || typeof obj.serverUrl === 'string' || typeof obj.command === 'string') {
+          const isHttp = Boolean(obj.url || obj.serverUrl);
+          const url = obj.url || obj.serverUrl || '';
+          const serverName = sanitizeServerName(obj.name || obj.serverName) ||
+            (isHttp ? deriveServerNameFromUrl(url) : deriveServerNameFromCommandAndArgs(obj.command, obj.args));
+          return validateAndBuildServerSpec({
+            serverName,
+            transport: isHttp ? 'http' : 'stdio',
+            command: obj.command,
+            args: obj.args,
+            env: obj.env,
+            cwd: obj.cwd,
+            url,
+            headers: obj.headers,
+            disabled: Boolean(obj.disabled),
+          });
+        }
+        const norm = normalizeMcpConfigObject(obj);
+        if (norm.ok && norm.config && norm.config.mcpServers) {
+          const entries = Object.entries(norm.config.mcpServers);
+          if (entries.length > 0) {
+            const [firstName, firstSpec] = entries[0];
+            return {
+              ok: true,
+              serverName: firstName,
+              spec: firstSpec,
+              multipleServers: entries.length > 1 ? norm.config.mcpServers : null,
+            };
+          }
+        }
+      }
+    } catch (e) {
+      return { ok: false, error: `Invalid JSON input: ${e.message}` };
+    }
+  }
+
+  // 2. Single-token URL (`http://...` or `https://...`)
+  if (/^https?:\/\/\S+$/i.test(trimmed)) {
+    try {
+      const u = new URL(trimmed);
+      const host = u.hostname.toLowerCase();
+
+      // 2a. GitHub repository URL -> convert to npx package spec
+      if (host === 'github.com' || host === 'www.github.com') {
+        const parts = u.pathname.split('/').filter(Boolean);
+        // Official modelcontextprotocol/servers tree link
+        const srcIdx = parts.indexOf('src');
+        if (parts[0] === 'modelcontextprotocol' && parts[1] === 'servers' && srcIdx !== -1 && parts[srcIdx + 1]) {
+          const subPkg = parts[srcIdx + 1];
+          const pkgName = `@modelcontextprotocol/server-${subPkg}`;
+          return validateAndBuildServerSpec({
+            serverName: sanitizeServerName(subPkg) || 'mcp-server',
+            transport: 'stdio',
+            command: 'npx',
+            args: ['-y', pkgName],
+          });
+        }
+        if (parts.length >= 2) {
+          const owner = parts[0];
+          const repo = parts[1].replace(/\.git$/i, '');
+          return validateAndBuildServerSpec({
+            serverName: sanitizeServerName(repo) || sanitizeServerName(owner) || 'github-mcp',
+            transport: 'stdio',
+            command: 'npx',
+            args: ['-y', `github:${owner}/${repo}`],
+          });
+        }
+      }
+
+      // 2b. npmjs.com package URL -> convert to npx -y <pkg>
+      if ((host === 'npmjs.com' || host === 'www.npmjs.com') && u.pathname.startsWith('/package/')) {
+        const pkgName = u.pathname.slice('/package/'.length).replace(/\/+$/, '');
+        if (pkgName) {
+          return validateAndBuildServerSpec({
+            serverName: deriveServerNameFromCommandAndArgs('npx', [pkgName]),
+            transport: 'stdio',
+            command: 'npx',
+            args: ['-y', pkgName],
+          });
+        }
+      }
+
+      // 2c. Standard remote Streamable HTTP / SSE MCP server endpoint
+      const serverName = deriveServerNameFromUrl(trimmed);
+      return validateAndBuildServerSpec({
+        serverName,
+        transport: 'http',
+        url: trimmed,
+      });
+    } catch {
+      return { ok: false, error: 'Invalid URL format.' };
+    }
+  }
+
+  // 3. Bare package name (`@scope/pkg` or `mcp-server-*`)
+  if (/^(?:@[a-z0-9-~][a-z0-9-._~]*\/[a-z0-9-._~]+|mcp-server-[a-z0-9-._~]+|[a-z0-9-._~]+-mcp(?:-server)?)(?:@[^\s]+)?$/i.test(trimmed)) {
+    const barePkg = trimmed.replace(/@[^@/]+$/, '');
+    const isUvx = KNOWN_UVX_PACKAGES.has(barePkg.toLowerCase());
+    const command = isUvx ? 'uvx' : 'npx';
+    const args = isUvx ? [trimmed] : ['-y', trimmed];
+    return validateAndBuildServerSpec({
+      serverName: deriveServerNameFromCommandAndArgs(command, args),
+      transport: 'stdio',
+      command,
+      args,
+    });
+  }
+
+  // 4. Full command line (`npx -y @playwright/mcp@latest`, `uvx mcp-server-fetch`, `node server.js`, etc.)
+  const tokens = parseArgsInput(trimmed);
+  if (tokens.length > 0) {
+    const command = tokens[0];
+    const args = tokens.slice(1);
+    const serverName = deriveServerNameFromCommandAndArgs(command, args);
+    return validateAndBuildServerSpec({
+      serverName,
+      transport: 'stdio',
+      command,
+      args,
+    });
+  }
+
+  return { ok: false, error: 'Could not recognize MCP server address or command.' };
+}
+
 function validateAndBuildServerSpec({
   serverName,
   transport,
@@ -201,7 +413,47 @@ function validateAndBuildServerSpec({
   disabled,
   existingSpec,
 }) {
-  const cleanName = typeof serverName === 'string' ? serverName.trim() : '';
+  let cleanName = typeof serverName === 'string' ? serverName.trim() : '';
+  const rawCmd = typeof command === 'string' ? command.trim() : '';
+  const rawUrl = typeof url === 'string' ? url.trim() : '';
+  const rawArgsStr = typeof args === 'string' ? args.trim() : (typeof argsText === 'string' ? argsText.trim() : '');
+
+  // Smart fallback: if the user pasted a URL or full command into serverName, command, or args
+  if (/^https?:\/\/\S+$/i.test(cleanName) && !rawUrl) {
+    return parseSmartMcpInput(cleanName);
+  }
+  if (transport !== 'http' && !rawUrl) {
+    if (/^https?:\/\/\S+$/i.test(rawCmd)) {
+      const smart = parseSmartMcpInput(rawCmd);
+      if (smart.ok) {
+        if (cleanName && /^[a-zA-Z0-9._-]+$/.test(cleanName)) smart.serverName = cleanName;
+        return smart;
+      }
+    }
+    if ((rawCmd === 'npx' || !rawCmd) && /^https?:\/\/\S+$/i.test(rawArgsStr)) {
+      const smart = parseSmartMcpInput(rawArgsStr);
+      if (smart.ok) {
+        if (cleanName && /^[a-zA-Z0-9._-]+$/.test(cleanName)) smart.serverName = cleanName;
+        return smart;
+      }
+    }
+    if (rawCmd.includes(' ') && !rawArgsStr) {
+      const smart = parseSmartMcpInput(rawCmd);
+      if (smart.ok) {
+        if (cleanName && /^[a-zA-Z0-9._-]+$/.test(cleanName)) smart.serverName = cleanName;
+        return smart;
+      }
+    }
+  }
+
+  if (!cleanName) {
+    if (transport === 'http' || /^https?:\/\/.+/i.test(rawUrl)) {
+      cleanName = deriveServerNameFromUrl(rawUrl);
+    } else {
+      const parsedArgsCandidate = parseArgsInput(args !== undefined ? args : argsText);
+      cleanName = deriveServerNameFromCommandAndArgs(command, parsedArgsCandidate);
+    }
+  }
   if (!cleanName) {
     return { ok: false, error: 'Server name is required (e.g. "filesystem" or "my-mcp-server").' };
   }
@@ -341,6 +593,10 @@ module.exports = {
   formatKeyValueForInput,
   formatKeyValueForEditor: formatKeyValueForInput,
   detectTransport,
+  sanitizeServerName,
+  deriveServerNameFromUrl,
+  deriveServerNameFromCommandAndArgs,
+  parseSmartMcpInput,
   validateAndBuildServerSpec,
   normalizeMcpConfigObject,
 };

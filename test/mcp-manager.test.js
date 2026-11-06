@@ -7,6 +7,7 @@ const {
   QUICK_TEMPLATES,
   parseArgsInput,
   parseKeyValueInput,
+  parseSmartMcpInput,
   validateAndBuildServerSpec,
   normalizeMcpConfigObject,
 } = require('../src/mcp-config-schema');
@@ -109,6 +110,82 @@ test('validateAndBuildServerSpec validates stdio and http specs and all QUICK_TE
   const badUrl = validateAndBuildServerSpec({ serverName: 'valid', transport: 'http', url: 'ftp://bad' });
   assert.equal(badUrl.ok, false);
   assert.match(badUrl.error, /http:\/\/ or https:\/\//);
+});
+
+test('parseSmartMcpInput automatically resolves remote URLs, GitHub/npm URLs, package names, commands, and JSON', () => {
+  // 1. Remote HTTP URL -> auto serverName & HTTP spec
+  const remoteRes = parseSmartMcpInput('https://mcp.deepwiki.com/mcp');
+  assert.equal(remoteRes.ok, true);
+  assert.equal(remoteRes.serverName, 'deepwiki');
+  assert.deepEqual(remoteRes.spec, { url: 'https://mcp.deepwiki.com/mcp' });
+
+  // 2. Localhost URL -> auto serverName with port
+  const localRes = parseSmartMcpInput('http://localhost:8080/mcp');
+  assert.equal(localRes.ok, true);
+  assert.equal(localRes.serverName, 'local-8080');
+  assert.deepEqual(localRes.spec, { url: 'http://localhost:8080/mcp' });
+
+  // 3. GitHub repo URL -> npx github:owner/repo
+  const ghRes = parseSmartMcpInput('https://github.com/upstash/context7-mcp');
+  assert.equal(ghRes.ok, true);
+  assert.equal(ghRes.serverName, 'context7-mcp');
+  assert.deepEqual(ghRes.spec, {
+    command: 'npx',
+    args: ['-y', 'github:upstash/context7-mcp'],
+  });
+
+  // 4. Official modelcontextprotocol/servers GitHub tree URL -> @modelcontextprotocol/server-*
+  const officialGh = parseSmartMcpInput('https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem');
+  assert.equal(officialGh.ok, true);
+  assert.equal(officialGh.serverName, 'filesystem');
+  assert.deepEqual(officialGh.spec, {
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-filesystem'],
+  });
+
+  // 5. Bare npm package or uvx package
+  const npmPkg = parseSmartMcpInput('@playwright/mcp@latest');
+  assert.equal(npmPkg.ok, true);
+  assert.equal(npmPkg.serverName, 'mcp');
+  assert.deepEqual(npmPkg.spec, {
+    command: 'npx',
+    args: ['-y', '@playwright/mcp@latest'],
+  });
+
+  const uvxPkg = parseSmartMcpInput('mcp-server-fetch');
+  assert.equal(uvxPkg.ok, true);
+  assert.equal(uvxPkg.serverName, 'fetch');
+  assert.deepEqual(uvxPkg.spec, {
+    command: 'uvx',
+    args: ['mcp-server-fetch'],
+  });
+
+  // 6. Full command line
+  const cmdRes = parseSmartMcpInput('npx -y @modelcontextprotocol/server-github');
+  assert.equal(cmdRes.ok, true);
+  assert.equal(cmdRes.serverName, 'github');
+  assert.deepEqual(cmdRes.spec, {
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-github'],
+  });
+
+  // 7. validateAndBuildServerSpec smart fallback when serverName is omitted or URL is pasted into serverName/command
+  const omittedName = validateAndBuildServerSpec({
+    serverName: '',
+    transport: 'http',
+    url: 'https://mcp.context7.com/mcp',
+  });
+  assert.equal(omittedName.ok, true);
+  assert.equal(omittedName.serverName, 'context7');
+
+  const urlInNameField = validateAndBuildServerSpec({
+    serverName: 'https://mcp.deepwiki.com/mcp',
+    transport: 'stdio',
+    command: 'npx',
+  });
+  assert.equal(urlInNameField.ok, true);
+  assert.equal(urlInNameField.serverName, 'deepwiki');
+  assert.equal(urlInNameField.spec.url, 'https://mcp.deepwiki.com/mcp');
 });
 
 test('normalizeMcpConfigObject accepts standard mcpServers object and direct server map', () => {
