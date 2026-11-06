@@ -573,9 +573,11 @@ function parseSmartMcpInput(rawInput, optionalAuthToken = '') {
   // 1b. URL accompanied by inline auth flags/tokens (e.g. `https://host/mcp Bearer xxx`, `https://host/mcp --token xxx`, `curl -H "Authorization: Bearer xxx" https://host/mcp`)
   if (/https?:\/\/\S+/i.test(trimmed) && /\s/.test(trimmed)) {
     const tokens = parseArgsInput(trimmed);
+    const firstToken = String(tokens[0] || '');
+    const isUrlOrCurlStart = /^https?:\/\/\S+$/i.test(firstToken) || /^curl(?:\.exe)?$/i.test(firstToken);
     const urlToken = tokens.find((t) => /^https?:\/\/\S+$/i.test(t));
-    if (urlToken && tokens[0] !== 'npx' && tokens[0] !== 'uvx' && tokens[0] !== 'node' && tokens[0] !== 'python' && tokens[0] !== 'docker') {
-      const rest = tokens.filter((t) => t !== urlToken && t !== 'curl');
+    if (urlToken && isUrlOrCurlStart) {
+      const rest = tokens.filter((t) => t !== urlToken && !/^curl(?:\.exe)?$/i.test(t));
       const inlineHeaders = {};
       for (let i = 0; i < rest.length; i++) {
         const tk = rest[i];

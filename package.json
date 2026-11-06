@@ -1,6 +1,6 @@
 {
   "name": "antigravity-mcp-manager",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "description": "Custom MCP Server Manager (Stdio & Streamable HTTP UI, Native OAuth Auto-Discovery & Connect Prompt, Dedicated Edit Settings Popup, Quick Auto-Add, Raw mcp_config.json Editor, and Native & Remote Control Web UI integration) for Google Antigravity IDE.",
   "main": "src/index.js",
   "scripts": {

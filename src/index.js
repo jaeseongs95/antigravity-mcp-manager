@@ -10,7 +10,7 @@ const {
   createModalController,
 } = require('./modal-ui');
 
-const MCP_MANAGER_VERSION = 'v1.4.3';
+const MCP_MANAGER_VERSION = 'v1.4.4';
 const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
 function extractServerNameFromRow(row) {
@@ -119,16 +119,33 @@ function ensureRemoteCompanionScripts(win, doc, bridge) {
       if (nonce) s.nonce = nonce;
       let policy = win.__agyTrustedTypesPolicy || null;
       if (!policy && win.trustedTypes && typeof win.trustedTypes.createPolicy === 'function') {
-        try {
-          policy = win.trustedTypes.createPolicy('agy-companion-' + Date.now(), {
-            createScript: (x) => x,
-          });
-          win.__agyTrustedTypesPolicy = policy;
-        } catch (_e) {}
+        for (const pName of ['agy-companion-' + Date.now(), 'default', 'dompurify']) {
+          try {
+            policy = win.trustedTypes.createPolicy(pName, {
+              createScript: (x) => x,
+            });
+            if (policy) {
+              win.__agyTrustedTypesPolicy = policy;
+              break;
+            }
+          } catch (_e) {}
+        }
       }
-      s.text = policy ? policy.createScript(code) : code;
-      doc.head.appendChild(s);
-      return true;
+      try {
+        s.text = policy && typeof policy.createScript === 'function' ? policy.createScript(code) : code;
+        doc.head.appendChild(s);
+        return true;
+      } catch (_e) {
+        try {
+          if (typeof Blob === 'function' && win.URL && typeof win.URL.createObjectURL === 'function') {
+            const blobUrl = win.URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+            s.src = blobUrl;
+            doc.head.appendChild(s);
+            return true;
+          }
+        } catch (_e2) {}
+        return false;
+      }
     };
 
     const injectRemoteOrHostFallback = async (flagKey, url, hostCodeFallback) => {
@@ -583,18 +600,6 @@ function mountMcpManager(env = {}) {
     });
 
     // C) Next to the "No MCP servers yet." empty note OR above the [data-testid="mcp-server-row"] list
-    const paragraphs = doc.querySelectorAll('p');
-    paragraphs.forEach((p) => {
-      if (
-        p.textContent &&
-        (p.textContent.includes('No MCP servers yet.') || p.textContent.includes('등록된 MCP 서버가 없습니다')) &&
-        p.parentElement &&
-        !p.parentElement.querySelector(`[${NATIVE_BTN_ATTR}="empty-mcp-note"]`)
-      ) {
-        p.parentElement.appendChild(buildQuickActionToolbar());
-      }
-    });
-
     const firstServerRow = doc.querySelector('[data-testid="mcp-server-row"]');
     if (firstServerRow && firstServerRow.parentElement && firstServerRow.parentElement.parentElement) {
       const listContainer = firstServerRow.parentElement;
@@ -603,6 +608,28 @@ function mountMcpManager(env = {}) {
       if (!existingToolbar) {
         sectionBody.insertBefore(buildQuickActionToolbar(), listContainer);
       }
+    } else if (addMcpBtns.length > 0 || addMcpScreens.length > 0) {
+      const scopeRoots = [];
+      addMcpBtns.forEach((btn) => {
+        const root = btn.closest?.('[data-testid="add-mcp-screen"]') || btn.parentElement?.parentElement || btn.parentElement;
+        if (root && !scopeRoots.includes(root)) scopeRoots.push(root);
+      });
+      addMcpScreens.forEach((scr) => {
+        if (scr && !scopeRoots.includes(scr)) scopeRoots.push(scr);
+      });
+      const paragraphs = scopeRoots.length > 0
+        ? scopeRoots.flatMap((r) => Array.from(r.querySelectorAll ? r.querySelectorAll('p') : []))
+        : Array.from(doc.querySelectorAll('p'));
+      paragraphs.forEach((p) => {
+        if (
+          p.textContent &&
+          (p.textContent.includes('No MCP servers yet.') || p.textContent.includes('등록된 MCP 서버가 없습니다')) &&
+          p.parentElement &&
+          !p.parentElement.querySelector(`[${NATIVE_BTN_ATTR}="empty-mcp-note"]`)
+        ) {
+          p.parentElement.appendChild(buildQuickActionToolbar());
+        }
+      });
     }
 
     // D) Inside each native [data-testid="mcp-server-row"] item: inject "⚙️ Edit Settings" and "🔗 Connect OAuth / Auth" buttons
@@ -721,7 +748,7 @@ function mountMcpManager(env = {}) {
         return;
       }
     }
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && String(e.key).toLowerCase() === 'm') {
+    if ((e.ctrlKey || e.metaKey) && e.altKey && !e.shiftKey && String(e.key).toLowerCase() === 'm') {
       e.preventDefault();
       if (modal.isOpen()) {
         modal.closeModal();

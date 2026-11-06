@@ -77,6 +77,12 @@ function install() {
       encoding: 'utf8',
       windowsHide: true,
     });
+    if (workerRes.stderr) {
+      process.stderr.write(workerRes.stderr);
+    }
+    if (workerRes.error) {
+      process.stderr.write(String(workerRes.error.message || workerRes.error) + '\n');
+    }
     const statusRes = spawnSync(process.execPath, [TARGET_PATCHER, '--status'], {
       encoding: 'utf8',
       windowsHide: true,
@@ -84,7 +90,10 @@ function install() {
     if (statusRes.stdout) {
       process.stdout.write(statusRes.stdout);
     }
-    return workerRes.status || 0;
+    if (statusRes.stderr) {
+      process.stderr.write(statusRes.stderr);
+    }
+    return typeof workerRes.status === 'number' ? workerRes.status : 1;
   }
 
   process.stdout.write(`Installed MCP Manager bundle to ${TARGET_STANDALONE} and ${TARGET_AUTOINJECT}\n`);

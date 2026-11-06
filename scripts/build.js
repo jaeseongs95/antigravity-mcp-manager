@@ -45,11 +45,14 @@ function buildBundle() {
     );
   }
 
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
+  const pkgVersion = pkg.version || '1.4.3';
+
   const header =
     `// ==UserScript==\n` +
     `// @name         Antigravity Custom MCP Server Manager\n` +
-    `// @namespace    https://github.com/jaeseongs95/antigravity-mcp-manager\n` +
-    `// @version      1.4.0\n` +
+    `// @namespace    https://github.com/superselect321/antigravity-mcp-manager\n` +
+    `// @version      ${pkgVersion}\n` +
     `// @description  Add, edit, toggle, and manage custom Stdio & HTTP MCP servers (mcp_config.json) directly inside the Antigravity 2.0 native app and Remote Control web.\n` +
     `// @match        https://antigravity.google.com/*\n` +
     `// @match        https://*.antigravity.google.com/*\n` +

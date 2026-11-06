@@ -186,6 +186,9 @@ function createHostMcpBridge(opts = {}) {
             async getCustomizationStates() {
               return await callRpc('/exa.language_server_pb.LanguageServerService/GetCustomizationStates', {});
             },
+            async getLocalUserInfo() {
+              return await callRpc('/exa.language_server_pb.LanguageServerService/GetLocalUserInfo', {});
+            },
             async readFile(req) {
               const r = await callRpc('/exa.language_server_pb.LanguageServerService/ReadFile', { uri: req?.uri });
               if (r && typeof r.content === 'string') {
@@ -288,6 +291,15 @@ function createHostMcpBridge(opts = {}) {
         cachedConfigDirUri = dirStr.replace(/\/+$/, '');
       }
     }
+    if (!cachedConfigDirUri && val.selectedGeminiDir) {
+      const gemStr =
+        typeof val.selectedGeminiDir === 'string'
+          ? val.selectedGeminiDir
+          : val.selectedGeminiDir?.toString?.();
+      if (gemStr) {
+        cachedConfigDirUri = `${gemStr.replace(/\/+$/, '')}/config`;
+      }
+    }
     if (!cachedElectronNative && typeof val.get === 'function') {
       try {
         const nativeFeat = val.get('electronNativeFeature');
@@ -337,10 +349,41 @@ function createHostMcpBridge(opts = {}) {
     if (svc && typeof svc.getStandaloneDir === 'function') {
       try {
         const res = await svc.getStandaloneDir();
-        const fromStandalone = extractGeminiConfigUriFromPath(res?.standaloneDir);
+        const fromStandalone = extractGeminiConfigUriFromPath(res?.standaloneDir || (typeof res === 'string' ? res : ''));
         if (fromStandalone) {
           resolvedConfigUri = fromStandalone;
           return resolvedConfigUri;
+        }
+      } catch {}
+    }
+
+    // Try deriving from `getLocalUserInfo()` (`homeDirUri` or `homeDir`)
+    if (svc && typeof svc.getLocalUserInfo === 'function') {
+      try {
+        const uInfo = await svc.getLocalUserInfo();
+        const homeUri = uInfo?.homeDirUri || uInfo?.homeDir || uInfo?.userInfo?.homeDirUri || '';
+        if (homeUri) {
+          const homeFs = toFsPathFromFileUri(String(homeUri)).replace(/\/+$/, '');
+          if (homeFs) {
+            resolvedConfigUri = toFileUriFromFsPath(`${homeFs}/.gemini/config/mcp_config.json`);
+            if (resolvedConfigUri) return resolvedConfigUri;
+          }
+        }
+      } catch {}
+    }
+
+    // Try deriving from `getCustomizationStates()`
+    if (svc && typeof svc.getCustomizationStates === 'function') {
+      try {
+        const st = await svc.getCustomizationStates([]);
+        const items = Array.isArray(st) ? st : (Array.isArray(st?.states) ? st.states : (Array.isArray(st?.items) ? st.items : []));
+        for (const item of items) {
+          const p = item?.path || item?.uri || item?.skillItem?.path || item?.ruleItem?.path || item?.pluginItem?.path || '';
+          const fromCust = extractGeminiConfigUriFromPath(p);
+          if (fromCust) {
+            resolvedConfigUri = fromCust;
+            return resolvedConfigUri;
+          }
         }
       } catch {}
     }
@@ -413,6 +456,23 @@ function createHostMcpBridge(opts = {}) {
     };
   }
 
+  async function writeFileToHost(svc, uri, bytes) {
+    if (!svc || typeof svc.writeFile !== 'function' || !uri) {
+      return { ok: false, persisted: false };
+    }
+    try {
+      await svc.writeFile({ uri, content: bytes, overwrite: true });
+      return { ok: true, persisted: true };
+    } catch (firstErr) {
+      try {
+        await svc.writeFile(uri, bytes);
+        return { ok: true, persisted: true };
+      } catch {
+        return { ok: false, persisted: false, error: `Failed to write mcp_config.json: ${firstErr?.message || String(firstErr)}` };
+      }
+    }
+  }
+
   async function writeMcpConfig(rawConfig, targetServerName) {
     const norm = normalizeMcpConfigObject(rawConfig);
     if (!norm.ok) {
@@ -425,13 +485,22 @@ function createHostMcpBridge(opts = {}) {
 
     const svc = scanFiberTree();
     const uri = await resolveMcpConfigUri();
+    let persisted = false;
     if (svc && typeof svc.writeFile === 'function' && uri) {
-      try {
-        const bytes = new TextEncoder().encode(serialized);
-        await svc.writeFile({ uri, content: bytes, overwrite: true });
-      } catch (e) {
-        return { ok: false, error: `Failed to write mcp_config.json: ${e?.message || String(e)}` };
+      const bytes = new TextEncoder().encode(serialized);
+      const writeRes = await writeFileToHost(svc, uri, bytes);
+      if (!writeRes.ok) {
+        return { ok: false, persisted: false, error: writeRes.error };
       }
+      persisted = true;
+    } else if (svc) {
+      return {
+        ok: false,
+        persisted: false,
+        error: !uri
+          ? 'Could not resolve ~/.gemini/config/mcp_config.json path from host.'
+          : 'Host file writer (writeFile) is not available in this session.',
+      };
     }
 
     if (svc && typeof svc.refreshMcpServers === 'function') {
@@ -444,7 +513,7 @@ function createHostMcpBridge(opts = {}) {
     }
 
     await fetchServerStates();
-    return { ok: true, config: norm.config, uri, fsPath: toFsPathFromFileUri(uri) };
+    return { ok: true, persisted, config: norm.config, uri, fsPath: toFsPathFromFileUri(uri) };
   }
 
   async function fetchServerStates() {
@@ -683,9 +752,22 @@ function createHostMcpBridge(opts = {}) {
     };
     const svc = scanFiberTree();
     const uri = await resolveMcpConfigUri();
+    let persisted = false;
     if (svc && typeof svc.writeFile === 'function' && uri) {
       const bytes = new TextEncoder().encode(JSON.stringify(nextConfig, null, 2) + '\n');
-      await svc.writeFile({ uri, content: bytes, overwrite: true });
+      const writeRes = await writeFileToHost(svc, uri, bytes);
+      if (!writeRes.ok) {
+        return { ok: false, persisted: false, error: writeRes.error };
+      }
+      persisted = true;
+    } else if (svc) {
+      return {
+        ok: false,
+        persisted: false,
+        error: !uri
+          ? 'Could not resolve ~/.gemini/config/mcp_config.json path from host.'
+          : 'Host file writer (writeFile) is not available in this session.',
+      };
     }
     try {
       ls?.setItem?.(STORAGE_FALLBACK_KEY, JSON.stringify(nextConfig, null, 2));
@@ -696,7 +778,7 @@ function createHostMcpBridge(opts = {}) {
       } catch {}
     }
     await fetchServerStates();
-    return { ok: true, config: nextConfig };
+    return { ok: true, persisted, config: nextConfig };
   }
 
   async function revealConfigInExplorer() {
@@ -757,9 +839,10 @@ function createHostMcpBridge(opts = {}) {
 
     if (!geminiRoot && typeof svc.getCustomizationStates === 'function') {
       try {
-        const st = await svc.getCustomizationStates();
-        for (const item of st?.items || []) {
-          const p = item?.skillItem?.path || item?.ruleItem?.path || item?.pluginItem?.path || '';
+        const st = await svc.getCustomizationStates([]);
+        const items = Array.isArray(st) ? st : (Array.isArray(st?.states) ? st.states : (Array.isArray(st?.items) ? st.items : []));
+        for (const item of items) {
+          const p = item?.path || item?.uri || item?.skillItem?.path || item?.ruleItem?.path || item?.pluginItem?.path || '';
           const r = extractRoot(p);
           if (r) {
             geminiRoot = r;
@@ -775,14 +858,31 @@ function createHostMcpBridge(opts = {}) {
     if (!autoinjectUri) return null;
 
     try {
-      const res = await svc.readFile({ uri: autoinjectUri });
-      const text = res?.content && res.content.length > 0 ? new TextDecoder().decode(res.content) : '';
+      let res = null;
+      try {
+        res = await svc.readFile({ uri: autoinjectUri });
+      } catch {
+        res = await svc.readFile(autoinjectUri);
+      }
+      const rawBytes = res instanceof Uint8Array || ArrayBuffer.isView(res) ? res : res?.content;
+      const text = typeof res === 'string'
+        ? res
+        : (rawBytes && rawBytes.length > 0 ? new TextDecoder().decode(rawBytes) : '');
       if (!text) return null;
 
-      const mcpBeginMarker = '// === ' + ['BEGIN_AGY_MCP', 'MANAGER_V1'].join('_') + ' ===';
-      const mcpEndMarker = '// === ' + ['END_AGY_MCP', 'MANAGER_V1'].join('_') + ' ===';
-      const koBeginMarker = '// === ' + ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' ===';
-      const koEndMarker = '// === ' + ['END_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' ===';
+      const mcpBeginLine = '// === ' + ['BEGIN_AGY_MCP', 'MANAGER_V1'].join('_') + ' ===';
+      const mcpEndLine = '// === ' + ['END_AGY_MCP', 'MANAGER_V1'].join('_') + ' ===';
+      const mcpBeginBlock = '/* === ' + ['BEGIN_AGY_MCP', 'MANAGER_V1'].join('_') + ' === */';
+      const mcpEndBlock = '/* === ' + ['END_AGY_MCP', 'MANAGER_V1'].join('_') + ' === */';
+      const koBeginLine = '// === ' + ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' ===';
+      const koEndLine = '// === ' + ['END_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' ===';
+      const koBeginBlock = '/* === ' + ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' === */';
+      const koEndBlock = '/* === ' + ['END_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' === */';
+
+      const mcpBeginMarker = text.includes(mcpBeginBlock) ? mcpBeginBlock : mcpBeginLine;
+      const mcpEndMarker = text.includes(mcpEndBlock) ? mcpEndBlock : mcpEndLine;
+      const koBeginMarker = text.includes(koBeginBlock) ? koBeginBlock : koBeginLine;
+      const koEndMarker = text.includes(koEndBlock) ? koEndBlock : koEndLine;
 
       const mcpB = text.indexOf(mcpBeginMarker);
       const mcpE = text.indexOf(mcpEndMarker);

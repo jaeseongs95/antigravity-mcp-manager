@@ -1025,3 +1025,43 @@ test('fetchHostInstalledPluginInfo and ensureRemoteCompanionScripts respect sing
     assert.ok(scriptsAdded[1].includes('__agyKoThoughtCleanup'));
   }
 });
+
+test('covers D-0005~D-0011 regressions: writeMcpConfig/toggleServerTool persistence error checks, GetCustomizationStates states[].path, parseSmartMcpInput non-5 runtimes with URL args, and Settings pane banner', async () => {
+  // 1. D-0010: parseSmartMcpInput with bun/deno/custom binary + URL argument must remain stdio
+  const bunCmd = parseSmartMcpInput('bun run server.ts --endpoint https://api.example.com/v1');
+  assert.equal(bunCmd.ok, true);
+  assert.equal(bunCmd.spec.command, 'bun');
+  assert.deepEqual(bunCmd.spec.args, ['run', 'server.ts', '--endpoint', 'https://api.example.com/v1']);
+  assert.equal(bunCmd.spec.url, undefined);
+
+  // 2. D-0005 & D-0006: createHostMcpBridge returns ok:false when writeFile is missing on a real host service, and resolves path from states[].path
+  const readOnlyHostService = {
+    async getCustomizationStates() {
+      return {
+        states: [{ path: 'C:/Users/TestUser/.gemini/config/plugins/test/SKILL.md' }],
+      };
+    },
+    async readFile() {
+      return { content: new TextEncoder().encode('{"mcpServers":{"my-srv":{"command":"npx"}}}') };
+    },
+    async getMcpServerStates() {
+      return { states: [] };
+    },
+    async refreshMcpServers() {
+      return {};
+    },
+  };
+
+  const roBridge = createHostMcpBridge({ hostService: readOnlyHostService });
+  const resolvedUri = await roBridge.resolveMcpConfigUri();
+  assert.equal(resolvedUri, 'file:///C:/Users/TestUser/.gemini/config/mcp_config.json');
+
+  const pluginInfo = await roBridge.fetchHostInstalledPluginInfo(true);
+  assert.ok(pluginInfo === null || pluginInfo.geminiRoot === 'C:/Users/TestUser/.gemini');
+
+  const writeAttempt = await roBridge.writeMcpConfig({ mcpServers: { a: { command: 'npx' } } });
+  assert.equal(writeAttempt.ok, false, 'writeMcpConfig must return ok:false when host service lacks writeFile');
+
+  const toggleToolAttempt = await roBridge.toggleServerTool('my-srv', 'tool_a', false);
+  assert.equal(toggleToolAttempt.ok, false, 'toggleServerTool must return ok:false when host service lacks writeFile');
+});

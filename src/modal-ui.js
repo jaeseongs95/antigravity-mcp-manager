@@ -664,16 +664,17 @@ function createModalController({ doc, bridge, onStateChanged }) {
   }
 
   function renderBanner() {
-    const backdrop = doc.getElementById(MODAL_ID);
-    if (!backdrop) return;
-    const banner = backdrop.querySelector('.agy-mcp-status-banner');
-    if (!banner) return;
-    banner.className = 'agy-mcp-status-banner';
-    if (bannerState.type && bannerState.message) {
-      banner.classList.add(bannerState.type);
-      banner.textContent = bannerState.message;
-    } else {
-      banner.textContent = '';
+    const roots = [doc.getElementById(MODAL_ID), doc.getElementById('agy-mcp-settings-pane')].filter(Boolean);
+    for (const root of roots) {
+      const banner = root.querySelector('.agy-mcp-status-banner');
+      if (!banner) continue;
+      banner.className = 'agy-mcp-status-banner';
+      if (bannerState.type && bannerState.message) {
+        banner.classList.add(bannerState.type);
+        banner.textContent = bannerState.message;
+      } else {
+        banner.textContent = '';
+      }
     }
   }
 
@@ -1071,7 +1072,12 @@ function createModalController({ doc, bridge, onStateChanged }) {
       populateFormFromSpec(parsed.serverName, parsed.spec);
       activeTab = 'editor';
       setBanner('info', `Auto-filled form for "${parsed.serverName}". Review OAuth / connection settings below.`);
-      if (isOpen()) renderModalContent();
+      if (isOpen()) {
+        renderModalContent();
+      } else {
+        openEditPopup(parsed.serverName, { prefillSpec: parsed.spec });
+        setPopupBanner('info', `Auto-filled form for "${parsed.serverName}". Review OAuth / connection settings below.`);
+      }
     });
 
     row.appendChild(input);
@@ -2510,7 +2516,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
     const targetName = serverName !== undefined && serverName !== null && serverName !== ''
       ? serverName
       : (options.createNew ? '' : (customNames[0] || ''));
-    const targetSpec = targetName ? customMap[targetName] : null;
+    const targetSpec = options.prefillSpec || (targetName ? customMap[targetName] : null);
     popupForm = buildFormStateFromSpec(targetName, targetSpec, options);
 
     let backdrop = doc.getElementById(EDIT_POPUP_ID);
@@ -2668,6 +2674,14 @@ function createModalController({ doc, bridge, onStateChanged }) {
     hdrActions.appendChild(refreshBtn);
     pageHdr.appendChild(hdrActions);
     wrapper.appendChild(pageHdr);
+
+    const statusBanner = doc.createElement('div');
+    statusBanner.className = 'agy-mcp-status-banner';
+    if (bannerState.type && bannerState.message) {
+      statusBanner.classList.add(bannerState.type);
+      statusBanner.textContent = bannerState.message;
+    }
+    wrapper.appendChild(statusBanner);
 
     renderSmartAutoAddBar(wrapper);
     renderServerCardsList(wrapper, setBanner);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Antigravity Custom MCP Server Manager
-// @namespace    https://github.com/jaeseongs95/antigravity-mcp-manager
-// @version      1.4.0
+// @namespace    https://github.com/superselect321/antigravity-mcp-manager
+// @version      1.4.4
 // @description  Add, edit, toggle, and manage custom Stdio & HTTP MCP servers (mcp_config.json) directly inside the Antigravity 2.0 native app and Remote Control web.
 // @match        https://antigravity.google.com/*
 // @match        https://*.antigravity.google.com/*
@@ -589,9 +589,11 @@
       // 1b. URL accompanied by inline auth flags/tokens (e.g. `https://host/mcp Bearer xxx`, `https://host/mcp --token xxx`, `curl -H "Authorization: Bearer xxx" https://host/mcp`)
       if (/https?:\/\/\S+/i.test(trimmed) && /\s/.test(trimmed)) {
         const tokens = parseArgsInput(trimmed);
+        const firstToken = String(tokens[0] || '');
+        const isUrlOrCurlStart = /^https?:\/\/\S+$/i.test(firstToken) || /^curl(?:\.exe)?$/i.test(firstToken);
         const urlToken = tokens.find((t) => /^https?:\/\/\S+$/i.test(t));
-        if (urlToken && tokens[0] !== 'npx' && tokens[0] !== 'uvx' && tokens[0] !== 'node' && tokens[0] !== 'python' && tokens[0] !== 'docker') {
-          const rest = tokens.filter((t) => t !== urlToken && t !== 'curl');
+        if (urlToken && isUrlOrCurlStart) {
+          const rest = tokens.filter((t) => t !== urlToken && !/^curl(?:\.exe)?$/i.test(t));
           const inlineHeaders = {};
           for (let i = 0; i < rest.length; i++) {
             const tk = rest[i];
@@ -1162,6 +1164,9 @@
                 async getCustomizationStates() {
                   return await callRpc('/exa.language_server_pb.LanguageServerService/GetCustomizationStates', {});
                 },
+                async getLocalUserInfo() {
+                  return await callRpc('/exa.language_server_pb.LanguageServerService/GetLocalUserInfo', {});
+                },
                 async readFile(req) {
                   const r = await callRpc('/exa.language_server_pb.LanguageServerService/ReadFile', { uri: req?.uri });
                   if (r && typeof r.content === 'string') {
@@ -1264,6 +1269,15 @@
             cachedConfigDirUri = dirStr.replace(/\/+$/, '');
           }
         }
+        if (!cachedConfigDirUri && val.selectedGeminiDir) {
+          const gemStr =
+            typeof val.selectedGeminiDir === 'string'
+              ? val.selectedGeminiDir
+              : val.selectedGeminiDir?.toString?.();
+          if (gemStr) {
+            cachedConfigDirUri = `${gemStr.replace(/\/+$/, '')}/config`;
+          }
+        }
         if (!cachedElectronNative && typeof val.get === 'function') {
           try {
             const nativeFeat = val.get('electronNativeFeature');
@@ -1313,10 +1327,41 @@
         if (svc && typeof svc.getStandaloneDir === 'function') {
           try {
             const res = await svc.getStandaloneDir();
-            const fromStandalone = extractGeminiConfigUriFromPath(res?.standaloneDir);
+            const fromStandalone = extractGeminiConfigUriFromPath(res?.standaloneDir || (typeof res === 'string' ? res : ''));
             if (fromStandalone) {
               resolvedConfigUri = fromStandalone;
               return resolvedConfigUri;
+            }
+          } catch {}
+        }
+
+        // Try deriving from `getLocalUserInfo()` (`homeDirUri` or `homeDir`)
+        if (svc && typeof svc.getLocalUserInfo === 'function') {
+          try {
+            const uInfo = await svc.getLocalUserInfo();
+            const homeUri = uInfo?.homeDirUri || uInfo?.homeDir || uInfo?.userInfo?.homeDirUri || '';
+            if (homeUri) {
+              const homeFs = toFsPathFromFileUri(String(homeUri)).replace(/\/+$/, '');
+              if (homeFs) {
+                resolvedConfigUri = toFileUriFromFsPath(`${homeFs}/.gemini/config/mcp_config.json`);
+                if (resolvedConfigUri) return resolvedConfigUri;
+              }
+            }
+          } catch {}
+        }
+
+        // Try deriving from `getCustomizationStates()`
+        if (svc && typeof svc.getCustomizationStates === 'function') {
+          try {
+            const st = await svc.getCustomizationStates([]);
+            const items = Array.isArray(st) ? st : (Array.isArray(st?.states) ? st.states : (Array.isArray(st?.items) ? st.items : []));
+            for (const item of items) {
+              const p = item?.path || item?.uri || item?.skillItem?.path || item?.ruleItem?.path || item?.pluginItem?.path || '';
+              const fromCust = extractGeminiConfigUriFromPath(p);
+              if (fromCust) {
+                resolvedConfigUri = fromCust;
+                return resolvedConfigUri;
+              }
             }
           } catch {}
         }
@@ -1389,6 +1434,23 @@
         };
       }
 
+      async function writeFileToHost(svc, uri, bytes) {
+        if (!svc || typeof svc.writeFile !== 'function' || !uri) {
+          return { ok: false, persisted: false };
+        }
+        try {
+          await svc.writeFile({ uri, content: bytes, overwrite: true });
+          return { ok: true, persisted: true };
+        } catch (firstErr) {
+          try {
+            await svc.writeFile(uri, bytes);
+            return { ok: true, persisted: true };
+          } catch {
+            return { ok: false, persisted: false, error: `Failed to write mcp_config.json: ${firstErr?.message || String(firstErr)}` };
+          }
+        }
+      }
+
       async function writeMcpConfig(rawConfig, targetServerName) {
         const norm = normalizeMcpConfigObject(rawConfig);
         if (!norm.ok) {
@@ -1401,13 +1463,22 @@
 
         const svc = scanFiberTree();
         const uri = await resolveMcpConfigUri();
+        let persisted = false;
         if (svc && typeof svc.writeFile === 'function' && uri) {
-          try {
-            const bytes = new TextEncoder().encode(serialized);
-            await svc.writeFile({ uri, content: bytes, overwrite: true });
-          } catch (e) {
-            return { ok: false, error: `Failed to write mcp_config.json: ${e?.message || String(e)}` };
+          const bytes = new TextEncoder().encode(serialized);
+          const writeRes = await writeFileToHost(svc, uri, bytes);
+          if (!writeRes.ok) {
+            return { ok: false, persisted: false, error: writeRes.error };
           }
+          persisted = true;
+        } else if (svc) {
+          return {
+            ok: false,
+            persisted: false,
+            error: !uri
+              ? 'Could not resolve ~/.gemini/config/mcp_config.json path from host.'
+              : 'Host file writer (writeFile) is not available in this session.',
+          };
         }
 
         if (svc && typeof svc.refreshMcpServers === 'function') {
@@ -1420,7 +1491,7 @@
         }
 
         await fetchServerStates();
-        return { ok: true, config: norm.config, uri, fsPath: toFsPathFromFileUri(uri) };
+        return { ok: true, persisted, config: norm.config, uri, fsPath: toFsPathFromFileUri(uri) };
       }
 
       async function fetchServerStates() {
@@ -1659,9 +1730,22 @@
         };
         const svc = scanFiberTree();
         const uri = await resolveMcpConfigUri();
+        let persisted = false;
         if (svc && typeof svc.writeFile === 'function' && uri) {
           const bytes = new TextEncoder().encode(JSON.stringify(nextConfig, null, 2) + '\n');
-          await svc.writeFile({ uri, content: bytes, overwrite: true });
+          const writeRes = await writeFileToHost(svc, uri, bytes);
+          if (!writeRes.ok) {
+            return { ok: false, persisted: false, error: writeRes.error };
+          }
+          persisted = true;
+        } else if (svc) {
+          return {
+            ok: false,
+            persisted: false,
+            error: !uri
+              ? 'Could not resolve ~/.gemini/config/mcp_config.json path from host.'
+              : 'Host file writer (writeFile) is not available in this session.',
+          };
         }
         try {
           ls?.setItem?.(STORAGE_FALLBACK_KEY, JSON.stringify(nextConfig, null, 2));
@@ -1672,7 +1756,7 @@
           } catch {}
         }
         await fetchServerStates();
-        return { ok: true, config: nextConfig };
+        return { ok: true, persisted, config: nextConfig };
       }
 
       async function revealConfigInExplorer() {
@@ -1733,9 +1817,10 @@
 
         if (!geminiRoot && typeof svc.getCustomizationStates === 'function') {
           try {
-            const st = await svc.getCustomizationStates();
-            for (const item of st?.items || []) {
-              const p = item?.skillItem?.path || item?.ruleItem?.path || item?.pluginItem?.path || '';
+            const st = await svc.getCustomizationStates([]);
+            const items = Array.isArray(st) ? st : (Array.isArray(st?.states) ? st.states : (Array.isArray(st?.items) ? st.items : []));
+            for (const item of items) {
+              const p = item?.path || item?.uri || item?.skillItem?.path || item?.ruleItem?.path || item?.pluginItem?.path || '';
               const r = extractRoot(p);
               if (r) {
                 geminiRoot = r;
@@ -1751,14 +1836,31 @@
         if (!autoinjectUri) return null;
 
         try {
-          const res = await svc.readFile({ uri: autoinjectUri });
-          const text = res?.content && res.content.length > 0 ? new TextDecoder().decode(res.content) : '';
+          let res = null;
+          try {
+            res = await svc.readFile({ uri: autoinjectUri });
+          } catch {
+            res = await svc.readFile(autoinjectUri);
+          }
+          const rawBytes = res instanceof Uint8Array || ArrayBuffer.isView(res) ? res : res?.content;
+          const text = typeof res === 'string'
+            ? res
+            : (rawBytes && rawBytes.length > 0 ? new TextDecoder().decode(rawBytes) : '');
           if (!text) return null;
 
-          const mcpBeginMarker = '// === ' + ['BEGIN_AGY_MCP', 'MANAGER_V1'].join('_') + ' ===';
-          const mcpEndMarker = '// === ' + ['END_AGY_MCP', 'MANAGER_V1'].join('_') + ' ===';
-          const koBeginMarker = '// === ' + ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' ===';
-          const koEndMarker = '// === ' + ['END_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' ===';
+          const mcpBeginLine = '// === ' + ['BEGIN_AGY_MCP', 'MANAGER_V1'].join('_') + ' ===';
+          const mcpEndLine = '// === ' + ['END_AGY_MCP', 'MANAGER_V1'].join('_') + ' ===';
+          const mcpBeginBlock = '/* === ' + ['BEGIN_AGY_MCP', 'MANAGER_V1'].join('_') + ' === */';
+          const mcpEndBlock = '/* === ' + ['END_AGY_MCP', 'MANAGER_V1'].join('_') + ' === */';
+          const koBeginLine = '// === ' + ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' ===';
+          const koEndLine = '// === ' + ['END_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' ===';
+          const koBeginBlock = '/* === ' + ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' === */';
+          const koEndBlock = '/* === ' + ['END_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' === */';
+
+          const mcpBeginMarker = text.includes(mcpBeginBlock) ? mcpBeginBlock : mcpBeginLine;
+          const mcpEndMarker = text.includes(mcpEndBlock) ? mcpEndBlock : mcpEndLine;
+          const koBeginMarker = text.includes(koBeginBlock) ? koBeginBlock : koBeginLine;
+          const koEndMarker = text.includes(koEndBlock) ? koEndBlock : koEndLine;
 
           const mcpB = text.indexOf(mcpBeginMarker);
           const mcpE = text.indexOf(mcpEndMarker);
@@ -2490,16 +2592,17 @@
       }
 
       function renderBanner() {
-        const backdrop = doc.getElementById(MODAL_ID);
-        if (!backdrop) return;
-        const banner = backdrop.querySelector('.agy-mcp-status-banner');
-        if (!banner) return;
-        banner.className = 'agy-mcp-status-banner';
-        if (bannerState.type && bannerState.message) {
-          banner.classList.add(bannerState.type);
-          banner.textContent = bannerState.message;
-        } else {
-          banner.textContent = '';
+        const roots = [doc.getElementById(MODAL_ID), doc.getElementById('agy-mcp-settings-pane')].filter(Boolean);
+        for (const root of roots) {
+          const banner = root.querySelector('.agy-mcp-status-banner');
+          if (!banner) continue;
+          banner.className = 'agy-mcp-status-banner';
+          if (bannerState.type && bannerState.message) {
+            banner.classList.add(bannerState.type);
+            banner.textContent = bannerState.message;
+          } else {
+            banner.textContent = '';
+          }
         }
       }
 
@@ -2897,7 +3000,12 @@
           populateFormFromSpec(parsed.serverName, parsed.spec);
           activeTab = 'editor';
           setBanner('info', `Auto-filled form for "${parsed.serverName}". Review OAuth / connection settings below.`);
-          if (isOpen()) renderModalContent();
+          if (isOpen()) {
+            renderModalContent();
+          } else {
+            openEditPopup(parsed.serverName, { prefillSpec: parsed.spec });
+            setPopupBanner('info', `Auto-filled form for "${parsed.serverName}". Review OAuth / connection settings below.`);
+          }
         });
 
         row.appendChild(input);
@@ -4336,7 +4444,7 @@
         const targetName = serverName !== undefined && serverName !== null && serverName !== ''
           ? serverName
           : (options.createNew ? '' : (customNames[0] || ''));
-        const targetSpec = targetName ? customMap[targetName] : null;
+        const targetSpec = options.prefillSpec || (targetName ? customMap[targetName] : null);
         popupForm = buildFormStateFromSpec(targetName, targetSpec, options);
 
         let backdrop = doc.getElementById(EDIT_POPUP_ID);
@@ -4495,6 +4603,14 @@
         pageHdr.appendChild(hdrActions);
         wrapper.appendChild(pageHdr);
 
+        const statusBanner = doc.createElement('div');
+        statusBanner.className = 'agy-mcp-status-banner';
+        if (bannerState.type && bannerState.message) {
+          statusBanner.classList.add(bannerState.type);
+          statusBanner.textContent = bannerState.message;
+        }
+        wrapper.appendChild(statusBanner);
+
         renderSmartAutoAddBar(wrapper);
         renderServerCardsList(wrapper, setBanner);
 
@@ -4641,7 +4757,7 @@
       createModalController,
     } = require('./modal-ui');
 
-    const MCP_MANAGER_VERSION = 'v1.4.3';
+    const MCP_MANAGER_VERSION = 'v1.4.4';
     const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
     function extractServerNameFromRow(row) {
@@ -4750,16 +4866,33 @@
           if (nonce) s.nonce = nonce;
           let policy = win.__agyTrustedTypesPolicy || null;
           if (!policy && win.trustedTypes && typeof win.trustedTypes.createPolicy === 'function') {
-            try {
-              policy = win.trustedTypes.createPolicy('agy-companion-' + Date.now(), {
-                createScript: (x) => x,
-              });
-              win.__agyTrustedTypesPolicy = policy;
-            } catch (_e) {}
+            for (const pName of ['agy-companion-' + Date.now(), 'default', 'dompurify']) {
+              try {
+                policy = win.trustedTypes.createPolicy(pName, {
+                  createScript: (x) => x,
+                });
+                if (policy) {
+                  win.__agyTrustedTypesPolicy = policy;
+                  break;
+                }
+              } catch (_e) {}
+            }
           }
-          s.text = policy ? policy.createScript(code) : code;
-          doc.head.appendChild(s);
-          return true;
+          try {
+            s.text = policy && typeof policy.createScript === 'function' ? policy.createScript(code) : code;
+            doc.head.appendChild(s);
+            return true;
+          } catch (_e) {
+            try {
+              if (typeof Blob === 'function' && win.URL && typeof win.URL.createObjectURL === 'function') {
+                const blobUrl = win.URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+                s.src = blobUrl;
+                doc.head.appendChild(s);
+                return true;
+              }
+            } catch (_e2) {}
+            return false;
+          }
         };
 
         const injectRemoteOrHostFallback = async (flagKey, url, hostCodeFallback) => {
@@ -5214,18 +5347,6 @@
         });
 
         // C) Next to the "No MCP servers yet." empty note OR above the [data-testid="mcp-server-row"] list
-        const paragraphs = doc.querySelectorAll('p');
-        paragraphs.forEach((p) => {
-          if (
-            p.textContent &&
-            (p.textContent.includes('No MCP servers yet.') || p.textContent.includes('등록된 MCP 서버가 없습니다')) &&
-            p.parentElement &&
-            !p.parentElement.querySelector(`[${NATIVE_BTN_ATTR}="empty-mcp-note"]`)
-          ) {
-            p.parentElement.appendChild(buildQuickActionToolbar());
-          }
-        });
-
         const firstServerRow = doc.querySelector('[data-testid="mcp-server-row"]');
         if (firstServerRow && firstServerRow.parentElement && firstServerRow.parentElement.parentElement) {
           const listContainer = firstServerRow.parentElement;
@@ -5234,6 +5355,28 @@
           if (!existingToolbar) {
             sectionBody.insertBefore(buildQuickActionToolbar(), listContainer);
           }
+        } else if (addMcpBtns.length > 0 || addMcpScreens.length > 0) {
+          const scopeRoots = [];
+          addMcpBtns.forEach((btn) => {
+            const root = btn.closest?.('[data-testid="add-mcp-screen"]') || btn.parentElement?.parentElement || btn.parentElement;
+            if (root && !scopeRoots.includes(root)) scopeRoots.push(root);
+          });
+          addMcpScreens.forEach((scr) => {
+            if (scr && !scopeRoots.includes(scr)) scopeRoots.push(scr);
+          });
+          const paragraphs = scopeRoots.length > 0
+            ? scopeRoots.flatMap((r) => Array.from(r.querySelectorAll ? r.querySelectorAll('p') : []))
+            : Array.from(doc.querySelectorAll('p'));
+          paragraphs.forEach((p) => {
+            if (
+              p.textContent &&
+              (p.textContent.includes('No MCP servers yet.') || p.textContent.includes('등록된 MCP 서버가 없습니다')) &&
+              p.parentElement &&
+              !p.parentElement.querySelector(`[${NATIVE_BTN_ATTR}="empty-mcp-note"]`)
+            ) {
+              p.parentElement.appendChild(buildQuickActionToolbar());
+            }
+          });
         }
 
         // D) Inside each native [data-testid="mcp-server-row"] item: inject "⚙️ Edit Settings" and "🔗 Connect OAuth / Auth" buttons
@@ -5352,7 +5495,7 @@
             return;
           }
         }
-        if ((e.ctrlKey || e.metaKey) && e.shiftKey && String(e.key).toLowerCase() === 'm') {
+        if ((e.ctrlKey || e.metaKey) && e.altKey && !e.shiftKey && String(e.key).toLowerCase() === 'm') {
           e.preventDefault();
           if (modal.isOpen()) {
             modal.closeModal();
