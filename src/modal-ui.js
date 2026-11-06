@@ -808,6 +808,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
     const backdrop = doc.createElement('div');
     backdrop.id = OAUTH_MODAL_ID;
     backdrop.setAttribute('data-testid', 'agy-mcp-oauth-connect-modal');
+    backdrop.setAttribute('data-agy-custom-mcp-btn', 'oauth-modal');
     backdrop.addEventListener('click', (e) => {
       if (e.target === backdrop) closeOAuthConnectModal();
     });
@@ -845,25 +846,25 @@ function createModalController({ doc, bridge, onStateChanged }) {
 
     const titleEl = doc.createElement('h2');
     titleEl.className = 'agy-mcp-oauth-title';
-    titleEl.textContent = `${serverName} 연결`;
+    titleEl.textContent = `Connect ${serverName}`;
     dialog.appendChild(titleEl);
 
     const descEl = doc.createElement('div');
     descEl.className = 'agy-mcp-oauth-desc';
     descEl.textContent =
-      `Antigravity는 "${serverName}" MCP 서버와의 상호작용을 위해 브라우저 OAuth 인증을 진행합니다. 아래 연결 버튼을 눌러 브라우저에서 로그인 및 권한 승인을 완료하면 자동으로 연결됩니다.`;
+      `Antigravity uses browser OAuth authentication to interact with the "${serverName}" MCP server. Click Connect below to sign in and authorize access in your browser.`;
     dialog.appendChild(descEl);
 
     const statusLine = doc.createElement('div');
     statusLine.className = 'agy-mcp-hint';
     statusLine.style.color = authUrl ? '#a5b4fc' : '#fcd34d';
     statusLine.textContent = authUrl
-      ? 'OAuth 인증 URL이 준비되었습니다.'
-      : '호스트에서 OAuth 인증 URL을 확인하고 있습니다...';
+      ? 'OAuth authorization URL is ready.'
+      : 'Checking OAuth authorization URL from host...';
     dialog.appendChild(statusLine);
 
     const codeSection = doc.createElement('div');
-    codeSection.style.display = 'none';
+    codeSection.style.display = 'flex';
     codeSection.style.width = '100%';
     codeSection.style.flexDirection = 'column';
     codeSection.style.gap = '6px';
@@ -878,25 +879,26 @@ function createModalController({ doc, bridge, onStateChanged }) {
     codeInput.className = 'agy-mcp-input';
     codeInput.style.flex = '1';
     codeInput.setAttribute('data-field', 'oauthModalCode');
-    codeInput.placeholder = '브라우저에서 인증 코드가 표시되면 여기에 붙여넣으세요 (자동 콜백 시 불필요)';
+    codeInput.placeholder = 'Paste authorization code here if shown in browser (optional)';
 
     const codeSubmitBtn = doc.createElement('button');
     codeSubmitBtn.type = 'button';
     codeSubmitBtn.className = 'agy-mcp-btn primary';
-    codeSubmitBtn.textContent = '코드 제출';
+    codeSubmitBtn.textContent = 'Submit Code';
     codeSubmitBtn.addEventListener('click', async () => {
       const code = codeInput.value.trim();
       if (!code) return;
-      statusLine.textContent = 'OAuth 인가 코드를 제출하는 중...';
+      statusLine.style.color = '#93c5fd';
+      statusLine.textContent = 'Submitting OAuth authorization code...';
       const res = await bridge.completeOAuth(serverName, code);
       if (!res || !res.ok) {
         statusLine.style.color = '#fca5a5';
-        statusLine.textContent = (res && res.error) || 'OAuth 코드 제출에 실패했습니다.';
+        statusLine.textContent = (res && res.error) || 'Failed to submit OAuth authorization code.';
         return;
       }
       await reloadData();
       closeOAuthConnectModal();
-      setBanner('success', `"${serverName}" OAuth 인증 및 연결이 완료되었습니다.`);
+      setBanner('success', `OAuth authentication and connection completed for "${serverName}".`);
       if (isOpen()) renderModalContent();
       if (isEditPopupOpen()) renderEditPopupBody();
     });
@@ -910,11 +912,11 @@ function createModalController({ doc, bridge, onStateChanged }) {
     launchBtn.type = 'button';
     launchBtn.className = 'agy-mcp-oauth-full-btn launch';
     launchBtn.setAttribute('data-testid', 'agy-mcp-oauth-launch-btn');
-    launchBtn.textContent = `${serverName} 연결 ↗`;
+    launchBtn.textContent = `Connect ${serverName} ↗`;
     launchBtn.addEventListener('click', async () => {
       let targetUrl = authUrl;
       if (!targetUrl && typeof bridge.waitForServerOAuthOrReady === 'function') {
-        statusLine.textContent = '호스트에 OAuth 세션 생성을 요청하는 중...';
+        statusLine.textContent = 'Requesting OAuth session from host...';
         await bridge.refreshServers(serverName);
         const refreshedState = await bridge.waitForServerOAuthOrReady(serverName, 3500);
         targetUrl = refreshedState?.authUrl || '';
@@ -922,7 +924,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
       if (targetUrl) {
         bridge.openAuthUrl(targetUrl);
         statusLine.style.color = '#6ee7b7';
-        statusLine.textContent = '브라우저에서 OAuth 인증 창을 열었습니다. 로그인 완료 시 자동으로 연결됩니다.';
+        statusLine.textContent = 'Opened OAuth authorization window in your browser. It will connect automatically once signed in.';
         codeSection.style.display = 'flex';
         if (oauthPollTimer) clearInterval(oauthPollTimer);
         let ticks = 0;
@@ -939,7 +941,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
             clearInterval(oauthPollTimer);
             oauthPollTimer = null;
             closeOAuthConnectModal();
-            setBanner('success', `"${serverName}" OAuth 인증 및 연결이 완료되었습니다.`);
+            setBanner('success', `OAuth authentication and connection completed for "${serverName}".`);
             if (isOpen()) renderModalContent();
             if (isEditPopupOpen()) renderEditPopupBody();
           }
@@ -947,7 +949,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
       } else {
         statusLine.style.color = '#fca5a5';
         statusLine.textContent =
-          '호스트에서 OAuth 인증 URL(authUrl)을 받지 못했습니다. 서버 URL이 OAuth Discovery(/.well-known/oauth-authorization-server)를 지원하는지 확인하세요.';
+          'Could not retrieve OAuth authorization URL (authUrl) from host. Verify that the server URL supports OAuth Discovery (/.well-known/oauth-authorization-server).';
       }
     });
     dialog.appendChild(launchBtn);
@@ -956,7 +958,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
     cancelBtn.type = 'button';
     cancelBtn.className = 'agy-mcp-oauth-full-btn cancel';
     cancelBtn.setAttribute('data-testid', 'agy-mcp-oauth-cancel-btn');
-    cancelBtn.textContent = '취소';
+    cancelBtn.textContent = 'Cancel';
     cancelBtn.addEventListener('click', () => closeOAuthConnectModal());
     dialog.appendChild(cancelBtn);
 
@@ -1027,7 +1029,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
           await reloadData();
           st = st || findRuntimeState(parsed.serverName);
           if (st && st.authUrl && !st.hasAuthToken) {
-            setBanner('info', `"${parsed.serverName}" OAuth 인증이 감지되었습니다. 연결 창에서 인증을 진행하세요.`);
+            setBanner('info', `OAuth authentication detected for "${parsed.serverName}". Complete sign-in in the connection dialog.`);
             openOAuthConnectModal(parsed.serverName, st.authUrl);
           } else {
             setBanner('success', `Automatically added and connected "${parsed.serverName}".`);
@@ -1089,7 +1091,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
 
     const titleEl = doc.createElement('label');
     titleEl.className = 'agy-mcp-label';
-    titleEl.textContent = '인증 (Authentication)';
+    titleEl.textContent = 'Authentication';
     authField.appendChild(titleEl);
 
     const modeSelect = doc.createElement('select');
@@ -1097,8 +1099,8 @@ function createModalController({ doc, bridge, onStateChanged }) {
     modeSelect.setAttribute('data-field', 'authMode');
     const authOptions = [
       { value: 'oauth', label: 'OAuth' },
-      { value: 'none', label: '인증 없음 (No Authentication)' },
-      { value: 'oauth_or_none', label: 'OAuth 또는 인증 없음 (OAuth or No Authentication)' },
+      { value: 'none', label: 'No Authentication' },
+      { value: 'oauth_or_none', label: 'OAuth or No Authentication' },
       { value: 'bearer', label: 'Bearer Token (Authorization: Bearer <token>)' },
       { value: 'apiKey', label: 'API Key Header (X-API-Key or Custom Header)' },
       { value: 'basic', label: 'Basic Auth (Username & Password)' },
@@ -1141,10 +1143,10 @@ function createModalController({ doc, bridge, onStateChanged }) {
         statusTxt.style.fontSize = '12px';
         statusTxt.style.color = hasToken ? '#6ee7b7' : '#c7d2fe';
         statusTxt.textContent = hasToken
-          ? `● OAuth 인증 연결됨 (${activeServerName})`
+          ? `● OAuth Connected (${activeServerName})`
           : authUrl
-          ? `🔗 OAuth 인증 준비됨 — 브라우저에서 "${activeServerName}" 로그인을 진행하세요.`
-          : '저장 후 자동으로 MCP 포털 OAuth 설정을 감지하여 인증 창을 엽니다.';
+          ? `🔗 OAuth Ready — Sign in to "${activeServerName}" in your browser.`
+          : 'Automatically detects MCP portal OAuth settings and opens the sign-in window after saving.';
         quickOAuthBar.appendChild(statusTxt);
 
         const btnWrap = doc.createElement('div');
@@ -1156,7 +1158,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
           connectBtn.type = 'button';
           connectBtn.className = 'agy-mcp-btn primary';
           connectBtn.setAttribute('data-testid', 'agy-mcp-open-oauth-connect-btn');
-          connectBtn.textContent = `${activeServerName} 연결 ↗`;
+          connectBtn.textContent = `Connect ${activeServerName} ↗`;
           connectBtn.addEventListener('click', () => {
             openOAuthConnectModal(activeServerName, authUrl);
           });
@@ -1167,7 +1169,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
           const signOutBtn = doc.createElement('button');
           signOutBtn.type = 'button';
           signOutBtn.className = 'agy-mcp-btn danger';
-          signOutBtn.textContent = 'OAuth 연결 해제';
+          signOutBtn.textContent = 'Disconnect OAuth';
           signOutBtn.addEventListener('click', async () => {
             const res = await bridge.disconnectOAuth(activeServerName);
             if (!res || !res.ok) {
@@ -1175,7 +1177,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
               return;
             }
             await reloadData();
-            bannerFn('info', `"${activeServerName}" OAuth 연결이 해제되었습니다.`);
+            bannerFn('info', `Disconnected OAuth for "${activeServerName}".`);
             reRenderFn();
           });
           btnWrap.appendChild(signOutBtn);
@@ -1185,7 +1187,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
         authBox.appendChild(quickOAuthBar);
       }
 
-      // Collapsible "고급 OAuth 설정 (Advanced OAuth Settings)" card matching ChatGPT's UI
+      // Collapsible "Advanced OAuth Settings" card matching ChatGPT's UI
       const advCard = doc.createElement('div');
       advCard.className = 'agy-mcp-adv-oauth-card';
 
@@ -1200,12 +1202,12 @@ function createModalController({ doc, bridge, onStateChanged }) {
 
       const advTitle = doc.createElement('div');
       advTitle.className = 'agy-mcp-label';
-      advTitle.textContent = '고급 OAuth 설정 (Advanced OAuth Settings)';
+      advTitle.textContent = 'Advanced OAuth Settings';
 
       const advSub = doc.createElement('div');
       advSub.className = 'agy-mcp-hint';
       advSub.textContent =
-        '자동으로 감지된 OAuth 설정을 확인하거나 직접 입력한 다음, 클라이언트 설정 방식을 선택하고 기본 권한 범위를 설정하세요';
+        'Review auto-detected OAuth settings or enter custom credentials, select client configuration mode, and set default scopes.';
 
       advLeft.appendChild(advTitle);
       advLeft.appendChild(advSub);
@@ -1235,16 +1237,16 @@ function createModalController({ doc, bridge, onStateChanged }) {
         clientModeField.className = 'agy-mcp-field';
         const cmLbl = doc.createElement('label');
         cmLbl.className = 'agy-mcp-label';
-        cmLbl.textContent = '클라이언트 설정 방식 (Client Configuration)';
+        cmLbl.textContent = 'Client Configuration';
         const cmSelect = doc.createElement('select');
         cmSelect.className = 'agy-mcp-select';
         cmSelect.setAttribute('data-field', 'oauthClientMode');
         const optAuto = doc.createElement('option');
         optAuto.value = 'auto';
-        optAuto.textContent = '자동 감지 / 동적 클라이언트 등록 (Automatic Discovery & Dynamic Registration)';
+        optAuto.textContent = 'Automatic Discovery & Dynamic Client Registration';
         const optCustom = doc.createElement('option');
         optCustom.value = 'custom';
-        optCustom.textContent = '직접 입력 (Custom Client ID & Secret)';
+        optCustom.textContent = 'Custom Client ID & Secret';
         cmSelect.appendChild(optAuto);
         cmSelect.appendChild(optCustom);
         cmSelect.value = formObj.oauthClientMode || 'auto';
@@ -1280,7 +1282,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
           csecField.className = 'agy-mcp-field';
           const csecLbl = doc.createElement('label');
           csecLbl.className = 'agy-mcp-label';
-          csecLbl.textContent = 'Client Secret (선택 사항)';
+          csecLbl.textContent = 'Client Secret (Optional)';
           const csecInput = doc.createElement('input');
           csecInput.type = 'password';
           csecInput.className = 'agy-mcp-input';
@@ -1302,11 +1304,11 @@ function createModalController({ doc, bridge, onStateChanged }) {
         scopeField.className = 'agy-mcp-field';
         const scopeLbl = doc.createElement('label');
         scopeLbl.className = 'agy-mcp-label';
-        scopeLbl.textContent = '기본 권한 범위 / Scopes (선택 사항)';
+        scopeLbl.textContent = 'Default Scopes (Optional)';
         const scopeInput = doc.createElement('input');
         scopeInput.className = 'agy-mcp-input';
         scopeInput.setAttribute('data-field', 'oauthScopes');
-        scopeInput.placeholder = '자동 감지됨 (예: openid profile mcp:tools)';
+        scopeInput.placeholder = 'Auto-detected (e.g. openid profile mcp:tools)';
         scopeInput.value = formObj.oauthScopes || '';
         scopeInput.addEventListener('input', (e) => {
           formObj.oauthScopes = e.target.value;
@@ -1326,7 +1328,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
         codeInput.className = 'agy-mcp-input';
         codeInput.style.flex = '1';
         codeInput.setAttribute('data-field', 'oauthCode');
-        codeInput.placeholder = '수동 인가 코드 입력 (Enter authorization code...)';
+        codeInput.placeholder = 'Enter authorization code manually (optional)...';
         codeInput.value = formObj.oauthCode || '';
         codeInput.addEventListener('input', (e) => {
           formObj.oauthCode = e.target.value;
@@ -1538,16 +1540,16 @@ function createModalController({ doc, bridge, onStateChanged }) {
     const grid = doc.createElement('div');
     grid.className = 'agy-mcp-form-grid';
 
-    // 1. Name (이름)
+    // 1. Name
     const nameField = doc.createElement('div');
     nameField.className = 'agy-mcp-field full';
     const nameLabel = doc.createElement('label');
     nameLabel.className = 'agy-mcp-label';
-    nameLabel.textContent = '이름 (Server Name)';
+    nameLabel.textContent = 'Name';
     const nameInput = doc.createElement('input');
     nameInput.className = 'agy-mcp-input';
     nameInput.setAttribute('data-field', 'serverName');
-    nameInput.placeholder = '사용자 지정 도구 (비워두면 서버 URL에서 자동 생성)';
+    nameInput.placeholder = 'Custom tool name (auto-generated from Server URL if left blank)';
     nameInput.value = formObj.serverName;
     nameInput.addEventListener('input', (e) => {
       formObj.serverName = e.target.value;
@@ -1556,16 +1558,16 @@ function createModalController({ doc, bridge, onStateChanged }) {
     nameField.appendChild(nameInput);
     grid.appendChild(nameField);
 
-    // 2. Description (설명 - 선택 사항)
+    // 2. Description (Optional)
     const descField = doc.createElement('div');
     descField.className = 'agy-mcp-field full';
     const descLabel = doc.createElement('label');
     descLabel.className = 'agy-mcp-label';
-    descLabel.textContent = '설명 (선택 사항)';
+    descLabel.textContent = 'Description (Optional)';
     const descInput = doc.createElement('input');
     descInput.className = 'agy-mcp-input';
     descInput.setAttribute('data-field', 'description');
-    descInput.placeholder = '앱의 기능을 간단히 설명하세요';
+    descInput.placeholder = 'Briefly describe what this server does';
     descInput.value = formObj.description || '';
     descInput.addEventListener('input', (e) => {
       formObj.description = e.target.value;
@@ -1574,7 +1576,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
     descField.appendChild(descInput);
     grid.appendChild(descField);
 
-    // 3. Connection header + Segmented toggle (연결: 서버 URL | 로컬 프로세스)
+    // 3. Connection header + Segmented toggle (Connection: Server URL | Local / Tunnel (Stdio))
     const connHeaderField = doc.createElement('div');
     connHeaderField.className = 'agy-mcp-field full';
     const connTopRow = doc.createElement('div');
@@ -1585,7 +1587,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
 
     const connLabel = doc.createElement('label');
     connLabel.className = 'agy-mcp-label';
-    connLabel.textContent = '연결 (Connection)';
+    connLabel.textContent = 'Connection';
 
     const segWrap = doc.createElement('div');
     segWrap.className = 'agy-mcp-segmented';
@@ -1593,7 +1595,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
     const segHttpBtn = doc.createElement('button');
     segHttpBtn.type = 'button';
     segHttpBtn.className = `agy-mcp-seg-btn${formObj.transport === 'http' ? ' active' : ''}`;
-    segHttpBtn.textContent = '서버 URL';
+    segHttpBtn.textContent = 'Server URL';
     segHttpBtn.addEventListener('click', () => {
       formObj.transport = 'http';
       if (!formObj.authMode || formObj.authMode === 'none') {
@@ -1605,7 +1607,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
     const segStdioBtn = doc.createElement('button');
     segStdioBtn.type = 'button';
     segStdioBtn.className = `agy-mcp-seg-btn${formObj.transport === 'stdio' ? ' active' : ''}`;
-    segStdioBtn.textContent = '로컬 / 터널 (Stdio)';
+    segStdioBtn.textContent = 'Local / Tunnel (Stdio)';
     segStdioBtn.addEventListener('click', () => {
       formObj.transport = 'stdio';
       reRenderFn();
@@ -1771,7 +1773,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
       st.authUrl &&
       !st.hasAuthToken
     ) {
-      bannerFn('info', `"${built.serverName}" OAuth 인증 창이 준비되었습니다.`);
+      bannerFn('info', `OAuth sign-in window is ready for "${built.serverName}".`);
       openOAuthConnectModal(built.serverName, st.authUrl);
     } else {
       bannerFn('success', `Saved and triggered reload for "${built.serverName}".`);
@@ -1851,7 +1853,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
         oauthConnectBtn.type = 'button';
         oauthConnectBtn.className = 'agy-mcp-btn primary';
         oauthConnectBtn.setAttribute('data-testid', `agy-mcp-oauth-connect-btn-${name}`);
-        oauthConnectBtn.textContent = `🔗 ${name} 연결 ↗`;
+        oauthConnectBtn.textContent = `🔗 Connect ${name} ↗`;
         oauthConnectBtn.addEventListener('click', () => {
           openOAuthConnectModal(name, runtimeState.authUrl);
         });
@@ -1863,7 +1865,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
         authBtn.type = 'button';
         authBtn.className = `agy-mcp-btn${needsAuth ? ' auth' : ''}`;
         authBtn.setAttribute('data-testid', `agy-mcp-auth-btn-${name}`);
-        authBtn.textContent = hasOAuthUrl ? '⚙️ OAuth 설정' : '🔑 Authenticate';
+        authBtn.textContent = hasOAuthUrl ? '⚙️ OAuth Settings' : '🔑 Authenticate';
         authBtn.addEventListener('click', () => {
           if (hasOAuthUrl) {
             openOAuthConnectModal(name, runtimeState.authUrl);
@@ -1953,7 +1955,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
           const fixAuthBtn = doc.createElement('button');
           fixAuthBtn.type = 'button';
           fixAuthBtn.className = 'agy-mcp-inline-row-btn auth';
-          fixAuthBtn.textContent = hasOAuthUrl ? `🔗 ${name} 연결 ↗` : '⚙️ 설정 수정 / OAuth 연결';
+          fixAuthBtn.textContent = hasOAuthUrl ? `🔗 Connect ${name} ↗` : '⚙️ Edit Settings / Connect OAuth';
           fixAuthBtn.addEventListener('click', () => {
             if (hasOAuthUrl) {
               openOAuthConnectModal(name, runtimeState.authUrl);
@@ -2121,7 +2123,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
     const riskBox = doc.createElement('div');
     riskBox.className = 'agy-mcp-risk-notice';
     riskBox.textContent =
-      '⚠️ 사용자 지정 MCP 서버에는 위험이 따릅니다. 신뢰할 수 있는 MCP 서버에만 연결하세요.';
+      '⚠️ Custom MCP servers carry risks. Only connect to MCP servers you trust.';
     container.appendChild(riskBox);
 
     const footerRow = doc.createElement('div');
@@ -2332,7 +2334,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
 
     const newOpt = doc.createElement('option');
     newOpt.value = '';
-    newOpt.textContent = '+ 사용자 지정 MCP 서버 추가 (New Custom MCP Server)';
+    newOpt.textContent = '+ Add Custom MCP Server (New Custom MCP Server)';
     sel.appendChild(newOpt);
 
     const allCandidateNames = Array.from(new Set([...customNames, ...(activeName ? [activeName] : [])]));
@@ -2393,7 +2395,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
     const riskBox = doc.createElement('div');
     riskBox.className = 'agy-mcp-risk-notice';
     riskBox.textContent =
-      '⚠️ 사용자 지정 MCP 서버에는 위험이 따릅니다. 신뢰할 수 있는 MCP 서버에만 연결하세요.';
+      '⚠️ Custom MCP servers carry risks. Only connect to MCP servers you trust.';
     body.appendChild(riskBox);
 
     const footerRow = doc.createElement('div');
@@ -2478,7 +2480,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
     saveBtn.type = 'button';
     saveBtn.className = 'agy-mcp-btn primary';
     saveBtn.setAttribute('data-testid', 'agy-mcp-popup-save-btn');
-    saveBtn.textContent = popupForm.originalName ? 'Save & Reconnect' : '플러그인으로 생성 (Save & Connect)';
+    saveBtn.textContent = popupForm.originalName ? 'Save & Reconnect' : 'Create & Connect';
     saveBtn.addEventListener('click', async () => {
       try {
         const res = await saveServerForm(popupForm, setPopupBanner);
@@ -2516,6 +2518,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
       backdrop = doc.createElement('div');
       backdrop.id = EDIT_POPUP_ID;
       backdrop.setAttribute('data-testid', 'agy-mcp-edit-popup');
+      backdrop.setAttribute('data-agy-custom-mcp-btn', 'edit-popup');
       backdrop.addEventListener('click', (e) => {
         if (e.target === backdrop) closeEditPopup();
       });
@@ -2523,7 +2526,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
       const dialog = doc.createElement('div');
       dialog.className = 'agy-mcp-dialog popup';
       dialog.setAttribute('role', 'dialog');
-      dialog.setAttribute('aria-label', '사용자 지정 MCP 서버 추가 및 설정');
+      dialog.setAttribute('aria-label', 'Add or Edit Custom MCP Server');
 
       const header = doc.createElement('div');
       header.className = 'agy-mcp-header';
@@ -2531,7 +2534,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
       titleWrap.className = 'agy-mcp-title-wrap';
       const title = doc.createElement('h2');
       title.className = 'agy-mcp-title';
-      title.textContent = targetName ? '⚙️ 사용자 지정 MCP 서버 설정 수정' : '사용자 지정 MCP 서버 추가';
+      title.textContent = targetName ? '⚙️ Edit Custom MCP Server Settings' : 'Add Custom MCP Server';
       const badge = doc.createElement('span');
       badge.className = 'agy-mcp-badge';
       badge.textContent = 'OAuth & Custom MCP';
@@ -2608,12 +2611,12 @@ function createModalController({ doc, bridge, onStateChanged }) {
     h2.style.fontWeight = '600';
     h2.style.margin = '0';
     h2.style.color = '#f8fafc';
-    h2.textContent = 'MCP 서버';
+    h2.textContent = 'MCP Servers';
 
     const sub = doc.createElement('div');
     sub.style.fontSize = '13px';
     sub.style.color = '#94a3b8';
-    sub.textContent = '원격 OAuth MCP 포털 및 로컬(Stdio) 사용자 지정 MCP 서버를 등록·인증·관리합니다.';
+    sub.textContent = 'Register, authenticate, and manage remote OAuth MCP portals and local (Stdio) custom MCP servers.';
 
     titleCol.appendChild(h2);
     titleCol.appendChild(sub);
@@ -2628,7 +2631,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
     addPopupBtn.type = 'button';
     addPopupBtn.className = 'agy-mcp-btn primary';
     addPopupBtn.setAttribute('data-testid', 'agy-mcp-settings-add-btn');
-    addPopupBtn.textContent = '+ 사용자 지정 MCP 서버 추가';
+    addPopupBtn.textContent = '+ Add Custom MCP Server';
     addPopupBtn.addEventListener('click', () => {
       openEditPopup('', { createNew: true });
     });
@@ -2637,7 +2640,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
     editPopupBtn.type = 'button';
     editPopupBtn.className = 'agy-mcp-btn';
     editPopupBtn.setAttribute('data-testid', 'agy-mcp-settings-edit-btn');
-    editPopupBtn.textContent = '⚙️ 서버 설정 수정';
+    editPopupBtn.textContent = '⚙️ Edit Server Settings';
     editPopupBtn.addEventListener('click', () => {
       openEditPopup();
     });
@@ -2645,7 +2648,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
     const rawModalBtn = doc.createElement('button');
     rawModalBtn.type = 'button';
     rawModalBtn.className = 'agy-mcp-btn';
-    rawModalBtn.textContent = '{ } mcp_config.json 편집';
+    rawModalBtn.textContent = '{ } Edit mcp_config.json';
     rawModalBtn.addEventListener('click', () => {
       openModal('raw');
     });
@@ -2653,7 +2656,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
     const refreshBtn = doc.createElement('button');
     refreshBtn.type = 'button';
     refreshBtn.className = 'agy-mcp-btn';
-    refreshBtn.textContent = '↻ 새로고침';
+    refreshBtn.textContent = '↻ Refresh';
     refreshBtn.addEventListener('click', async () => {
       await bridge.refreshServers();
       await reloadData();
@@ -2681,6 +2684,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
     if (!backdrop) {
       backdrop = doc.createElement('div');
       backdrop.id = MODAL_ID;
+      backdrop.setAttribute('data-agy-custom-mcp-btn', 'main-modal');
       backdrop.addEventListener('click', (e) => {
         if (e.target === backdrop) closeModal();
       });

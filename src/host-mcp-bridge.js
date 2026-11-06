@@ -44,6 +44,62 @@ function extractGeminiConfigUriFromPath(rawPath) {
   return toFileUriFromFsPath(`${geminiRoot}/config/mcp_config.json`);
 }
 
+function normalizeAuthorizationCode(rawCode) {
+  if (rawCode === null || rawCode === undefined) return '';
+  const trimmed = String(rawCode).trim();
+  if (!trimmed) return '';
+  if (/^https?:\/\//i.test(trimmed) || (trimmed.includes('code=') && (trimmed.includes('?') || trimmed.includes('&')))) {
+    try {
+      const u = new URL(trimmed.startsWith('http') ? trimmed : `http://localhost/${trimmed.replace(/^\/+/, '')}`);
+      const fromQuery = u.searchParams.get('code');
+      if (fromQuery && fromQuery.trim()) return fromQuery.trim();
+    } catch {}
+    const m = /[?&]code=([^&#\s]+)/i.exec(trimmed);
+    if (m && m[1]) {
+      try {
+        return decodeURIComponent(m[1]).trim();
+      } catch {
+        return m[1].trim();
+      }
+    }
+  }
+  return trimmed;
+}
+
+function encodeBytesToBase64(bytes) {
+  if (!bytes) return '';
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes).toString('base64');
+  }
+  let binary = '';
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  for (let i = 0; i < u8.length; i++) {
+    binary += String.fromCharCode(u8[i]);
+  }
+  return typeof btoa === 'function' ? btoa(binary) : '';
+}
+
+function decodeBase64ToBytes(b64) {
+  if (!b64) return new Uint8Array(0);
+  if (bytesIsUint8(b64)) return b64;
+  if (typeof Buffer !== 'undefined' && typeof b64 === 'string') {
+    return new Uint8Array(Buffer.from(b64, 'base64'));
+  }
+  if (typeof atob === 'function' && typeof b64 === 'string') {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) {
+      out[i] = bin.charCodeAt(i);
+    }
+    return out;
+  }
+  return new Uint8Array(0);
+}
+
+function bytesIsUint8(v) {
+  return Boolean(v && (v instanceof Uint8Array || ArrayBuffer.isView(v)));
+}
+
 function createHostMcpBridge(opts = {}) {
   const win = opts.window || opts.win || (typeof window !== 'undefined' ? window : null);
   const doc = opts.document || opts.doc || (win && win.document ? win.document : null);
@@ -63,16 +119,103 @@ function createHostMcpBridge(opts = {}) {
     }
   }
 
+  function getAccessibleParentDoc() {
+    try {
+      if (win && win.parent && win.parent !== win && win.parent.document) {
+        return win.parent.document;
+      }
+    } catch {}
+    return null;
+  }
+
+  function getRemoteControlProxyAdapter() {
+    try {
+      const candidateWins = [win, win?.parent !== win ? win?.parent : null].filter(Boolean);
+      for (const w of candidateWins) {
+        let rcInst = w.__agyRemoteControlInstance && !w.__agyRemoteControlInstance.destroyed
+          ? w.__agyRemoteControlInstance
+          : null;
+        if (!rcInst && w.document) {
+          const rcEl = w.document.querySelector?.('ga-remote-control');
+          const ctx = rcEl?.__ngContext__;
+          if (ctx && typeof ctx === 'object') {
+            const list = Array.isArray(ctx) ? ctx : (Array.isArray(ctx.lView) ? ctx.lView : [ctx.component, ctx]);
+            for (const item of list) {
+              if (item && typeof item === 'object' && typeof item.proxyCommand === 'function') {
+                rcInst = item;
+                w.__agyRemoteControlInstance = item;
+                break;
+              }
+            }
+          }
+        }
+        if (rcInst && typeof rcInst.proxyCommand === 'function') {
+          const callRpc = async (rpcPath, reqObj) => {
+            const bytes = new TextEncoder().encode(JSON.stringify(reqObj || {}));
+            const res = await rcInst.proxyCommand(rpcPath, bytes);
+            if (!res || !res.payload) return {};
+            const text = new TextDecoder().decode(res.payload);
+            return text ? JSON.parse(text) : {};
+          };
+          return {
+            __isRcProxyAdapter: true,
+            async getMcpServerStates() {
+              return await callRpc('/exa.language_server_pb.LanguageServerService/GetMcpServerStates', {});
+            },
+            async refreshMcpServers(req) {
+              return await callRpc('/exa.language_server_pb.LanguageServerService/RefreshMcpServers', req || {});
+            },
+            async toggleMcpServer(req) {
+              return await callRpc('/exa.language_server_pb.LanguageServerService/ToggleMcpServer', req || {});
+            },
+            async completeMcpOAuth(serverName, authorizationCode) {
+              return await callRpc('/exa.language_server_pb.LanguageServerService/CompleteMcpOAuth', {
+                serverName: String(serverName),
+                authorizationCode: String(authorizationCode),
+              });
+            },
+            async disconnectMcpOAuth(serverName, account) {
+              return await callRpc('/exa.language_server_pb.LanguageServerService/DisconnectMcpOAuth', {
+                serverName: String(serverName),
+                account: String(account || ''),
+              });
+            },
+            async getStandaloneDir() {
+              return await callRpc('/exa.language_server_pb.LanguageServerService/GetStandaloneDir', {});
+            },
+            async readFile(req) {
+              const r = await callRpc('/exa.language_server_pb.LanguageServerService/ReadFile', { uri: req?.uri });
+              if (r && typeof r.content === 'string') {
+                return { content: decodeBase64ToBytes(r.content) };
+              }
+              return r;
+            },
+            async writeFile(req) {
+              const contentB64 = bytesIsUint8(req?.content) ? encodeBytesToBase64(req.content) : (req?.content || '');
+              return await callRpc('/exa.language_server_pb.LanguageServerService/WriteFile', {
+                uri: req?.uri,
+                content: contentB64,
+                overwrite: Boolean(req?.overwrite),
+              });
+            },
+          };
+        }
+      }
+    } catch {}
+    return null;
+  }
+
   function scanFiberTree() {
-    if (cachedService && typeof cachedService.getMcpServerStates === 'function') {
+    if (cachedService && typeof cachedService.getMcpServerStates === 'function' && !cachedService.__isRcProxyAdapter) {
       return cachedService;
     }
-    const docs = [doc, getAccessibleRemoteIframeDoc()].filter(Boolean);
+    const docs = [doc, getAccessibleRemoteIframeDoc(), getAccessibleParentDoc()].filter(Boolean);
     for (const d of docs) {
       const roots = [
         d.querySelector?.('#root'),
         d.querySelector?.('#app'),
         d.querySelector?.('[data-testid="conversation-view"]'),
+        d.querySelector?.('.settings-modal-container'),
         d.body?.firstElementChild,
         d.body,
       ].filter(Boolean);
@@ -84,7 +227,7 @@ function createHostMcpBridge(opts = {}) {
         const startFiber = fk ? rootEl[fk] : null;
         if (!startFiber) continue;
 
-        // 1. Walk up `.return` chain first (fast path when starting from conversation-view)
+        // 1. Walk up `.return` chain first (fast path when starting from conversation-view or settings-modal-container)
         let up = startFiber;
         while (up) {
           inspectFiberValue(up.memoizedProps?.value);
@@ -95,7 +238,7 @@ function createHostMcpBridge(opts = {}) {
           }
           up = up.return;
         }
-        if (cachedService) return cachedService;
+        if (cachedService && !cachedService.__isRcProxyAdapter) return cachedService;
 
         // 2. Bounded DFS down `.child` / `.sibling` when starting from root container
         const stack = [startFiber];
@@ -106,12 +249,19 @@ function createHostMcpBridge(opts = {}) {
           visited.add(f);
 
           inspectFiberValue(f.memoizedProps?.value);
-          if (cachedService && cachedConfigDirUri) return cachedService;
+          if (cachedService && !cachedService.__isRcProxyAdapter && cachedConfigDirUri) return cachedService;
 
           if (f.child) stack.push(f.child);
           if (f.sibling) stack.push(f.sibling);
         }
-        if (cachedService) return cachedService;
+        if (cachedService && !cachedService.__isRcProxyAdapter) return cachedService;
+      }
+    }
+
+    if (!cachedService) {
+      const rcProxy = getRemoteControlProxyAdapter();
+      if (rcProxy) {
+        cachedService = rcProxy;
       }
     }
     return cachedService;
@@ -120,7 +270,7 @@ function createHostMcpBridge(opts = {}) {
   function inspectFiberValue(val) {
     if (!val || typeof val !== 'object') return;
     if (
-      !cachedService &&
+      (!cachedService || cachedService.__isRcProxyAdapter) &&
       typeof val.getMcpServerStates === 'function' &&
       typeof val.refreshMcpServers === 'function'
     ) {
@@ -325,38 +475,49 @@ function createHostMcpBridge(opts = {}) {
     return { ok: true, states: lastKnownStates, error: null };
   }
 
+  async function getMcpServerStates() {
+    const res = await fetchServerStates();
+    return Array.isArray(res?.states) ? res.states : [];
+  }
+
   async function completeOAuth(serverName, authorizationCode) {
     const svc = scanFiberTree();
-    const code = typeof authorizationCode === 'string' ? authorizationCode.trim() : '';
-    if (!serverName || !code) {
+    const cleanName = typeof serverName === 'string' ? serverName.trim() : '';
+    const code = normalizeAuthorizationCode(authorizationCode);
+    if (!cleanName || !code) {
       return { ok: false, error: 'Server name and authorization code are required.' };
     }
     if (!svc || typeof svc.completeMcpOAuth !== 'function') {
       return { ok: false, error: 'Host OAuth service (completeMcpOAuth) is not available.' };
     }
     try {
-      await svc.completeMcpOAuth({ serverName, authorizationCode: code });
-      await refreshServers(serverName);
+      // Native Antigravity `lB().completeMcpOAuth(serverName, authorizationCode)` takes 2 positional strings!
+      // Passing an object as first argument causes:
+      // `[internal] cannot encode field exa.language_server_pb.CompleteMcpOAuthRequest.server_name to JSON: expected string, got object`
+      await svc.completeMcpOAuth(String(cleanName), String(code));
+      await refreshServers(cleanName);
       return { ok: true };
     } catch (e) {
-      return { ok: false, error: e?.message || `Failed to complete OAuth for "${serverName}".` };
+      return { ok: false, error: e?.message || `Failed to complete OAuth for "${cleanName}".` };
     }
   }
 
   async function disconnectOAuth(serverName, account = '') {
     const svc = scanFiberTree();
-    if (!serverName) {
+    const cleanName = typeof serverName === 'string' ? serverName.trim() : '';
+    if (!cleanName) {
       return { ok: false, error: 'Server name is required.' };
     }
     if (!svc || typeof svc.disconnectMcpOAuth !== 'function') {
       return { ok: false, error: 'Host OAuth service (disconnectMcpOAuth) is not available.' };
     }
     try {
-      await svc.disconnectMcpOAuth({ serverName, account: account || '' });
-      await refreshServers(serverName);
+      // Native Antigravity `lB().disconnectMcpOAuth(serverName, account)` takes 2 positional strings!
+      await svc.disconnectMcpOAuth(String(cleanName), String(account || ''));
+      await refreshServers(cleanName);
       return { ok: true };
     } catch (e) {
-      return { ok: false, error: e?.message || `Failed to disconnect OAuth for "${serverName}".` };
+      return { ok: false, error: e?.message || `Failed to disconnect OAuth for "${cleanName}".` };
     }
   }
 
@@ -575,6 +736,7 @@ function createHostMcpBridge(opts = {}) {
     readMcpConfig,
     writeMcpConfig,
     fetchServerStates,
+    getMcpServerStates,
     refreshServers,
     completeOAuth,
     disconnectOAuth,
@@ -596,5 +758,6 @@ module.exports = {
   toFileUriFromFsPath,
   toFsPathFromFileUri,
   extractGeminiConfigUriFromPath,
+  normalizeAuthorizationCode,
   createHostMcpBridge,
 };

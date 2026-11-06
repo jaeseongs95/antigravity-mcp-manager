@@ -15,11 +15,15 @@ const {
 } = require('../src/mcp-config-schema');
 
 const {
+  normalizeAuthorizationCode,
   createHostMcpBridge,
 } = require('../src/host-mcp-bridge');
 
 const {
+  MCP_MANAGER_VERSION,
+  mountMcpManager,
   cleanupLegacyStatusBarArtifacts,
+  isRelevantMutationList,
 } = require('../src/index');
 
 const {
@@ -115,19 +119,16 @@ test('validateAndBuildServerSpec validates stdio and http specs and all QUICK_TE
 });
 
 test('parseSmartMcpInput automatically resolves remote URLs, GitHub/npm URLs, package names, commands, and JSON', () => {
-  // 1. Remote HTTP URL -> auto serverName & HTTP spec
   const remoteRes = parseSmartMcpInput('https://mcp.deepwiki.com/mcp');
   assert.equal(remoteRes.ok, true);
   assert.equal(remoteRes.serverName, 'deepwiki');
   assert.deepEqual(remoteRes.spec, { url: 'https://mcp.deepwiki.com/mcp' });
 
-  // 2. Localhost URL -> auto serverName with port
   const localRes = parseSmartMcpInput('http://localhost:8080/mcp');
   assert.equal(localRes.ok, true);
   assert.equal(localRes.serverName, 'local-8080');
   assert.deepEqual(localRes.spec, { url: 'http://localhost:8080/mcp' });
 
-  // 3. GitHub repo URL -> npx github:owner/repo
   const ghRes = parseSmartMcpInput('https://github.com/upstash/context7-mcp');
   assert.equal(ghRes.ok, true);
   assert.equal(ghRes.serverName, 'context7-mcp');
@@ -136,7 +137,6 @@ test('parseSmartMcpInput automatically resolves remote URLs, GitHub/npm URLs, pa
     args: ['-y', 'github:upstash/context7-mcp'],
   });
 
-  // 4. Official modelcontextprotocol/servers GitHub tree URL -> @modelcontextprotocol/server-*
   const officialGh = parseSmartMcpInput('https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem');
   assert.equal(officialGh.ok, true);
   assert.equal(officialGh.serverName, 'filesystem');
@@ -145,7 +145,6 @@ test('parseSmartMcpInput automatically resolves remote URLs, GitHub/npm URLs, pa
     args: ['-y', '@modelcontextprotocol/server-filesystem'],
   });
 
-  // 5. Bare npm package or uvx package
   const npmPkg = parseSmartMcpInput('@playwright/mcp@latest');
   assert.equal(npmPkg.ok, true);
   assert.equal(npmPkg.serverName, 'mcp');
@@ -162,7 +161,6 @@ test('parseSmartMcpInput automatically resolves remote URLs, GitHub/npm URLs, pa
     args: ['mcp-server-fetch'],
   });
 
-  // 6. Full command line
   const cmdRes = parseSmartMcpInput('npx -y @modelcontextprotocol/server-github');
   assert.equal(cmdRes.ok, true);
   assert.equal(cmdRes.serverName, 'github');
@@ -171,7 +169,6 @@ test('parseSmartMcpInput automatically resolves remote URLs, GitHub/npm URLs, pa
     args: ['-y', '@modelcontextprotocol/server-github'],
   });
 
-  // 7. validateAndBuildServerSpec smart fallback when serverName is omitted or URL is pasted into serverName/command
   const omittedName = validateAndBuildServerSpec({
     serverName: '',
     transport: 'http',
@@ -242,11 +239,9 @@ test('createHostMcpBridge resolves URI, performs CRUD, toggles tools, and refres
   const uri = await bridge.resolveMcpConfigUri();
   assert.equal(uri, 'file:///C:/Users/TestUser/.gemini/config/mcp_config.json');
 
-  // Initial read when file does not exist returns empty mcpServers
   const initial = await bridge.readMcpConfig();
   assert.deepEqual(initial.config, { mcpServers: {} });
 
-  // Upsert custom server
   await bridge.upsertCustomServer('filesystem', {
     command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-filesystem', 'C:/Users/TestUser'],
@@ -260,7 +255,6 @@ test('createHostMcpBridge resolves URI, performs CRUD, toggles tools, and refres
   assert.equal(refreshCalls.length, 1);
   assert.equal(refreshCalls[0].serverName, 'filesystem');
 
-  // Toggle tool disable/enable
   await bridge.toggleServerTool('filesystem', 'write_file', false);
   let cfg = (await bridge.readMcpConfig()).config;
   assert.deepEqual(cfg.mcpServers.filesystem.disabledTools, ['write_file']);
@@ -269,13 +263,11 @@ test('createHostMcpBridge resolves URI, performs CRUD, toggles tools, and refres
   cfg = (await bridge.readMcpConfig()).config;
   assert.equal(cfg.mcpServers.filesystem.disabledTools, undefined);
 
-  // Disable & enable server
   await bridge.toggleServerEnabled('filesystem', false);
   cfg = (await bridge.readMcpConfig()).config;
   assert.equal(cfg.mcpServers.filesystem.disabled, true);
   assert.equal(toggleCalls.at(-1).enabled, false);
 
-  // Delete server
   await bridge.deleteCustomServer('filesystem');
   cfg = (await bridge.readMcpConfig()).config;
   assert.deepEqual(cfg.mcpServers, {});
@@ -328,7 +320,6 @@ test('mergeMcpManagerBlock preserves statusbar base code and KO_THOUGHT_LOCALIZE
   assert.ok(merged1.includes(MCP_END));
   assert.ok(merged1.indexOf(MCP_BEGIN) < merged1.indexOf('// === BEGIN_AGY_KO_THOUGHT_LOCALIZER_V2 ==='));
 
-  // Re-merging updates MCP block without duplicating
   const merged2 = mergeMcpManagerBlock(merged1, 'console.log("mcp v1.1");');
   assert.equal(merged2.split(MCP_BEGIN).length - 1, 1);
   assert.ok(merged2.includes('console.log("mcp v1.1");'));
@@ -337,7 +328,6 @@ test('mergeMcpManagerBlock preserves statusbar base code and KO_THOUGHT_LOCALIZE
 });
 
 test('extractAuthFromSpec, buildAuthHeaders, and parseSmartMcpInput support Bearer, API Key, Basic auth, and inline/URL tokens', () => {
-  // 1. Bearer token via second parameter in parseSmartMcpInput
   const withTokenParam = parseSmartMcpInput('https://ledger-mcp.jaeseong.dev/mcp', 'my_secret_jwt_123');
   assert.equal(withTokenParam.ok, true);
   assert.equal(withTokenParam.serverName, 'ledger-mcp-jaeseong');
@@ -346,25 +336,21 @@ test('extractAuthFromSpec, buildAuthHeaders, and parseSmartMcpInput support Bear
     headers: { Authorization: 'Bearer my_secret_jwt_123' },
   });
 
-  // 2. Inline Bearer token in URL input string
   const inlineBearer = parseSmartMcpInput('https://ledger-mcp.jaeseong.dev/mcp Bearer tok_xyz');
   assert.equal(inlineBearer.ok, true);
   assert.deepEqual(inlineBearer.spec.headers, { Authorization: 'Bearer tok_xyz' });
 
-  // 3. URL userinfo token extraction (`https://tok_123@host/mcp`)
   const urlUserToken = parseSmartMcpInput('https://tok_123@ssh-approval-origin.jaeseong.dev/mcp');
   assert.equal(urlUserToken.ok, true);
   assert.equal(urlUserToken.spec.url, 'https://ssh-approval-origin.jaeseong.dev/mcp');
   assert.deepEqual(urlUserToken.spec.headers, { Authorization: 'Bearer tok_123' });
 
-  // 4. extractAuthFromSpec defaults to 'oauth' for HTTP URL servers without static auth headers
   const defaultOAuth = extractAuthFromSpec({
     url: 'https://ledger-mcp.jaeseong.dev/mcp',
   });
   assert.equal(defaultOAuth.authMode, 'oauth');
   assert.equal(defaultOAuth.oauthClientMode, 'auto');
 
-  // 5. validateAndBuildServerSpec builds custom OAuth client settings and strips stale Authorization when authMode='oauth'
   const builtOAuthCustom = validateAndBuildServerSpec({
     serverName: 'ledger-mcp-jaeseong',
     description: 'Ledger OAuth MCP Server',
@@ -386,7 +372,6 @@ test('extractAuthFromSpec, buildAuthHeaders, and parseSmartMcpInput support Bear
     scopes: ['mcp:tools', 'openid'],
   });
 
-  // 6. extractAuthFromSpec & buildAuthHeaders round-trip for Bearer and Basic
   const extractedBearer = extractAuthFromSpec({
     url: 'https://ledger-mcp.jaeseong.dev/mcp',
     headers: { Authorization: 'Bearer abc_999', 'X-Trace': '1' },
@@ -407,12 +392,15 @@ test('extractAuthFromSpec, buildAuthHeaders, and parseSmartMcpInput support Bear
   assert.equal(extractedBasic.basicPass, 'pw123');
 });
 
-test('createHostMcpBridge supports OAuth completion/disconnection, spec.serverName normalization, and batch auth headers update', async () => {
+test('createHostMcpBridge strictly matches native Antigravity lB() positional string signature for completeMcpOAuth & disconnectMcpOAuth', async () => {
   const files = new Map();
   const oauthCalls = [];
   const disconnectCalls = [];
 
-  const mockHostService = {
+  // Replicates exact `/main.js` protobuf serializer `$b(cha, { serverName: t, authorizationCode: v })`
+  // which throws `cannot encode field exa.language_server_pb.CompleteMcpOAuthRequest.server_name to JSON: expected string, got object`
+  // if `t` is not a string!
+  const strictNativeHostService = {
     async getStandaloneDir() {
       return { standaloneDir: 'C:\\Users\\TestUser\\.gemini\\antigravity\\scratch' };
     },
@@ -430,7 +418,7 @@ test('createHostMcpBridge supports OAuth completion/disconnection, spec.serverNa
           {
             status: 3,
             error: 'calling "initialize": sending "initialize": Unauthorized',
-            spec: { serverName: 'ledger-mcp-jaeseong', serverUrl: 'https://ledger-mcp.jaeseong.dev/mcp' },
+            spec: { serverName: 'ledger-portal-jaeseong', serverUrl: 'https://ledger-portal.jaeseong.dev/mcp' },
           },
         ],
       };
@@ -438,58 +426,141 @@ test('createHostMcpBridge supports OAuth completion/disconnection, spec.serverNa
     async refreshMcpServers() {
       return {};
     },
-    async completeMcpOAuth(req) {
-      oauthCalls.push(req);
+    async completeMcpOAuth(t, v) {
+      if (typeof t !== 'string') {
+        throw new Error(
+          `[internal] cannot encode field exa.language_server_pb.CompleteMcpOAuthRequest.server_name to JSON: expected string, got ${typeof t}`
+        );
+      }
+      if (typeof v !== 'string') {
+        throw new Error(
+          `[internal] cannot encode field exa.language_server_pb.CompleteMcpOAuthRequest.authorization_code to JSON: expected string, got ${typeof v}`
+        );
+      }
+      oauthCalls.push({ serverName: t, authorizationCode: v });
       return {};
     },
-    async disconnectMcpOAuth(req) {
-      disconnectCalls.push(req);
+    async disconnectMcpOAuth(t, v) {
+      if (typeof t !== 'string') {
+        throw new Error(
+          `[internal] cannot encode field exa.language_server_pb.DisconnectMcpOAuthRequest.server_name to JSON: expected string, got ${typeof t}`
+        );
+      }
+      if (v !== undefined && typeof v !== 'string') {
+        throw new Error(
+          `[internal] cannot encode field exa.language_server_pb.DisconnectMcpOAuthRequest.account to JSON: expected string, got ${typeof v}`
+        );
+      }
+      disconnectCalls.push({ serverName: t, account: v });
       return {};
     },
   };
 
-  const bridge = createHostMcpBridge({ hostService: mockHostService });
+  const bridge = createHostMcpBridge({ hostService: strictNativeHostService });
   const statesRes = await bridge.fetchServerStates();
   assert.equal(statesRes.ok, true);
-  assert.equal(statesRes.states[0].serverName, 'ledger-mcp-jaeseong');
+  assert.equal(statesRes.states[0].serverName, 'ledger-portal-jaeseong');
 
-  await bridge.upsertCustomServer('ledger-mcp-jaeseong', { url: 'https://ledger-mcp.jaeseong.dev/mcp' });
-  await bridge.upsertCustomServer('ssh-test-origin-jaeseong', { url: 'https://ssh-test-origin.jaeseong.dev/mcp' });
+  // 1. Raw authorization code string (like `sMOKbcUULzxXCQ5JqCOh7upU7OKmVLs7:EUkVS7lH...`)
+  const rawCode = 'sMOKbcUULzxXCQ5JqCOh7upU7OKmVLs7:EUkVS7lH0';
+  const oauthRes1 = await bridge.completeOAuth('ledger-portal-jaeseong', rawCode);
+  assert.equal(oauthRes1.ok, true);
+  assert.deepEqual(oauthCalls[0], {
+    serverName: 'ledger-portal-jaeseong',
+    authorizationCode: rawCode,
+  });
 
-  const batchRes = await bridge.applyAuthHeadersToServers(null, { Authorization: 'Bearer shared_tok_777' });
-  assert.equal(batchRes.ok, true);
-  assert.equal(batchRes.updatedCount, 2);
+  // 2. Full callback URL pasted into the input box -> extracts `code` query param
+  const callbackUrl = 'http://127.0.0.1:54321/oauth/callback?code=extracted_code_999&state=xyz123';
+  assert.equal(normalizeAuthorizationCode(callbackUrl), 'extracted_code_999');
+  const oauthRes2 = await bridge.completeOAuth('ledger-portal-jaeseong', callbackUrl);
+  assert.equal(oauthRes2.ok, true);
+  assert.deepEqual(oauthCalls[1], {
+    serverName: 'ledger-portal-jaeseong',
+    authorizationCode: 'extracted_code_999',
+  });
 
-  const cfg = (await bridge.readMcpConfig()).config;
-  assert.equal(cfg.mcpServers['ledger-mcp-jaeseong'].headers.Authorization, 'Bearer shared_tok_777');
-  assert.equal(cfg.mcpServers['ssh-test-origin-jaeseong'].headers.Authorization, 'Bearer shared_tok_777');
-
-  const oauthRes = await bridge.completeOAuth('ledger-mcp-jaeseong', 'code_abc');
-  assert.equal(oauthRes.ok, true);
-  assert.deepEqual(oauthCalls, [{ serverName: 'ledger-mcp-jaeseong', authorizationCode: 'code_abc' }]);
-
-  const discRes = await bridge.disconnectOAuth('ledger-mcp-jaeseong');
+  // 3. Disconnect OAuth passes 2 positional strings
+  const discRes = await bridge.disconnectOAuth('ledger-portal-jaeseong');
   assert.equal(discRes.ok, true);
-  assert.deepEqual(disconnectCalls, [{ serverName: 'ledger-mcp-jaeseong', account: '' }]);
+  assert.deepEqual(disconnectCalls[0], {
+    serverName: 'ledger-portal-jaeseong',
+    account: '',
+  });
 });
 
-test('buildBundle produces valid self-contained userscript bundle without statusbar registerAdapter', () => {
+test('createHostMcpBridge works over Remote Control proxyCommand adapter when Fiber service is absent', async () => {
+  const rpcLog = [];
+  const mockWin = {
+    __agyRemoteControlInstance: {
+      destroyed: false,
+      async proxyCommand(rpcPath, bytes) {
+        const reqObj = JSON.parse(new TextDecoder().decode(bytes));
+        rpcLog.push({ rpcPath, reqObj });
+        if (rpcPath.endsWith('/GetMcpServerStates')) {
+          const payload = new TextEncoder().encode(
+            JSON.stringify({
+              states: [{ serverName: 'remote-srv', status: 2, authUrl: 'https://remote.example.com/auth' }],
+            })
+          );
+          return { payload };
+        }
+        return { payload: new TextEncoder().encode('{}') };
+      },
+    },
+  };
+
+  const bridge = createHostMcpBridge({ window: mockWin });
+  const states = await bridge.getMcpServerStates();
+  assert.equal(states.length, 1);
+  assert.equal(states[0].serverName, 'remote-srv');
+
+  const oauthRes = await bridge.completeOAuth('remote-srv', 'remote_code_777');
+  assert.equal(oauthRes.ok, true);
+  const completeCall = rpcLog.find((c) => c.rpcPath.endsWith('/CompleteMcpOAuth'));
+  assert.ok(completeCall);
+  assert.deepEqual(completeCall.reqObj, {
+    serverName: 'remote-srv',
+    authorizationCode: 'remote_code_777',
+  });
+});
+
+test('buildBundle produces valid self-contained userscript bundle with 100% English default UI strings', () => {
   const { buildBundle } = require('../scripts/build');
   const res = buildBundle();
   assert.ok(res.size > 5000);
   assert.ok(res.bundle.includes('Antigravity Custom MCP Server Manager'));
-  assert.ok(res.bundle.includes('사용자 지정 MCP 서버 추가'));
-  assert.ok(res.bundle.includes('고급 OAuth 설정'));
+  assert.ok(res.bundle.includes('Add Custom MCP Server'));
+  assert.ok(res.bundle.includes('Advanced OAuth Settings'));
   assert.ok(res.bundle.includes('settings-nav-item-McpManager'));
+  assert.ok(res.bundle.includes('MCP Servers'));
   assert.ok(!res.bundle.includes('.registerAdapter('));
 });
 
-test('createModalController builds OAuth-first edit popup, OAuth connect modal, and Settings page content', async () => {
+test('createModalController and mountMcpManager render English UI, prevent MutationObserver freeze loop, and mount into remote iframe', async () => {
   const { createModalController } = require('../src/modal-ui');
 
-  // Minimal DOM mock for modal-ui verification
-  function makeEl(tag) {
+  function makeClassList(owner) {
+    return {
+      add(...tokens) {
+        const set = new Set((owner.className || '').split(/\s+/).filter(Boolean));
+        for (const t of tokens) set.add(t);
+        owner.className = Array.from(set).join(' ');
+      },
+      remove(...tokens) {
+        const set = new Set((owner.className || '').split(/\s+/).filter(Boolean));
+        for (const t of tokens) set.delete(t);
+        owner.className = Array.from(set).join(' ');
+      },
+      contains(t) {
+        return (owner.className || '').split(/\s+/).filter(Boolean).includes(t);
+      },
+    };
+  }
+
+  function makeEl(tag, mutationCounter) {
     const el = {
+      nodeType: 1,
       tagName: String(tag).toUpperCase(),
       id: '',
       className: '',
@@ -506,6 +577,19 @@ test('createModalController builds OAuth-first edit popup, OAuth connect modal, 
       parentElement: null,
       get firstChild() {
         return this.children[0] || null;
+      },
+      get firstElementChild() {
+        return this.children[0] || null;
+      },
+      get nextSibling() {
+        if (!this.parentElement) return null;
+        const idx = this.parentElement.children.indexOf(this);
+        return idx !== -1 && idx + 1 < this.parentElement.children.length
+          ? this.parentElement.children[idx + 1]
+          : null;
+      },
+      get nextElementSibling() {
+        return this.nextSibling;
       },
       get options() {
         return this.children.filter((c) => c.tagName === 'OPTION');
@@ -525,10 +609,21 @@ test('createModalController builds OAuth-first edit popup, OAuth connect modal, 
         this.attributes.delete(k);
       },
       appendChild(child) {
+        if (mutationCounter) mutationCounter.count++;
         if (child.parentNode) child.parentNode.removeChild(child);
         child.parentNode = this;
         child.parentElement = this;
         this.children.push(child);
+        return child;
+      },
+      insertBefore(child, refNode) {
+        if (mutationCounter) mutationCounter.count++;
+        if (child.parentNode) child.parentNode.removeChild(child);
+        child.parentNode = this;
+        child.parentElement = this;
+        const idx = refNode ? this.children.indexOf(refNode) : -1;
+        if (idx === -1) this.children.push(child);
+        else this.children.splice(idx, 0, child);
         return child;
       },
       removeChild(child) {
@@ -552,6 +647,10 @@ test('createModalController builds OAuth-first edit popup, OAuth connect modal, 
         let cur = this;
         while (cur) {
           if (sel === '.flex.flex-col.gap-0\\.5' && cur.className === 'flex flex-col gap-0.5') return cur;
+          if (sel.startsWith('button[data-testid^="settings-nav-item-"]')) {
+            const tid = cur.getAttribute && cur.getAttribute('data-testid');
+            if (cur.tagName === 'BUTTON' && tid && tid.startsWith('settings-nav-item-')) return cur;
+          }
           cur = cur.parentElement;
         }
         return null;
@@ -562,6 +661,7 @@ test('createModalController builds OAuth-first edit popup, OAuth connect modal, 
       querySelectorAll(sel) {
         const out = [];
         const match = (node) => {
+          if (sel === 'ga-remote-control iframe') return node.tagName === 'IFRAME';
           if (sel.startsWith('#')) return node.id === sel.slice(1);
           if (sel === '.grow.w-full') return node.className === 'grow w-full';
           if (sel.startsWith('.')) return (node.className || '').split(/\s+/).includes(sel.slice(1));
@@ -571,6 +671,8 @@ test('createModalController builds OAuth-first edit popup, OAuth connect modal, 
           }
           const mAttr = /^\[([^=\]]+)="([^"]+)"\]$/.exec(sel);
           if (mAttr) return node.getAttribute(mAttr[1]) === mAttr[2];
+          const mHasAttr = /^\[([^=\]]+)\]$/.exec(sel);
+          if (mHasAttr) return node.hasAttribute(mHasAttr[1]);
           return node.tagName === sel.toUpperCase();
         };
         const walk = (node) => {
@@ -583,33 +685,40 @@ test('createModalController builds OAuth-first edit popup, OAuth connect modal, 
         return out;
       },
     };
+    el.classList = makeClassList(el);
     return el;
   }
 
-  const doc = {
-    head: makeEl('head'),
-    body: makeEl('body'),
-    createElement: (tag) => makeEl(tag),
-    getElementById(id) {
-      return this.head.querySelector(`#${id}`) || this.body.querySelector(`#${id}`);
-    },
-    querySelector(sel) {
-      return this.body.querySelector(sel);
-    },
-    querySelectorAll(sel) {
-      return this.body.querySelectorAll(sel);
-    },
-  };
+  function makeDoc(mutationCounter) {
+    return {
+      head: makeEl('head', mutationCounter),
+      body: makeEl('body', mutationCounter),
+      createElement: (tag) => makeEl(tag, mutationCounter),
+      getElementById(id) {
+        return this.head.querySelector(`#${id}`) || this.body.querySelector(`#${id}`);
+      },
+      querySelector(sel) {
+        return this.body.querySelector(sel);
+      },
+      querySelectorAll(sel) {
+        return this.body.querySelectorAll(sel);
+      },
+    };
+  }
+
+  const mutationCounter = { count: 0 };
+  const doc = makeDoc(mutationCounter);
 
   let openedUrl = '';
+  let completedOAuthArgs = null;
   const mockBridge = {
     async readMcpConfig() {
       return {
         uri: 'file:///C:/Users/TestUser/.gemini/config/mcp_config.json',
-        rawText: '{"mcpServers":{"ledger-mcp-jaeseong":{"url":"https://ledger-mcp.jaeseong.dev/mcp"}}}',
+        rawText: '{"mcpServers":{"ledger-portal-jaeseong":{"url":"https://ledger-portal.jaeseong.dev/mcp"}}}',
         config: {
           mcpServers: {
-            'ledger-mcp-jaeseong': { url: 'https://ledger-mcp.jaeseong.dev/mcp' },
+            'ledger-portal-jaeseong': { url: 'https://ledger-portal.jaeseong.dev/mcp' },
           },
         },
       };
@@ -619,13 +728,17 @@ test('createModalController builds OAuth-first edit popup, OAuth connect modal, 
         ok: true,
         states: [
           {
-            serverName: 'ledger-mcp-jaeseong',
+            serverName: 'ledger-portal-jaeseong',
             status: 1,
-            authUrl: 'https://ledger-mcp.jaeseong.dev/oauth/authorize?client_id=abc',
-            spec: { serverName: 'ledger-mcp-jaeseong', serverUrl: 'https://ledger-mcp.jaeseong.dev/mcp' },
+            authUrl: 'https://ledger-portal.jaeseong.dev/oauth/authorize?client_id=abc',
+            spec: { serverName: 'ledger-portal-jaeseong', serverUrl: 'https://ledger-portal.jaeseong.dev/mcp' },
           },
         ],
       };
+    },
+    async completeOAuth(serverName, code) {
+      completedOAuthArgs = [serverName, code];
+      return { ok: true };
     },
     openAuthUrl(url) {
       openedUrl = url;
@@ -635,59 +748,75 @@ test('createModalController builds OAuth-first edit popup, OAuth connect modal, 
 
   const modal = createModalController({ doc, bridge: mockBridge });
 
-  // 1. Open Edit Popup -> verify OAuth is selected by default and options match ChatGPT UX
-  await modal.openEditPopup('ledger-mcp-jaeseong', { focusAuth: true });
+  // 1. Open Edit Popup -> verify English labels and OAuth default
+  await modal.openEditPopup('ledger-portal-jaeseong', { focusAuth: true });
   assert.equal(modal.isEditPopupOpen(), true);
   const authSelect = doc.body.querySelector('[data-field="authMode"]');
   assert.ok(authSelect);
   assert.equal(authSelect.value, 'oauth');
   assert.deepEqual(
-    authSelect.options.map((o) => o.value),
-    ['oauth', 'none', 'oauth_or_none', 'bearer', 'apiKey', 'basic']
+    authSelect.options.map((o) => o.textContent),
+    [
+      'OAuth',
+      'No Authentication',
+      'OAuth or No Authentication',
+      'Bearer Token (Authorization: Bearer <token>)',
+      'API Key Header (X-API-Key or Custom Header)',
+      'Basic Auth (Username & Password)',
+    ]
   );
-  const advToggle = doc.body.querySelector('[data-testid="agy-mcp-advanced-oauth-toggle"]');
-  assert.ok(advToggle);
   modal.closeEditPopup();
   assert.equal(modal.isEditPopupOpen(), false);
 
-  // 2. Open OAuth Connect Modal (<서버이름> 연결 ↗)
-  await modal.openOAuthConnectModal('test', 'https://example.com/oauth/authorize');
+  // 2. Open OAuth Connect Modal -> verify English "Connect <name> ↗" and code submission
+  await modal.openOAuthConnectModal('ledger-portal-jaeseong', 'https://example.com/oauth/authorize');
   assert.equal(modal.isOAuthConnectModalOpen(), true);
   const launchBtn = doc.body.querySelector('[data-testid="agy-mcp-oauth-launch-btn"]');
   assert.ok(launchBtn);
-  assert.equal(launchBtn.textContent, 'test 연결 ↗');
+  assert.equal(launchBtn.textContent, 'Connect ledger-portal-jaeseong ↗');
   launchBtn.click();
   assert.equal(openedUrl, 'https://example.com/oauth/authorize');
-  modal.closeOAuthConnectModal();
+
+  const codeInput = doc.body.querySelector('[data-field="oauthModalCode"]');
+  assert.ok(codeInput);
+  codeInput.value = 'sMOKbcUULzxXCQ5JqCOh7upU7OKmVLs7:EUkVS7lH0';
+  const buttonsInModal = doc.body.querySelectorAll('button');
+  const submitCodeBtn = buttonsInModal.find((b) => b.textContent === 'Submit Code');
+  assert.ok(submitCodeBtn);
+  await submitCodeBtn.click();
+  // Wait a microtask for async click handler
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(completedOAuthArgs, ['ledger-portal-jaeseong', 'sMOKbcUULzxXCQ5JqCOh7upU7OKmVLs7:EUkVS7lH0']);
   assert.equal(modal.isOAuthConnectModalOpen(), false);
 
-  // 3. Render Settings Page Content inside #agy-mcp-settings-pane
-  const settingsPane = makeEl('div');
-  settingsPane.id = 'agy-mcp-settings-pane';
-  doc.body.appendChild(settingsPane);
-  modal.renderSettingsPageContent(settingsPane);
-  const addBtn = settingsPane.querySelector('[data-testid="agy-mcp-settings-add-btn"]');
-  assert.ok(addBtn);
-  assert.equal(addBtn.textContent, '+ 사용자 지정 MCP 서버 추가');
-
-  // 4. Verify mountMcpManager injects "MCP 서버" tab into .settings-modal-container right below "한글 번역"
-  const { mountMcpManager } = require('../src/index');
-  const settingsModal = makeEl('div');
+  // 3. Verify Settings modal integration with KoTranslator wrapper does NOT cause infinite MutationObserver loop
+  const settingsModal = makeEl('div', mutationCounter);
   settingsModal.className = 'settings-modal-container';
-  const navGroup = makeEl('div');
+  const navGroup = makeEl('div', mutationCounter);
   navGroup.className = 'flex flex-col gap-0.5';
-  const modelsBtn = makeEl('button');
-  modelsBtn.setAttribute('data-testid', 'settings-nav-item-Models');
-  modelsBtn.textContent = '모델';
-  const koBtn = makeEl('button');
-  koBtn.setAttribute('data-testid', 'settings-nav-item-KoTranslator');
-  koBtn.textContent = '한글 번역';
-  navGroup.appendChild(modelsBtn);
-  navGroup.appendChild(koBtn);
 
-  const contentArea = makeEl('div');
+  const modelsWrap = makeEl('div', mutationCounter);
+  modelsWrap.className = 'relative group/nav-item mx-2';
+  const modelsBtn = makeEl('button', mutationCounter);
+  modelsBtn.setAttribute('data-testid', 'settings-nav-item-Models');
+  modelsWrap.appendChild(modelsBtn);
+
+  // Exact KoTranslator DOM structure (`navWrap > button[data-testid="settings-nav-item-KoTranslator"]`)
+  const koWrap = makeEl('div', mutationCounter);
+  koWrap.className = 'relative group/nav-item mx-2 agy-ko-settings-root';
+  const koBtn = makeEl('button', mutationCounter);
+  koBtn.setAttribute('data-testid', 'settings-nav-item-KoTranslator');
+  const koSpan = makeEl('span', mutationCounter);
+  koSpan.textContent = '한글 번역';
+  koBtn.appendChild(koSpan);
+  koWrap.appendChild(koBtn);
+
+  navGroup.appendChild(modelsWrap);
+  navGroup.appendChild(koWrap);
+
+  const contentArea = makeEl('div', mutationCounter);
   contentArea.className = 'grow w-full';
-  const nativeGeneralPane = makeEl('div');
+  const nativeGeneralPane = makeEl('div', mutationCounter);
   nativeGeneralPane.id = 'native-general';
   contentArea.appendChild(nativeGeneralPane);
 
@@ -695,21 +824,63 @@ test('createModalController builds OAuth-first edit popup, OAuth connect modal, 
   settingsModal.appendChild(contentArea);
   doc.body.appendChild(settingsModal);
 
+  // Also add a remote control iframe with its own Customizations button
+  const iframeDoc = makeDoc();
+  const addMcpParent = makeEl('div');
+  const nativeAddBtn = makeEl('button');
+  nativeAddBtn.setAttribute('data-testid', 'add-mcp-button');
+  addMcpParent.appendChild(nativeAddBtn);
+  iframeDoc.body.appendChild(addMcpParent);
+
+  const iframeWin = {
+    document: iframeDoc,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const rcIframe = makeEl('iframe', mutationCounter);
+  rcIframe.contentWindow = iframeWin;
+  rcIframe.contentDocument = iframeDoc;
+  doc.body.appendChild(rcIframe);
+
   const mockWin = {
     document: doc,
     addEventListener() {},
     removeEventListener() {},
   };
+
   const mgr = mountMcpManager({ window: mockWin, document: doc, bridge: mockBridge });
-  assert.equal(mgr.version, 'v1.3.0');
+  assert.equal(mgr.version, MCP_MANAGER_VERSION);
 
   const mcpNavBtn = navGroup.querySelector('[data-testid="settings-nav-item-McpManager"]');
   assert.ok(mcpNavBtn);
-  assert.equal(mcpNavBtn.children[0].textContent, 'MCP 서버');
-  mcpNavBtn.click();
+  assert.equal(mcpNavBtn.children[0].textContent, 'MCP Servers');
 
+  // Verify that calling injectIntoNativeMcpScreens() repeatedly produces ZERO additional DOM mutations!
+  const beforeCount = mutationCounter.count;
+  for (let i = 0; i < 10; i++) {
+    mgr.injectIntoNativeMcpScreens();
+  }
+  assert.equal(mutationCounter.count, beforeCount, 'Repeated injectIntoNativeMcpScreens must not mutate DOM or re-append nav item');
+
+  // Verify own node mutation filter returns false for our injected nav button
+  assert.equal(
+    isRelevantMutationList([{ target: mcpNavBtn, addedNodes: [] }]),
+    false
+  );
+
+  // Click MCP Servers tab -> opens #agy-mcp-settings-pane with English content
+  mcpNavBtn.click();
   const injectedPane = contentArea.querySelector('#agy-mcp-settings-pane');
   assert.ok(injectedPane);
   assert.equal(injectedPane.style.display, 'block');
   assert.equal(nativeGeneralPane.style.display, 'none');
+  const settingsAddBtn = injectedPane.querySelector('[data-testid="agy-mcp-settings-add-btn"]');
+  assert.ok(settingsAddBtn);
+  assert.equal(settingsAddBtn.textContent, '+ Add Custom MCP Server');
+
+  // Verify remote iframe was also automatically mounted and injected "+ Custom MCP" beside [data-testid="add-mcp-button"]
+  assert.ok(iframeWin.agyMcpManager);
+  const remoteCustomBtn = addMcpParent.querySelector('[data-agy-custom-mcp-btn="beside-add-btn"]');
+  assert.ok(remoteCustomBtn);
+  assert.equal(remoteCustomBtn.textContent, '+ Custom MCP');
 });
