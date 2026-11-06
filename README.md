@@ -6,7 +6,7 @@ Add, edit, authenticate (OAuth / Bearer / API Key / Basic), toggle, and manage *
 
 ---
 
-## Key Features (`v1.4.0`)
+## Key Features (`v1.4.1`)
 
 - **100% English Default UI + Automatic Korean Localization via `ko-thought-translator`**:
   - Built with clean English UI defaults (`MCP Servers`, `Add Custom MCP Server`, `Connect <ServerName> ↗`, `Advanced OAuth Settings`, etc.) for global users, and seamlessly localizes into Korean when the `ko-thought-translator` patch is active.
@@ -21,9 +21,9 @@ Add, edit, authenticate (OAuth / Bearer / API Key / Basic), toggle, and manage *
   - **Connection**: `[ Server URL | Local / Tunnel (Stdio) ]` segmented toggle (defaults to `Server URL`)
   - **Authentication**: Defaults to **`OAuth`**, with **`No Authentication`**, **`OAuth or No Authentication`**, plus optional Bearer Token, API Key Header, and Basic Auth.
   - **Advanced OAuth Settings >**: Collapsible accordion supporting Automatic Discovery & Dynamic Client Registration or Custom `Client ID`, `Client Secret`, and `Default Scopes`.
-- **Native & Remote Web Customizations (`MCP Servers`) Integration + One-Click Bookmarklet Chaining**:
+- **Native & Remote Web Customizations (`MCP Servers`) Integration + Host-Aware Companion Loading**:
   - Injects `+ Custom MCP`, `⚙️ Edit Settings`, and per-server `🔗 Connect OAuth / Auth` buttons into `[data-testid="add-mcp-button"]`, `[data-testid="add-mcp-screen"]`, and `[data-testid="mcp-server-row"]`.
-  - Automatically loads alongside `antigravity-statusbar` and `ko-thought-translator` when clicking your Remote Control bookmarklet on `https://antigravity.google.com/r/...`.
+  - Works both when installed standalone (1 plugin only) and when installed alongside `antigravity-statusbar` and/or `ko-thought-translator`: inspects the host PC's `~/.gemini/antigravity/statusbar_autoinject.js` and loads only the companion plugins actually installed on the host.
 
 ---
 

@@ -6,7 +6,7 @@
 
 ---
 
-## 주요 기능 (`v1.4.0`)
+## 주요 기능 (`v1.4.1`)
 
 1. **전 세계 사용자를 위한 영어(English) 기본 UI + `ko-thought-translator` 한글 패치 자동 연동**
    - 기본 UI는 영어(`MCP Servers`, `Add Custom MCP Server`, `Connect <ServerName> ↗`, `Advanced OAuth Settings` 등)로 표시되며, `ko-thought-translator` 한글 번역 패치가 활성화되면 자동으로 자연스러운 한국어 UI로 변환됩니다.
@@ -16,8 +16,8 @@
 3. **OAuth 중심 사용자 지정 MCP 서버 등록 & `completeMcpOAuth(serverName, code)` 정합성 보장**
    - MCP 포털/서버 URL만 입력하면 안티그래비티 호스트(`language_server.exe`)의 RFC 9728 / RFC 8414 OAuth Discovery를 통해 `authUrl`을 자동 감지하고 **`Connect <ServerName>` (`<서버이름> 연결`) 모달**을 띄웁니다.
    - 안티그래비티 프런트엔드 `/main.js`의 `lB().completeMcpOAuth(serverName, authorizationCode)` 2인자 문자열 시그니처와 정확히 일치하여 인가 코드(또는 콜백 URL) 제출 시 오류 없이 즉시 연결됩니다.
-4. **원격 제어 웹(`https://antigravity.google.com/r/...`) 북마크바 원클릭 동시 로드**
-   - 원격 웹에서 상단 북마크바(`커스텀바` 또는 `한글번역`)를 클릭하면 `antigravity-statusbar`, `antigravity-mcp-manager`, `ko-thought-translator`가 모두 자동으로 함께 로드됩니다.
+4. **단독 설치(1개) 및 다중 설치(2~3개) 맞춤형 원격 웹(`https://antigravity.google.com/r/...`) 북마크바 스마트 로드**
+   - `antigravity-mcp-manager` 1개만 단독 설치한 환경에서도 자체 `ensure_statusbar_patch.js`를 통해 데스크톱과 원격 웹에서 독립적으로 작동하며, 원격 웹에서 북마크바 클릭 시 호스트 PC의 `~/.gemini/antigravity/statusbar_autoinject.js`를 조회해 **호스트에 실제로 설치된 동반 플러그인(`antigravity-statusbar`, `ko-thought-translator`)만** 자동으로 함께 로드합니다.
 
 ---
 

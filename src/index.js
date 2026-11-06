@@ -10,7 +10,7 @@ const {
   createModalController,
 } = require('./modal-ui');
 
-const MCP_MANAGER_VERSION = 'v1.4.0';
+const MCP_MANAGER_VERSION = 'v1.4.1';
 const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
 function extractServerNameFromRow(row) {
@@ -96,6 +96,83 @@ function isRelevantMutationList(mutations) {
     }
   }
   return false;
+}
+
+function ensureRemoteCompanionScripts(win, doc, bridge) {
+  try {
+    const isRemoteWeb =
+      Boolean(win?.location?.hostname && String(win.location.hostname).includes('antigravity.google.com')) ||
+      Boolean(doc?.querySelector?.('ga-remote-control'));
+    if (!isRemoteWeb || !doc?.head) return Promise.resolve({ loaded: [] });
+
+    const execScriptText = (code) => {
+      if (!code || !doc.head) return false;
+      const s = doc.createElement('script');
+      const nonceEl = doc.querySelector?.('script[nonce]');
+      const nonce = nonceEl ? nonceEl.nonce || nonceEl.getAttribute?.('nonce') : '';
+      if (nonce) s.nonce = nonce;
+      let policy = win.__agyTrustedTypesPolicy || null;
+      if (!policy && win.trustedTypes && typeof win.trustedTypes.createPolicy === 'function') {
+        try {
+          policy = win.trustedTypes.createPolicy('agy-companion-' + Date.now(), {
+            createScript: (x) => x,
+          });
+          win.__agyTrustedTypesPolicy = policy;
+        } catch (_e) {}
+      }
+      s.text = policy ? policy.createScript(code) : code;
+      doc.head.appendChild(s);
+      return true;
+    };
+
+    const injectRemoteOrHostFallback = async (flagKey, url, hostCodeFallback) => {
+      if (win[flagKey]) return false;
+      win[flagKey] = true;
+      try {
+        if (typeof win.fetch === 'function') {
+          const r = await win.fetch(`${url}?t=${Date.now()}`);
+          const code = r && r.ok ? await r.text() : '';
+          if (code && execScriptText(code)) return true;
+        }
+      } catch (_e) {}
+      if (hostCodeFallback && execScriptText(hostCodeFallback)) {
+        return true;
+      }
+      win[flagKey] = false;
+      return false;
+    };
+
+    return Promise.resolve(
+      bridge && typeof bridge.fetchHostInstalledPluginInfo === 'function'
+        ? bridge.fetchHostInstalledPluginInfo()
+        : null
+    )
+      .then(async (info) => {
+        const loaded = [];
+        if (!info) return { loaded };
+
+        if (info.hasStatusbar && !win.agyStatusBar) {
+          const ok = await injectRemoteOrHostFallback(
+            '__agyLoadingStatusBarCompanion',
+            'https://raw.githubusercontent.com/jaeseongs95/antigravity-statusbar/main/dist/statusbar_autoinject.js',
+            info.statusbarBlock
+          );
+          if (ok) loaded.push('antigravity-statusbar');
+        }
+        if (info.hasKoTranslator && !win.__agyKoThoughtCleanup) {
+          const ok = await injectRemoteOrHostFallback(
+            '__agyLoadingKoThoughtCompanion',
+            'https://raw.githubusercontent.com/jaeseongs95/antigravity-ko-translator/main/plugins/ko-thought-translator/scripts/ko_thought_autoinject.js',
+            info.koBlock
+          );
+          if (ok) loaded.push('ko-thought-translator');
+        }
+        return { loaded, hostInfo: info };
+      })
+      .catch(() => ({ loaded: [] }));
+  } catch (_e) {
+    return Promise.resolve({ loaded: [] });
+  }
 }
 
 function mountMcpManager(env = {}) {
@@ -378,52 +455,7 @@ function mountMcpManager(env = {}) {
     }
   }
 
-  function ensureCompanionScriptsInRemoteWeb() {
-    try {
-      const isRemoteWeb =
-        Boolean(win?.location?.hostname && String(win.location.hostname).includes('antigravity.google.com')) ||
-        Boolean(doc?.querySelector?.('ga-remote-control'));
-      if (!isRemoteWeb || typeof win.fetch !== 'function' || !doc.head) return;
-
-      const injectRemoteBundle = (flagKey, url) => {
-        if (win[flagKey]) return;
-        win[flagKey] = true;
-        win
-          .fetch(`${url}?t=${Date.now()}`)
-          .then((r) => (r && r.ok ? r.text() : ''))
-          .then((code) => {
-            if (!code) return;
-            const s = doc.createElement('script');
-            const nonceEl = doc.querySelector?.('script[nonce]');
-            const nonce = nonceEl ? nonceEl.nonce || nonceEl.getAttribute?.('nonce') : '';
-            if (nonce) s.nonce = nonce;
-            let policy = win.__agyTrustedTypesPolicy || null;
-            if (!policy && win.trustedTypes && typeof win.trustedTypes.createPolicy === 'function') {
-              try {
-                policy = win.trustedTypes.createPolicy('agy-companion-' + Date.now(), {
-                  createScript: (x) => x,
-                });
-                win.__agyTrustedTypesPolicy = policy;
-              } catch (_e) {}
-            }
-            s.text = policy ? policy.createScript(code) : code;
-            doc.head.appendChild(s);
-          })
-          .catch(() => {
-            win[flagKey] = false;
-          });
-      };
-
-      if (!win.agyStatusBar) {
-        injectRemoteBundle(
-          '__agyLoadingStatusBarCompanion',
-          'https://raw.githubusercontent.com/jaeseongs95/antigravity-statusbar/main/dist/statusbar_autoinject.js'
-        );
-      }
-    } catch (_e) {}
-  }
-
-  ensureCompanionScriptsInRemoteWeb();
+  ensureRemoteCompanionScripts(win, doc, bridge);
 
   function injectIntoNativeMcpScreens() {
     if (!doc.body) return;
@@ -748,6 +780,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 module.exports = {
   MCP_MANAGER_VERSION,
   mountMcpManager,
+  ensureRemoteCompanionScripts,
   cleanupLegacyStatusBarArtifacts,
   isOwnMcpNode,
   isRelevantMutationList,

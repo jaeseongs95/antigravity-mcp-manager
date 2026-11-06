@@ -24,6 +24,7 @@ const AGY_DIR = path.join(HOME_DIR, '.gemini', 'antigravity');
 const TARGET_STANDALONE = path.join(AGY_DIR, 'mcp_manager_autoinject.js');
 const TARGET_AUTOINJECT = path.join(AGY_DIR, 'statusbar_autoinject.js');
 const TARGET_PATCHER = path.join(AGY_DIR, 'ensure_statusbar_patch.js');
+const SRC_PATCHER = path.join(__dirname, 'ensure_statusbar_patch.js');
 
 const MCP_BEGIN = '// === BEGIN_AGY_MCP_MANAGER_V1 ===';
 const MCP_END = '// === END_AGY_MCP_MANAGER_V1 ===';
@@ -66,6 +67,10 @@ function install() {
     : '';
   const merged = mergeMcpManagerBlock(existing, bundle);
   fs.writeFileSync(TARGET_AUTOINJECT, merged, 'utf8');
+
+  if (fs.existsSync(SRC_PATCHER)) {
+    fs.copyFileSync(SRC_PATCHER, TARGET_PATCHER);
+  }
 
   if (fs.existsSync(TARGET_PATCHER)) {
     const workerRes = spawnSync(process.execPath, [TARGET_PATCHER, '--worker'], {

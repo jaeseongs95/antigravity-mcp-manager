@@ -183,6 +183,9 @@ function createHostMcpBridge(opts = {}) {
             async getStandaloneDir() {
               return await callRpc('/exa.language_server_pb.LanguageServerService/GetStandaloneDir', {});
             },
+            async getCustomizationStates() {
+              return await callRpc('/exa.language_server_pb.LanguageServerService/GetCustomizationStates', {});
+            },
             async readFile(req) {
               const r = await callRpc('/exa.language_server_pb.LanguageServerService/ReadFile', { uri: req?.uri });
               if (r && typeof r.content === 'string') {
@@ -730,6 +733,85 @@ function createHostMcpBridge(opts = {}) {
     return uri;
   }
 
+  let cachedHostPluginInfo = null;
+  async function fetchHostInstalledPluginInfo(forceRefresh = false) {
+    if (cachedHostPluginInfo && !forceRefresh) return cachedHostPluginInfo;
+    const svc = scanFiberTree();
+    if (!svc || typeof svc.readFile !== 'function') return null;
+
+    let geminiRoot = null;
+    const extractRoot = (rawPath) => {
+      if (!rawPath || typeof rawPath !== 'string') return null;
+      const norm = rawPath.replace(/\\/g, '/');
+      const idx = norm.indexOf('/.gemini/');
+      if (idx === -1) return null;
+      return norm.slice(0, idx + '/.gemini'.length);
+    };
+
+    try {
+      const cfgUri = await resolveMcpConfigUri();
+      if (cfgUri) {
+        geminiRoot = extractRoot(toFsPathFromFileUri(cfgUri));
+      }
+    } catch {}
+
+    if (!geminiRoot && typeof svc.getCustomizationStates === 'function') {
+      try {
+        const st = await svc.getCustomizationStates();
+        for (const item of st?.items || []) {
+          const p = item?.skillItem?.path || item?.ruleItem?.path || item?.pluginItem?.path || '';
+          const r = extractRoot(p);
+          if (r) {
+            geminiRoot = r;
+            break;
+          }
+        }
+      } catch {}
+    }
+
+    if (!geminiRoot) return null;
+
+    const autoinjectUri = toFileUriFromFsPath(`${geminiRoot}/antigravity/statusbar_autoinject.js`);
+    if (!autoinjectUri) return null;
+
+    try {
+      const res = await svc.readFile({ uri: autoinjectUri });
+      const text = res?.content && res.content.length > 0 ? new TextDecoder().decode(res.content) : '';
+      if (!text) return null;
+
+      const mcpBeginMarker = '// === ' + ['BEGIN_AGY_MCP', 'MANAGER_V1'].join('_') + ' ===';
+      const mcpEndMarker = '// === ' + ['END_AGY_MCP', 'MANAGER_V1'].join('_') + ' ===';
+      const koBeginMarker = '// === ' + ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' ===';
+      const koEndMarker = '// === ' + ['END_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' ===';
+
+      const mcpB = text.indexOf(mcpBeginMarker);
+      const mcpE = text.indexOf(mcpEndMarker);
+      const koB = text.indexOf(koBeginMarker);
+      const koE = text.indexOf(koEndMarker);
+
+      const firstMarkerIdx = [mcpB, koB].filter((i) => i !== -1).sort((a, b) => a - b)[0] ?? text.length;
+      const baseSegment = text.slice(0, firstMarkerIdx).trim();
+
+      const hasStatusbar = baseSegment.includes('mountStatusBar') || baseSegment.includes('agyStatusBar');
+      const hasMcpManager = (mcpB !== -1 && mcpE > mcpB) || text.includes('mountMcpManager');
+      const hasKoTranslator = (koB !== -1 && koE > koB) || text.includes('__agyKoThoughtCleanup');
+
+      cachedHostPluginInfo = {
+        geminiRoot,
+        autoinjectUri,
+        hasStatusbar,
+        hasMcpManager,
+        hasKoTranslator,
+        statusbarBlock: hasStatusbar ? baseSegment : '',
+        mcpBlock: mcpB !== -1 && mcpE > mcpB ? text.slice(mcpB, mcpE + mcpEndMarker.length) : '',
+        koBlock: koB !== -1 && koE > koB ? text.slice(koB, koE + koEndMarker.length) : '',
+      };
+      return cachedHostPluginInfo;
+    } catch {
+      return null;
+    }
+  }
+
   return {
     scanFiberTree,
     resolveMcpConfigUri,
@@ -750,6 +832,7 @@ function createHostMcpBridge(opts = {}) {
     revealConfigInExplorer,
     getLastKnownStates,
     setCustomConfigUriOverride,
+    fetchHostInstalledPluginInfo,
     toFsPathFromFileUri,
   };
 }

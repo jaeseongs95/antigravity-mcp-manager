@@ -22,6 +22,7 @@ const {
 const {
   MCP_MANAGER_VERSION,
   mountMcpManager,
+  ensureRemoteCompanionScripts,
   cleanupLegacyStatusBarArtifacts,
   isRelevantMutationList,
 } = require('../src/index');
@@ -883,4 +884,103 @@ test('createModalController and mountMcpManager render English UI, prevent Mutat
   const remoteCustomBtn = addMcpParent.querySelector('[data-agy-custom-mcp-btn="beside-add-btn"]');
   assert.ok(remoteCustomBtn);
   assert.equal(remoteCustomBtn.textContent, '+ Custom MCP');
+});
+
+test('fetchHostInstalledPluginInfo and ensureRemoteCompanionScripts respect single-plugin vs multi-plugin host installations', async () => {
+  const mcpBegin = '// === ' + ['BEGIN_AGY_MCP', 'MANAGER_V1'].join('_') + ' ===';
+  const mcpEnd = '// === ' + ['END_AGY_MCP', 'MANAGER_V1'].join('_') + ' ===';
+  const koBegin = '// === ' + ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' ===';
+  const koEnd = '// === ' + ['END_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' ===';
+
+  let currentHostAutoinjectContent = '';
+  const mockHostService = {
+    async getStandaloneDir() {
+      return { standaloneDir: 'C:\\Users\\TestUser\\.gemini\\antigravity\\scratch' };
+    },
+    async readFile({ uri }) {
+      assert.equal(uri, 'file:///C:/Users/TestUser/.gemini/antigravity/statusbar_autoinject.js');
+      return { content: new TextEncoder().encode(currentHostAutoinjectContent) };
+    },
+  };
+
+  function makeRemoteTestEnv(fetchImpl) {
+    const scriptsAdded = [];
+    const doc = {
+      head: {
+        appendChild(s) {
+          scriptsAdded.push(s.text || '');
+        },
+      },
+      createElement(tag) {
+        return { tagName: tag, text: '', nonce: '' };
+      },
+      querySelector(sel) {
+        if (sel === 'ga-remote-control') return {};
+        return null;
+      },
+    };
+    const win = {
+      location: { hostname: 'antigravity.google.com' },
+      document: doc,
+      fetch: fetchImpl,
+    };
+    const bridge = createHostMcpBridge({ window: win, document: doc, hostService: mockHostService });
+    return { win, doc, bridge, scriptsAdded };
+  }
+
+  // Case 1: User ONLY installed antigravity-mcp-manager (1 plugin)
+  currentHostAutoinjectContent = `${mcpBegin}\nfunction mountMcpManager(){}\n${mcpEnd}`;
+  {
+    const fetchedUrls = [];
+    const { win, doc, bridge, scriptsAdded } = makeRemoteTestEnv(async (url) => {
+      fetchedUrls.push(url);
+      return { ok: true, async text() { return '// fetched'; } };
+    });
+    const info = await bridge.fetchHostInstalledPluginInfo(true);
+    assert.equal(info.hasStatusbar, false);
+    assert.equal(info.hasMcpManager, true);
+    assert.equal(info.hasKoTranslator, false);
+
+    const res = await ensureRemoteCompanionScripts(win, doc, bridge);
+    assert.deepEqual(res.loaded, []);
+    assert.equal(fetchedUrls.length, 0);
+    assert.equal(scriptsAdded.length, 0);
+  }
+
+  // Case 2: User installed mcp-manager + statusbar (2 plugins)
+  currentHostAutoinjectContent = `function mountStatusBar(){}\nwindow.agyStatusBar={};\n${mcpBegin}\nfunction mountMcpManager(){}\n${mcpEnd}`;
+  {
+    const fetchedUrls = [];
+    const { win, doc, bridge, scriptsAdded } = makeRemoteTestEnv(async (url) => {
+      fetchedUrls.push(url);
+      return { ok: true, async text() { return '// statusbar remote bundle'; } };
+    });
+    const res = await ensureRemoteCompanionScripts(win, doc, bridge);
+    assert.deepEqual(res.loaded, ['antigravity-statusbar']);
+    assert.equal(fetchedUrls.length, 1);
+    assert.ok(fetchedUrls[0].includes('statusbar_autoinject.js'));
+    assert.equal(scriptsAdded.length, 1);
+  }
+
+  // Case 3: User installed all 3 plugins, and network fetch fails -> falls back to host code blocks
+  currentHostAutoinjectContent = [
+    'function mountStatusBar(){}',
+    'window.agyStatusBar={};',
+    mcpBegin,
+    'function mountMcpManager(){}',
+    mcpEnd,
+    koBegin,
+    'window.__agyKoThoughtCleanup=()=>{};',
+    koEnd,
+  ].join('\n');
+  {
+    const { win, doc, bridge, scriptsAdded } = makeRemoteTestEnv(async () => {
+      throw new Error('Network unreachable');
+    });
+    const res = await ensureRemoteCompanionScripts(win, doc, bridge);
+    assert.deepEqual(res.loaded, ['antigravity-statusbar', 'ko-thought-translator']);
+    assert.equal(scriptsAdded.length, 2);
+    assert.ok(scriptsAdded[0].includes('mountStatusBar'));
+    assert.ok(scriptsAdded[1].includes('__agyKoThoughtCleanup'));
+  }
 });
