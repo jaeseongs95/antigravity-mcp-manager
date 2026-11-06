@@ -7,6 +7,8 @@ const {
   QUICK_TEMPLATES,
   parseArgsInput,
   parseKeyValueInput,
+  extractAuthFromSpec,
+  buildAuthHeaders,
   parseSmartMcpInput,
   validateAndBuildServerSpec,
   normalizeMcpConfigObject,
@@ -334,10 +336,119 @@ test('mergeMcpManagerBlock preserves statusbar base code and KO_THOUGHT_LOCALIZE
   assert.ok(merged2.includes('// === BEGIN_AGY_KO_THOUGHT_LOCALIZER_V2 ==='));
 });
 
+test('extractAuthFromSpec, buildAuthHeaders, and parseSmartMcpInput support Bearer, API Key, Basic auth, and inline/URL tokens', () => {
+  // 1. Bearer token via second parameter in parseSmartMcpInput
+  const withTokenParam = parseSmartMcpInput('https://ledger-mcp.jaeseong.dev/mcp', 'my_secret_jwt_123');
+  assert.equal(withTokenParam.ok, true);
+  assert.equal(withTokenParam.serverName, 'ledger-mcp-jaeseong');
+  assert.deepEqual(withTokenParam.spec, {
+    url: 'https://ledger-mcp.jaeseong.dev/mcp',
+    headers: { Authorization: 'Bearer my_secret_jwt_123' },
+  });
+
+  // 2. Inline Bearer token in URL input string
+  const inlineBearer = parseSmartMcpInput('https://ledger-mcp.jaeseong.dev/mcp Bearer tok_xyz');
+  assert.equal(inlineBearer.ok, true);
+  assert.deepEqual(inlineBearer.spec.headers, { Authorization: 'Bearer tok_xyz' });
+
+  // 3. URL userinfo token extraction (`https://tok_123@host/mcp`)
+  const urlUserToken = parseSmartMcpInput('https://tok_123@ssh-approval-origin.jaeseong.dev/mcp');
+  assert.equal(urlUserToken.ok, true);
+  assert.equal(urlUserToken.spec.url, 'https://ssh-approval-origin.jaeseong.dev/mcp');
+  assert.deepEqual(urlUserToken.spec.headers, { Authorization: 'Bearer tok_123' });
+
+  // 4. extractAuthFromSpec & buildAuthHeaders round-trip
+  const extractedBearer = extractAuthFromSpec({
+    url: 'https://ledger-mcp.jaeseong.dev/mcp',
+    headers: { Authorization: 'Bearer abc_999', 'X-Trace': '1' },
+  });
+  assert.equal(extractedBearer.authMode, 'bearer');
+  assert.equal(extractedBearer.bearerToken, 'abc_999');
+  assert.deepEqual(extractedBearer.extraHeaders, { 'X-Trace': '1' });
+
+  const rebuiltBasic = buildAuthHeaders({
+    authMode: 'basic',
+    basicUser: 'admin',
+    basicPass: 'pw123',
+    baseHeaders: { 'X-Trace': '1' },
+  });
+  const extractedBasic = extractAuthFromSpec({ headers: rebuiltBasic });
+  assert.equal(extractedBasic.authMode, 'basic');
+  assert.equal(extractedBasic.basicUser, 'admin');
+  assert.equal(extractedBasic.basicPass, 'pw123');
+});
+
+test('createHostMcpBridge supports OAuth completion/disconnection, spec.serverName normalization, and batch auth headers update', async () => {
+  const files = new Map();
+  const oauthCalls = [];
+  const disconnectCalls = [];
+
+  const mockHostService = {
+    async getStandaloneDir() {
+      return { standaloneDir: 'C:\\Users\\TestUser\\.gemini\\antigravity\\scratch' };
+    },
+    async readFile({ uri }) {
+      if (!files.has(uri)) throw new Error('ENOENT');
+      return { content: files.get(uri) };
+    },
+    async writeFile({ uri, content }) {
+      files.set(uri, content);
+      return {};
+    },
+    async getMcpServerStates() {
+      return {
+        states: [
+          {
+            status: 3,
+            error: 'calling "initialize": sending "initialize": Unauthorized',
+            spec: { serverName: 'ledger-mcp-jaeseong', serverUrl: 'https://ledger-mcp.jaeseong.dev/mcp' },
+          },
+        ],
+      };
+    },
+    async refreshMcpServers() {
+      return {};
+    },
+    async completeMcpOAuth(req) {
+      oauthCalls.push(req);
+      return {};
+    },
+    async disconnectMcpOAuth(req) {
+      disconnectCalls.push(req);
+      return {};
+    },
+  };
+
+  const bridge = createHostMcpBridge({ hostService: mockHostService });
+  const statesRes = await bridge.fetchServerStates();
+  assert.equal(statesRes.ok, true);
+  assert.equal(statesRes.states[0].serverName, 'ledger-mcp-jaeseong');
+
+  await bridge.upsertCustomServer('ledger-mcp-jaeseong', { url: 'https://ledger-mcp.jaeseong.dev/mcp' });
+  await bridge.upsertCustomServer('ssh-test-origin-jaeseong', { url: 'https://ssh-test-origin.jaeseong.dev/mcp' });
+
+  const batchRes = await bridge.applyAuthHeadersToServers(null, { Authorization: 'Bearer shared_tok_777' });
+  assert.equal(batchRes.ok, true);
+  assert.equal(batchRes.updatedCount, 2);
+
+  const cfg = (await bridge.readMcpConfig()).config;
+  assert.equal(cfg.mcpServers['ledger-mcp-jaeseong'].headers.Authorization, 'Bearer shared_tok_777');
+  assert.equal(cfg.mcpServers['ssh-test-origin-jaeseong'].headers.Authorization, 'Bearer shared_tok_777');
+
+  const oauthRes = await bridge.completeOAuth('ledger-mcp-jaeseong', 'code_abc');
+  assert.equal(oauthRes.ok, true);
+  assert.deepEqual(oauthCalls, [{ serverName: 'ledger-mcp-jaeseong', authorizationCode: 'code_abc' }]);
+
+  const discRes = await bridge.disconnectOAuth('ledger-mcp-jaeseong');
+  assert.equal(discRes.ok, true);
+  assert.deepEqual(disconnectCalls, [{ serverName: 'ledger-mcp-jaeseong', account: '' }]);
+});
+
 test('buildBundle produces valid self-contained userscript bundle without statusbar registerAdapter', () => {
   const { buildBundle } = require('../scripts/build');
   const res = buildBundle();
   assert.ok(res.size > 5000);
   assert.ok(res.bundle.includes('Antigravity Custom MCP Server Manager'));
+  assert.ok(res.bundle.includes('Edit Custom MCP Server & Authentication'));
   assert.ok(!res.bundle.includes('.registerAdapter('));
 });

@@ -299,7 +299,12 @@ function createHostMcpBridge(opts = {}) {
     if (svc && typeof svc.getMcpServerStates === 'function') {
       try {
         const res = await svc.getMcpServerStates();
-        const states = Array.isArray(res?.states) ? res.states : [];
+        const rawStates = Array.isArray(res?.states) ? res.states : [];
+        const states = rawStates.map((st) => {
+          if (!st || typeof st !== 'object') return st;
+          const resolvedName = st.serverName || st.spec?.serverName || '';
+          return st.serverName ? st : { ...st, serverName: resolvedName };
+        });
         lastKnownStates = states;
         if (!resolvedConfigUri) {
           for (const st of states) {
@@ -318,6 +323,81 @@ function createHostMcpBridge(opts = {}) {
       }
     }
     return { ok: true, states: lastKnownStates, error: null };
+  }
+
+  async function completeOAuth(serverName, authorizationCode) {
+    const svc = scanFiberTree();
+    const code = typeof authorizationCode === 'string' ? authorizationCode.trim() : '';
+    if (!serverName || !code) {
+      return { ok: false, error: 'Server name and authorization code are required.' };
+    }
+    if (!svc || typeof svc.completeMcpOAuth !== 'function') {
+      return { ok: false, error: 'Host OAuth service (completeMcpOAuth) is not available.' };
+    }
+    try {
+      await svc.completeMcpOAuth({ serverName, authorizationCode: code });
+      await refreshServers(serverName);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e?.message || `Failed to complete OAuth for "${serverName}".` };
+    }
+  }
+
+  async function disconnectOAuth(serverName, account = '') {
+    const svc = scanFiberTree();
+    if (!serverName) {
+      return { ok: false, error: 'Server name is required.' };
+    }
+    if (!svc || typeof svc.disconnectMcpOAuth !== 'function') {
+      return { ok: false, error: 'Host OAuth service (disconnectMcpOAuth) is not available.' };
+    }
+    try {
+      await svc.disconnectMcpOAuth({ serverName, account: account || '' });
+      await refreshServers(serverName);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e?.message || `Failed to disconnect OAuth for "${serverName}".` };
+    }
+  }
+
+  function openAuthUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    try {
+      if (win && typeof win.open === 'function') {
+        win.open(url, '_blank', 'noopener,noreferrer');
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  async function applyAuthHeadersToServers(serverNames, authHeaders) {
+    const { config } = await readMcpConfig();
+    const nextServers = { ...(config.mcpServers || {}) };
+    const names = Array.isArray(serverNames) && serverNames.length > 0
+      ? serverNames
+      : Object.keys(nextServers).filter((k) => Boolean(nextServers[k]?.url || nextServers[k]?.serverUrl));
+
+    let updatedCount = 0;
+    for (const name of names) {
+      const current = nextServers[name];
+      if (!current || typeof current !== 'object') continue;
+      if (current.url || current.serverUrl) {
+        const mergedHeaders = { ...(current.headers || {}), ...(authHeaders || {}) };
+        nextServers[name] = {
+          ...current,
+          headers: mergedHeaders,
+        };
+        updatedCount++;
+      }
+    }
+
+    if (updatedCount === 0) {
+      return { ok: false, error: 'No matching HTTP custom servers found to update authentication.' };
+    }
+
+    const res = await writeMcpConfig({ ...config, mcpServers: nextServers });
+    return { ...res, updatedCount };
   }
 
   async function refreshServers(serverName) {
@@ -474,6 +554,10 @@ function createHostMcpBridge(opts = {}) {
     writeMcpConfig,
     fetchServerStates,
     refreshServers,
+    completeOAuth,
+    disconnectOAuth,
+    openAuthUrl,
+    applyAuthHeadersToServers,
     toggleServerEnabled,
     upsertCustomServer,
     deleteCustomServer,

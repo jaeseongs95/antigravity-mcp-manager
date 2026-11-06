@@ -186,6 +186,180 @@ function detectTransport(spec) {
   return 'stdio';
 }
 
+function encodeBase64(str) {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(String(str), 'utf8').toString('base64');
+  }
+  if (typeof btoa === 'function') {
+    return btoa(unescape(encodeURIComponent(String(str))));
+  }
+  return String(str);
+}
+
+function decodeBase64(b64) {
+  try {
+    if (typeof Buffer !== 'undefined') {
+      return Buffer.from(String(b64), 'base64').toString('utf8');
+    }
+    if (typeof atob === 'function') {
+      return decodeURIComponent(escape(atob(String(b64))));
+    }
+  } catch {}
+  return '';
+}
+
+function extractAuthFromSpec(spec) {
+  const result = {
+    authMode: 'none', // 'none' | 'bearer' | 'apiKey' | 'basic' | 'oauth'
+    bearerToken: '',
+    apiKeyHeader: 'X-API-Key',
+    apiKeyValue: '',
+    basicUser: '',
+    basicPass: '',
+    extraHeaders: {},
+  };
+  if (!spec || typeof spec !== 'object') return result;
+
+  const rawHeaders = spec.headers && typeof spec.headers === 'object' ? { ...spec.headers } : {};
+  const entries = Object.entries(rawHeaders);
+  let matchedKey = null;
+
+  for (const [k, v] of entries) {
+    if (k.toLowerCase() === 'authorization' && typeof v === 'string') {
+      const trimmed = v.trim();
+      const bearerMatch = /^Bearer\s+(.+)$/i.exec(trimmed);
+      if (bearerMatch) {
+        result.authMode = 'bearer';
+        result.bearerToken = bearerMatch[1].trim();
+        matchedKey = k;
+        break;
+      }
+      const basicMatch = /^Basic\s+(.+)$/i.exec(trimmed);
+      if (basicMatch) {
+        const decoded = decodeBase64(basicMatch[1].trim());
+        const colonIdx = decoded.indexOf(':');
+        result.authMode = 'basic';
+        if (colonIdx !== -1) {
+          result.basicUser = decoded.slice(0, colonIdx);
+          result.basicPass = decoded.slice(colonIdx + 1);
+        } else {
+          result.basicUser = decoded;
+        }
+        matchedKey = k;
+        break;
+      }
+      result.authMode = 'apiKey';
+      result.apiKeyHeader = k;
+      result.apiKeyValue = trimmed;
+      matchedKey = k;
+      break;
+    }
+  }
+
+  if (!matchedKey) {
+    for (const [k, v] of entries) {
+      if (/^(?:x-api-key|api-key|x-auth-token|x-mcp-token|x-access-token)$/i.test(k) && typeof v === 'string') {
+        result.authMode = 'apiKey';
+        result.apiKeyHeader = k;
+        result.apiKeyValue = v.trim();
+        matchedKey = k;
+        break;
+      }
+    }
+  }
+
+  for (const [k, v] of entries) {
+    if (k !== matchedKey) {
+      result.extraHeaders[k] = String(v);
+    }
+  }
+
+  return result;
+}
+
+function buildAuthHeaders({
+  authMode,
+  bearerToken,
+  apiKeyHeader,
+  apiKeyValue,
+  basicUser,
+  basicPass,
+  baseHeaders,
+}) {
+  const headers = baseHeaders && typeof baseHeaders === 'object' ? { ...baseHeaders } : {};
+  const mode = typeof authMode === 'string' ? authMode.trim() : '';
+
+  if (!mode) {
+    return headers;
+  }
+
+  if (mode === 'none') {
+    return headers;
+  }
+
+  if (mode === 'bearer') {
+    for (const k of Object.keys(headers)) {
+      if (k.toLowerCase() === 'authorization') delete headers[k];
+    }
+    const rawToken = typeof bearerToken === 'string' ? bearerToken.trim() : '';
+    if (rawToken) {
+      const cleanToken = rawToken.replace(/^Bearer\s+/i, '').trim();
+      if (cleanToken) {
+        headers.Authorization = `Bearer ${cleanToken}`;
+      }
+    }
+    return headers;
+  }
+
+  if (mode === 'apiKey') {
+    const hdrName = (typeof apiKeyHeader === 'string' && apiKeyHeader.trim()) ? apiKeyHeader.trim() : 'X-API-Key';
+    const hdrVal = typeof apiKeyValue === 'string' ? apiKeyValue.trim() : '';
+    if (hdrVal) {
+      headers[hdrName] = hdrVal;
+    }
+    return headers;
+  }
+
+  if (mode === 'basic') {
+    for (const k of Object.keys(headers)) {
+      if (k.toLowerCase() === 'authorization') delete headers[k];
+    }
+    const u = typeof basicUser === 'string' ? basicUser : '';
+    const p = typeof basicPass === 'string' ? basicPass : '';
+    if (u || p) {
+      headers.Authorization = `Basic ${encodeBase64(`${u}:${p}`)}`;
+    }
+    return headers;
+  }
+
+  return headers;
+}
+
+function normalizeQuickAuthToken(rawAuth) {
+  if (typeof rawAuth !== 'string' || !rawAuth.trim()) return null;
+  const trimmed = rawAuth.trim();
+  if (/^Bearer\s+(.+)$/i.test(trimmed)) {
+    const tok = trimmed.replace(/^Bearer\s+/i, '').trim();
+    return tok ? { headerKey: 'Authorization', headerValue: `Bearer ${tok}`, rawToken: tok } : null;
+  }
+  if (/^Basic\s+(.+)$/i.test(trimmed)) {
+    return { headerKey: 'Authorization', headerValue: trimmed, rawToken: trimmed };
+  }
+  const colonIdx = trimmed.indexOf(':');
+  if (colonIdx > 0 && /^[a-zA-Z0-9_-]+$/.test(trimmed.slice(0, colonIdx).trim())) {
+    const key = trimmed.slice(0, colonIdx).trim();
+    const val = trimmed.slice(colonIdx + 1).trim();
+    if (val) {
+      return { headerKey: key, headerValue: val, rawToken: val };
+    }
+  }
+  return {
+    headerKey: 'Authorization',
+    headerValue: `Bearer ${trimmed}`,
+    rawToken: trimmed,
+  };
+}
+
 function sanitizeServerName(raw) {
   if (!raw || typeof raw !== 'string') return '';
   const cleaned = raw
@@ -259,7 +433,66 @@ const KNOWN_UVX_PACKAGES = new Set([
   'mcp-server-sentry',
 ]);
 
-function parseSmartMcpInput(rawInput) {
+function extractUrlAuthAndCleanUrl(rawUrlStr) {
+  try {
+    const u = new URL(rawUrlStr);
+    const extractedHeaders = {};
+    if (u.username || u.password) {
+      const user = decodeURIComponent(u.username || '');
+      const pass = decodeURIComponent(u.password || '');
+      if (user && !pass) {
+        extractedHeaders.Authorization = `Bearer ${user}`;
+      } else if (user || pass) {
+        extractedHeaders.Authorization = `Basic ${encodeBase64(`${user}:${pass}`)}`;
+      }
+      u.username = '';
+      u.password = '';
+    }
+    for (const paramName of ['bearer', 'auth_token', 'access_token']) {
+      if (u.searchParams.has(paramName)) {
+        const val = u.searchParams.get(paramName);
+        if (val && !extractedHeaders.Authorization) {
+          extractedHeaders.Authorization = `Bearer ${val}`;
+        }
+        u.searchParams.delete(paramName);
+      }
+    }
+    return { cleanUrl: u.toString(), extractedHeaders };
+  } catch {
+    return { cleanUrl: rawUrlStr, extractedHeaders: {} };
+  }
+}
+
+function applyQuickAuthToResult(res, quickAuth) {
+  if (!res || !res.ok || !quickAuth) return res;
+  if (res.multipleServers) {
+    for (const spec of Object.values(res.multipleServers)) {
+      if (spec && (spec.url || spec.serverUrl)) {
+        spec.headers = { ...(spec.headers || {}), [quickAuth.headerKey]: quickAuth.headerValue };
+      }
+    }
+  }
+  if (res.spec) {
+    if (res.spec.url || res.spec.serverUrl) {
+      res.spec.headers = {
+        ...(res.spec.headers || {}),
+        [quickAuth.headerKey]: quickAuth.headerValue,
+      };
+    } else if (res.spec.command) {
+      const env = { ...(res.spec.env || {}) };
+      const placeholderKey = Object.keys(env).find((k) => /^<.*>$/.test(String(env[k] || '').trim()));
+      if (placeholderKey) {
+        env[placeholderKey] = quickAuth.rawToken;
+      } else {
+        env.MCP_AUTH_TOKEN = quickAuth.rawToken;
+      }
+      res.spec.env = env;
+    }
+  }
+  return res;
+}
+
+function parseSmartMcpInput(rawInput, optionalAuthToken = '') {
   if (typeof rawInput !== 'string' || !rawInput.trim()) {
     return {
       ok: false,
@@ -267,6 +500,7 @@ function parseSmartMcpInput(rawInput) {
     };
   }
   const trimmed = rawInput.trim();
+  const quickAuth = normalizeQuickAuthToken(optionalAuthToken);
 
   // 1. JSON snippet (`{ "mcpServers": ... }`, `{ "my-server": { ... } }`, or `{ "url": "..." }`)
   if (trimmed.startsWith('{')) {
@@ -278,7 +512,7 @@ function parseSmartMcpInput(rawInput) {
           const url = obj.url || obj.serverUrl || '';
           const serverName = sanitizeServerName(obj.name || obj.serverName) ||
             (isHttp ? deriveServerNameFromUrl(url) : deriveServerNameFromCommandAndArgs(obj.command, obj.args));
-          return validateAndBuildServerSpec({
+          const built = validateAndBuildServerSpec({
             serverName,
             transport: isHttp ? 'http' : 'stdio',
             command: obj.command,
@@ -287,25 +521,61 @@ function parseSmartMcpInput(rawInput) {
             cwd: obj.cwd,
             url,
             headers: obj.headers,
+            bearerToken: obj.bearerToken || obj.token || '',
+            authMode: (obj.bearerToken || obj.token) ? 'bearer' : undefined,
             disabled: Boolean(obj.disabled),
           });
+          return applyQuickAuthToResult(built, quickAuth);
         }
         const norm = normalizeMcpConfigObject(obj);
         if (norm.ok && norm.config && norm.config.mcpServers) {
           const entries = Object.entries(norm.config.mcpServers);
           if (entries.length > 0) {
             const [firstName, firstSpec] = entries[0];
-            return {
+            return applyQuickAuthToResult({
               ok: true,
               serverName: firstName,
               spec: firstSpec,
               multipleServers: entries.length > 1 ? norm.config.mcpServers : null,
-            };
+            }, quickAuth);
           }
         }
       }
     } catch (e) {
       return { ok: false, error: `Invalid JSON input: ${e.message}` };
+    }
+  }
+
+  // 1b. URL accompanied by inline auth flags/tokens (e.g. `https://host/mcp Bearer xxx`, `https://host/mcp --token xxx`, `curl -H "Authorization: Bearer xxx" https://host/mcp`)
+  if (/https?:\/\/\S+/i.test(trimmed) && /\s/.test(trimmed)) {
+    const tokens = parseArgsInput(trimmed);
+    const urlToken = tokens.find((t) => /^https?:\/\/\S+$/i.test(t));
+    if (urlToken && tokens[0] !== 'npx' && tokens[0] !== 'uvx' && tokens[0] !== 'node' && tokens[0] !== 'python' && tokens[0] !== 'docker') {
+      const rest = tokens.filter((t) => t !== urlToken && t !== 'curl');
+      const inlineHeaders = {};
+      for (let i = 0; i < rest.length; i++) {
+        const tk = rest[i];
+        if ((tk === '-H' || tk === '--header') && rest[i + 1]) {
+          Object.assign(inlineHeaders, parseKeyValueInput(rest[i + 1]));
+          i++;
+        } else if ((tk === '--token' || tk === '--bearer' || /^bearer$/i.test(tk)) && rest[i + 1]) {
+          inlineHeaders.Authorization = `Bearer ${rest[i + 1].replace(/^Bearer\s+/i, '')}`;
+          i++;
+        } else if ((tk === '--api-key' || tk === '--apikey') && rest[i + 1]) {
+          inlineHeaders['X-API-Key'] = rest[i + 1];
+          i++;
+        } else if (rest.length === 1 && !tk.startsWith('-')) {
+          const parsedAuth = normalizeQuickAuthToken(tk);
+          if (parsedAuth) {
+            inlineHeaders[parsedAuth.headerKey] = parsedAuth.headerValue;
+          }
+        }
+      }
+      const baseRes = parseSmartMcpInput(urlToken, optionalAuthToken);
+      if (baseRes.ok && baseRes.spec && Object.keys(inlineHeaders).length > 0) {
+        baseRes.spec.headers = { ...(baseRes.spec.headers || {}), ...inlineHeaders };
+      }
+      return baseRes;
     }
   }
 
@@ -323,22 +593,22 @@ function parseSmartMcpInput(rawInput) {
         if (parts[0] === 'modelcontextprotocol' && parts[1] === 'servers' && srcIdx !== -1 && parts[srcIdx + 1]) {
           const subPkg = parts[srcIdx + 1];
           const pkgName = `@modelcontextprotocol/server-${subPkg}`;
-          return validateAndBuildServerSpec({
+          return applyQuickAuthToResult(validateAndBuildServerSpec({
             serverName: sanitizeServerName(subPkg) || 'mcp-server',
             transport: 'stdio',
             command: 'npx',
             args: ['-y', pkgName],
-          });
+          }), quickAuth);
         }
         if (parts.length >= 2) {
           const owner = parts[0];
           const repo = parts[1].replace(/\.git$/i, '');
-          return validateAndBuildServerSpec({
+          return applyQuickAuthToResult(validateAndBuildServerSpec({
             serverName: sanitizeServerName(repo) || sanitizeServerName(owner) || 'github-mcp',
             transport: 'stdio',
             command: 'npx',
             args: ['-y', `github:${owner}/${repo}`],
-          });
+          }), quickAuth);
         }
       }
 
@@ -346,22 +616,25 @@ function parseSmartMcpInput(rawInput) {
       if ((host === 'npmjs.com' || host === 'www.npmjs.com') && u.pathname.startsWith('/package/')) {
         const pkgName = u.pathname.slice('/package/'.length).replace(/\/+$/, '');
         if (pkgName) {
-          return validateAndBuildServerSpec({
+          return applyQuickAuthToResult(validateAndBuildServerSpec({
             serverName: deriveServerNameFromCommandAndArgs('npx', [pkgName]),
             transport: 'stdio',
             command: 'npx',
             args: ['-y', pkgName],
-          });
+          }), quickAuth);
         }
       }
 
       // 2c. Standard remote Streamable HTTP / SSE MCP server endpoint
-      const serverName = deriveServerNameFromUrl(trimmed);
-      return validateAndBuildServerSpec({
+      const { cleanUrl, extractedHeaders } = extractUrlAuthAndCleanUrl(trimmed);
+      const serverName = deriveServerNameFromUrl(cleanUrl);
+      const built = validateAndBuildServerSpec({
         serverName,
         transport: 'http',
-        url: trimmed,
+        url: cleanUrl,
+        headers: extractedHeaders,
       });
+      return applyQuickAuthToResult(built, quickAuth);
     } catch {
       return { ok: false, error: 'Invalid URL format.' };
     }
@@ -373,12 +646,12 @@ function parseSmartMcpInput(rawInput) {
     const isUvx = KNOWN_UVX_PACKAGES.has(barePkg.toLowerCase());
     const command = isUvx ? 'uvx' : 'npx';
     const args = isUvx ? [trimmed] : ['-y', trimmed];
-    return validateAndBuildServerSpec({
+    return applyQuickAuthToResult(validateAndBuildServerSpec({
       serverName: deriveServerNameFromCommandAndArgs(command, args),
       transport: 'stdio',
       command,
       args,
-    });
+    }), quickAuth);
   }
 
   // 4. Full command line (`npx -y @playwright/mcp@latest`, `uvx mcp-server-fetch`, `node server.js`, etc.)
@@ -387,12 +660,12 @@ function parseSmartMcpInput(rawInput) {
     const command = tokens[0];
     const args = tokens.slice(1);
     const serverName = deriveServerNameFromCommandAndArgs(command, args);
-    return validateAndBuildServerSpec({
+    return applyQuickAuthToResult(validateAndBuildServerSpec({
       serverName,
       transport: 'stdio',
       command,
       args,
-    });
+    }), quickAuth);
   }
 
   return { ok: false, error: 'Could not recognize MCP server address or command.' };
@@ -410,6 +683,12 @@ function validateAndBuildServerSpec({
   url,
   headers,
   headersText,
+  authMode,
+  bearerToken,
+  apiKeyHeader,
+  apiKeyValue,
+  basicUser,
+  basicPass,
   disabled,
   existingSpec,
 }) {
@@ -420,25 +699,25 @@ function validateAndBuildServerSpec({
 
   // Smart fallback: if the user pasted a URL or full command into serverName, command, or args
   if (/^https?:\/\/\S+$/i.test(cleanName) && !rawUrl) {
-    return parseSmartMcpInput(cleanName);
+    return parseSmartMcpInput(cleanName, bearerToken || apiKeyValue || '');
   }
   if (transport !== 'http' && !rawUrl) {
     if (/^https?:\/\/\S+$/i.test(rawCmd)) {
-      const smart = parseSmartMcpInput(rawCmd);
+      const smart = parseSmartMcpInput(rawCmd, bearerToken || apiKeyValue || '');
       if (smart.ok) {
         if (cleanName && /^[a-zA-Z0-9._-]+$/.test(cleanName)) smart.serverName = cleanName;
         return smart;
       }
     }
     if ((rawCmd === 'npx' || !rawCmd) && /^https?:\/\/\S+$/i.test(rawArgsStr)) {
-      const smart = parseSmartMcpInput(rawArgsStr);
+      const smart = parseSmartMcpInput(rawArgsStr, bearerToken || apiKeyValue || '');
       if (smart.ok) {
         if (cleanName && /^[a-zA-Z0-9._-]+$/.test(cleanName)) smart.serverName = cleanName;
         return smart;
       }
     }
     if (rawCmd.includes(' ') && !rawArgsStr) {
-      const smart = parseSmartMcpInput(rawCmd);
+      const smart = parseSmartMcpInput(rawCmd, bearerToken || apiKeyValue || '');
       if (smart.ok) {
         if (cleanName && /^[a-zA-Z0-9._-]+$/.test(cleanName)) smart.serverName = cleanName;
         return smart;
@@ -475,20 +754,31 @@ function validateAndBuildServerSpec({
   delete base.disabled;
 
   if (transport === 'http') {
-    const cleanUrl = typeof url === 'string' ? url.trim() : '';
-    if (!cleanUrl) {
+    const rawTrimmedUrl = typeof url === 'string' ? url.trim() : '';
+    if (!rawTrimmedUrl) {
       return { ok: false, error: 'Remote MCP Server URL is required for Streamable HTTP transport.' };
     }
-    if (!/^https?:\/\/.+/i.test(cleanUrl)) {
+    if (!/^https?:\/\/.+/i.test(rawTrimmedUrl)) {
       return { ok: false, error: 'Remote MCP Server URL must start with http:// or https://.' };
     }
-    const parsedHeaders = parseKeyValueInput(headers !== undefined ? headers : headersText);
+    const { cleanUrl, extractedHeaders } = extractUrlAuthAndCleanUrl(rawTrimmedUrl);
+    const manualHeaders = parseKeyValueInput(headers !== undefined ? headers : headersText);
+    const combinedBaseHeaders = { ...extractedHeaders, ...manualHeaders };
+    const finalHeaders = buildAuthHeaders({
+      authMode,
+      bearerToken,
+      apiKeyHeader,
+      apiKeyValue,
+      basicUser,
+      basicPass,
+      baseHeaders: combinedBaseHeaders,
+    });
     const spec = {
       ...base,
       url: cleanUrl,
     };
-    if (Object.keys(parsedHeaders).length > 0) {
-      spec.headers = parsedHeaders;
+    if (Object.keys(finalHeaders).length > 0) {
+      spec.headers = finalHeaders;
     }
     if (disabled) {
       spec.disabled = true;
@@ -502,6 +792,17 @@ function validateAndBuildServerSpec({
   }
   const parsedArgs = parseArgsInput(args !== undefined ? args : argsText);
   const parsedEnv = parseKeyValueInput(env !== undefined ? env : envText);
+  if (authMode === 'bearer' && typeof bearerToken === 'string' && bearerToken.trim()) {
+    const cleanTok = bearerToken.trim().replace(/^Bearer\s+/i, '');
+    if (cleanTok && !parsedEnv.MCP_AUTH_TOKEN) {
+      parsedEnv.MCP_AUTH_TOKEN = cleanTok;
+    }
+  } else if (authMode === 'apiKey' && typeof apiKeyValue === 'string' && apiKeyValue.trim()) {
+    const envKey = (typeof apiKeyHeader === 'string' && apiKeyHeader.trim())
+      ? apiKeyHeader.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_')
+      : 'MCP_API_KEY';
+    parsedEnv[envKey] = apiKeyValue.trim();
+  }
   const cleanCwd = typeof cwd === 'string' ? cwd.trim() : '';
 
   const spec = {
@@ -593,6 +894,9 @@ module.exports = {
   formatKeyValueForInput,
   formatKeyValueForEditor: formatKeyValueForInput,
   detectTransport,
+  extractAuthFromSpec,
+  buildAuthHeaders,
+  normalizeQuickAuthToken,
   sanitizeServerName,
   deriveServerNameFromUrl,
   deriveServerNameFromCommandAndArgs,
