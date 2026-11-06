@@ -29,12 +29,12 @@
    - 브라우저 자동 콜백은 물론, 원격 환경에서 인가 코드(Authorization Code)나 콜백 URL 전체를 직접 붙여넣어 제출하는 수동 완료(`completeMcpOAuth(serverName, code)`)도 완벽히 지원합니다.
 3. **스마트 자동 파서 (`⚡ Quick Auto-Add`)**
    - 원격 MCP URL 한 줄, `curl -H "Authorization: ..."` 명령어, `mcp_config.json` JSON 조각, 또는 로컬 `Stdio` 실행 명령어(`npx`, `uvx`, `node`, `python`, `docker`, `deno`, `bun`, `pnpx` 등 — URL 인자가 포함된 Stdio 명령 포함)를 붙여넣고 **`자동 추가 및 연결`** 또는 **`양식 자동 채우기`**를 누르면 형식을 자동으로 판별해 등록·프리필합니다.
-4. **호스트 `mcp_config.json` 영구 저장 검증 보장**
+4. **호스트 `mcp_config.json` 영구 저장을 검증하여 보장**
    - 기존 등록된 서버가 0개인 초기 설치 환경에서도 React Fiber `selectedGeminiDir`, `GetLocalUserInfo`(`homeDirUri`), `GetCustomizationStates` 폴백을 통해 `~/.gemini/antigravity/mcp_config.json` 경로를 정확히 찾아 기록하며, 호스트 파일 쓰기 실패 시 거짓 성공을 반환하지 않고 정확한 오류 배너를 표시합니다.
 5. **영어(English) 기본 UI + `ko-thought-translator` 한글 번역 패치 자동 연동**
    - 기본 UI는 깔끔한 영어로 제공되며, `ko-thought-translator` 한글 패치가 활성화되어 있으면 모든 버튼·모달·배너가 자연스러운 한국어로 자동 변환됩니다.
 6. **단독 설치(1개) 및 다중 설치(2~3개) 완벽 호환**
-   - 자체 패처(`scripts/ensure_statusbar_patch.js`)를 내장하여 `antigravity-mcp-manager` 단독 설치 시에도 데스크톱 앱과 원격 웹에서 독립 작동하며, `antigravity-statusbar` 및 `ko-thought-translator`와 함께 설치된 경우에도 충돌 없이 결합됩니다.
+   - 자체 패처(`scripts/ensure_statusbar_patch.js`)를 내장하여 `antigravity-mcp-manager` 단독 설치 시에도 데스크톱 앱과 원격 웹에서 독립적으로 작동하며, `antigravity-statusbar` 및 `ko-thought-translator`와 함께 설치된 경우에도 충돌 없이 결합됩니다.
 
 ---
 
