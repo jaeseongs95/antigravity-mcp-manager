@@ -4,7 +4,7 @@ const schema = require('./mcp-config-schema');
 const { createHostMcpBridge } = require('./host-mcp-bridge');
 const { ensureModalStyles, createModalController } = require('./modal-ui');
 
-const MCP_MANAGER_VERSION = 'v1.2.0';
+const MCP_MANAGER_VERSION = 'v1.3.0';
 const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
 function extractServerNameFromRow(row) {
@@ -86,7 +86,145 @@ function mountMcpManager(env = {}) {
     bridge,
   });
 
-  // Inject "+ Custom MCP Server", "⚙️ Edit Settings", and "🔑 Authenticate" controls strictly into Antigravity's native Customizations / MCP views
+  async function handleServerAuthenticateAction(serverName) {
+    if (!serverName) {
+      modal.openEditPopup('', { focusAuth: true });
+      return;
+    }
+    try {
+      const states = await bridge.getMcpServerStates();
+      const matched = (states || []).find((s) => s && s.serverName === serverName);
+      if (matched && matched.authUrl) {
+        modal.openOAuthConnectModal(serverName, matched.authUrl);
+        return;
+      }
+    } catch (_e) {
+      // fallback to edit popup
+    }
+    modal.openEditPopup(serverName, { focusAuth: true });
+  }
+
+  // Inject "MCP 서버" sidebar tab inside Antigravity's native Settings modal (.settings-modal-container), right below "한글 번역" (or "모델")
+  function ensureNativeSettingsModalIntegration() {
+    if (!doc.body) return;
+    const settingsModal = doc.querySelector('.settings-modal-container');
+    if (!settingsModal) return;
+
+    const modelsNavBtn = settingsModal.querySelector('button[data-testid="settings-nav-item-Models"]');
+    if (!modelsNavBtn) return;
+
+    const navGroup = modelsNavBtn.closest('.flex.flex-col.gap-0\\.5') || modelsNavBtn.parentElement;
+    if (!navGroup) return;
+
+    let mcpNavBtn = navGroup.querySelector('button[data-testid="settings-nav-item-McpManager"]');
+    const koNavBtn = navGroup.querySelector('button[data-testid="settings-nav-item-KoTranslator"]');
+
+    if (!mcpNavBtn) {
+      mcpNavBtn = doc.createElement('button');
+      mcpNavBtn.type = 'button';
+      mcpNavBtn.setAttribute('data-testid', 'settings-nav-item-McpManager');
+      mcpNavBtn.setAttribute(NATIVE_BTN_ATTR, 'settings-nav-item');
+      mcpNavBtn.className =
+        'flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-sm cursor-pointer transition-colors text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-secondary/50';
+      const labelSpan = doc.createElement('span');
+      labelSpan.className = 'truncate';
+      labelSpan.textContent = 'MCP 서버';
+      mcpNavBtn.appendChild(labelSpan);
+
+      if (koNavBtn && koNavBtn.nextSibling) {
+        navGroup.insertBefore(mcpNavBtn, koNavBtn.nextSibling);
+      } else {
+        navGroup.appendChild(mcpNavBtn);
+      }
+
+      mcpNavBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        // Update sidebar active state across all buttons in navGroup
+        navGroup.querySelectorAll('button').forEach((b) => {
+          b.className =
+            'flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-sm cursor-pointer transition-colors text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-secondary/50';
+        });
+        mcpNavBtn.className =
+          'flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-sm cursor-pointer transition-colors bg-sidebar-secondary text-sidebar-foreground font-medium';
+
+        const contentContainer = settingsModal.querySelector('.grow.w-full');
+        if (!contentContainer) return;
+
+        // Hide other panes (including native settings content and #agy-ko-settings-pane)
+        Array.from(contentContainer.children).forEach((child) => {
+          if (child.id !== 'agy-mcp-settings-pane') {
+            if (child.id !== 'agy-ko-settings-pane' && !child.hasAttribute('data-agy-mcp-prev-display')) {
+              child.setAttribute('data-agy-mcp-prev-display', child.style.display || '');
+            }
+            child.style.display = 'none';
+          }
+        });
+
+        let pane = contentContainer.querySelector('#agy-mcp-settings-pane');
+        if (!pane) {
+          pane = doc.createElement('div');
+          pane.id = 'agy-mcp-settings-pane';
+          pane.setAttribute(NATIVE_BTN_ATTR, 'settings-pane');
+          pane.className = 'w-full h-full overflow-y-auto px-6 py-5 select-none';
+          contentContainer.appendChild(pane);
+        }
+        pane.style.display = 'block';
+        modal.renderSettingsPageContent(pane);
+      });
+    } else if (koNavBtn && koNavBtn.nextElementSibling !== mcpNavBtn) {
+      // Keep "MCP 서버" neatly positioned right after "한글 번역" if both exist
+      if (koNavBtn.nextSibling) {
+        navGroup.insertBefore(mcpNavBtn, koNavBtn.nextSibling);
+      } else {
+        navGroup.appendChild(mcpNavBtn);
+      }
+    }
+
+    if (!settingsModal.hasAttribute('data-agy-mcp-nav-bound')) {
+      settingsModal.setAttribute('data-agy-mcp-nav-bound', 'true');
+      settingsModal.addEventListener(
+        'click',
+        (e) => {
+          const btn = e.target && typeof e.target.closest === 'function'
+            ? e.target.closest('button[data-testid^="settings-nav-item-"]')
+            : null;
+          if (!btn) return;
+          const testId = btn.getAttribute('data-testid') || '';
+          if (testId === 'settings-nav-item-McpManager') return;
+
+          const contentContainer = settingsModal.querySelector('.grow.w-full');
+          if (!contentContainer) return;
+
+          const pane = contentContainer.querySelector('#agy-mcp-settings-pane');
+          const wasMcpPaneVisible = Boolean(pane && pane.style.display !== 'none');
+          if (pane) {
+            pane.style.display = 'none';
+          }
+
+          if (mcpNavBtn) {
+            mcpNavBtn.className =
+              'flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-sm cursor-pointer transition-colors text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-secondary/50';
+          }
+
+          // Restore native children only if switching from MCP pane to a native tab (not KoTranslator)
+          if (wasMcpPaneVisible && testId !== 'settings-nav-item-KoTranslator') {
+            Array.from(contentContainer.children).forEach((child) => {
+              if (child.id !== 'agy-mcp-settings-pane' && child.id !== 'agy-ko-settings-pane') {
+                const prev = child.getAttribute('data-agy-mcp-prev-display');
+                child.style.display = prev !== null ? prev : '';
+                child.removeAttribute('data-agy-mcp-prev-display');
+              }
+            });
+          }
+        },
+        true
+      );
+    }
+  }
+
+  // Inject "+ Custom MCP Server", "⚙️ Edit Settings", and "🔗 OAuth / Auth" controls strictly into Antigravity's native Customizations / MCP views
   function buildQuickActionToolbar() {
     const wrap = doc.createElement('div');
     wrap.setAttribute(NATIVE_BTN_ATTR, 'empty-mcp-note');
@@ -102,7 +240,7 @@ function mountMcpManager(env = {}) {
     addCustomBtn.type = 'button';
     addCustomBtn.className = 'agy-mcp-injected-native-btn';
     addCustomBtn.style.marginLeft = '0';
-    addCustomBtn.textContent = '+ Add Custom MCP Server';
+    addCustomBtn.textContent = '+ 사용자 지정 MCP 서버 추가';
     addCustomBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -113,7 +251,7 @@ function mountMcpManager(env = {}) {
     editCustomBtn.type = 'button';
     editCustomBtn.className = 'agy-mcp-btn';
     editCustomBtn.setAttribute(NATIVE_BTN_ATTR, 'toolbar-edit-popup-btn');
-    editCustomBtn.textContent = '⚙️ Edit Custom MCP Settings';
+    editCustomBtn.textContent = '⚙️ 커스텀 MCP 설정 수정';
     editCustomBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -124,7 +262,7 @@ function mountMcpManager(env = {}) {
     authCustomBtn.type = 'button';
     authCustomBtn.className = 'agy-mcp-btn auth';
     authCustomBtn.setAttribute(NATIVE_BTN_ATTR, 'toolbar-auth-popup-btn');
-    authCustomBtn.textContent = '🔑 MCP Auth Settings';
+    authCustomBtn.textContent = '🔗 OAuth / 인증 설정';
     authCustomBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -134,7 +272,7 @@ function mountMcpManager(env = {}) {
     const rawBtn = doc.createElement('button');
     rawBtn.type = 'button';
     rawBtn.className = 'agy-mcp-btn';
-    rawBtn.textContent = '{ } Edit mcp_config.json';
+    rawBtn.textContent = '{ } mcp_config.json 편집';
     rawBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -151,6 +289,9 @@ function mountMcpManager(env = {}) {
   function injectIntoNativeMcpScreens() {
     if (!doc.body) return;
 
+    // 0) Native Settings Modal ("한글 번역" 아래 "MCP 서버" 탭)
+    ensureNativeSettingsModalIntegration();
+
     // A) Next to native [data-testid="add-mcp-button"] in Customizations -> MCP Servers header
     const addMcpBtns = doc.querySelectorAll('[data-testid="add-mcp-button"]');
     addMcpBtns.forEach((nativeBtn) => {
@@ -161,7 +302,7 @@ function mountMcpManager(env = {}) {
         customBtn.type = 'button';
         customBtn.className = 'agy-mcp-injected-native-btn';
         customBtn.setAttribute(NATIVE_BTN_ATTR, 'beside-add-btn');
-        customBtn.textContent = '+ Custom MCP';
+        customBtn.textContent = '+ 커스텀 MCP';
         customBtn.title = 'Add or manage custom MCP servers in ~/.gemini/config/mcp_config.json';
         customBtn.addEventListener('click', (e) => {
           e.preventDefault();
@@ -176,8 +317,8 @@ function mountMcpManager(env = {}) {
         editBtn.className = 'agy-mcp-btn';
         editBtn.style.marginLeft = '6px';
         editBtn.setAttribute(NATIVE_BTN_ATTR, 'beside-edit-btn');
-        editBtn.textContent = '⚙️ Edit Custom MCP';
-        editBtn.title = 'Edit custom MCP server settings & authentication';
+        editBtn.textContent = '⚙️ 설정 수정';
+        editBtn.title = 'Edit custom MCP server settings & OAuth authentication';
         editBtn.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -209,7 +350,7 @@ function mountMcpManager(env = {}) {
       banner.style.fontSize = '12px';
 
       const desc = doc.createElement('span');
-      desc.textContent = 'Custom Stdio (npx / uvx / node / python) or HTTP MCP server:';
+      desc.textContent = '사용자 지정 MCP 서버 (OAuth 서버 URL 또는 로컬/터널 Stdio):';
 
       const btnGroup = doc.createElement('div');
       btnGroup.style.display = 'flex';
@@ -220,7 +361,7 @@ function mountMcpManager(env = {}) {
       openEditorBtn.type = 'button';
       openEditorBtn.className = 'agy-mcp-injected-native-btn';
       openEditorBtn.style.marginLeft = '0';
-      openEditorBtn.textContent = '+ Add Custom MCP Server';
+      openEditorBtn.textContent = '+ 사용자 지정 MCP 서버 추가';
       openEditorBtn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -230,7 +371,7 @@ function mountMcpManager(env = {}) {
       const editAuthBtn = doc.createElement('button');
       editAuthBtn.type = 'button';
       editAuthBtn.className = 'agy-mcp-btn';
-      editAuthBtn.textContent = '⚙️ Edit Custom MCP Settings';
+      editAuthBtn.textContent = '⚙️ 커스텀 MCP 설정 수정';
       editAuthBtn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -240,7 +381,7 @@ function mountMcpManager(env = {}) {
       const manageBtn = doc.createElement('button');
       manageBtn.type = 'button';
       manageBtn.className = 'agy-mcp-btn';
-      manageBtn.textContent = 'Manage Custom Servers';
+      manageBtn.textContent = '서버 목록 관리';
       manageBtn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -285,7 +426,7 @@ function mountMcpManager(env = {}) {
       }
     }
 
-    // D) Inside each native [data-testid="mcp-server-row"] item: inject "⚙️ Edit Settings" and "🔑 Authenticate" buttons
+    // D) Inside each native [data-testid="mcp-server-row"] item: inject "⚙️ 설정 수정" and "🔗 인증 / 연결" buttons
     const rows = doc.querySelectorAll('[data-testid="mcp-server-row"]');
     rows.forEach((row) => {
       const serverName = extractServerNameFromRow(row);
@@ -300,8 +441,8 @@ function mountMcpManager(env = {}) {
         editRowBtn.className = 'agy-mcp-inline-row-btn';
         editRowBtn.setAttribute(NATIVE_BTN_ATTR, 'row-edit-btn');
         editRowBtn.setAttribute('data-mcp-server', serverName);
-        editRowBtn.textContent = '⚙️ Edit Settings';
-        editRowBtn.title = `Edit settings & authentication for "${serverName}"`;
+        editRowBtn.textContent = '⚙️ 설정 수정';
+        editRowBtn.title = `"${serverName}" 서버 설정 및 OAuth 인증 방식 수정`;
         editRowBtn.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -313,12 +454,12 @@ function mountMcpManager(env = {}) {
         authRowBtn.className = 'agy-mcp-inline-row-btn auth';
         authRowBtn.setAttribute(NATIVE_BTN_ATTR, 'row-auth-btn');
         authRowBtn.setAttribute('data-mcp-server', serverName);
-        authRowBtn.textContent = '🔑 Authenticate';
-        authRowBtn.title = `Configure Bearer token, API Key, or OAuth for "${serverName}"`;
+        authRowBtn.textContent = '🔗 OAuth 연결 / 인증';
+        authRowBtn.title = `"${serverName}" OAuth 연결 창 열기 또는 인증 설정`;
         authRowBtn.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
-          modal.openEditPopup(serverName, { focusAuth: true });
+          handleServerAuthenticateAction(serverName);
         });
 
         leftGroup.appendChild(editRowBtn);
@@ -339,12 +480,12 @@ function mountMcpManager(env = {}) {
         fixAuthBtn.className = 'agy-mcp-inline-row-btn auth';
         fixAuthBtn.setAttribute(NATIVE_BTN_ATTR, 'fix-auth-btn');
         fixAuthBtn.setAttribute('data-mcp-server', serverName);
-        fixAuthBtn.textContent = '🔑 Authenticate';
-        fixAuthBtn.title = `Configure authentication for "${serverName}"`;
+        fixAuthBtn.textContent = '🔗 OAuth 연결 / 인증';
+        fixAuthBtn.title = `"${serverName}" OAuth 연결 또는 인증 방식 설정`;
         fixAuthBtn.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
-          modal.openEditPopup(serverName, { focusAuth: true });
+          handleServerAuthenticateAction(serverName);
         });
 
         const fixEditBtn = doc.createElement('button');
@@ -352,8 +493,8 @@ function mountMcpManager(env = {}) {
         fixEditBtn.className = 'agy-mcp-inline-row-btn';
         fixEditBtn.setAttribute(NATIVE_BTN_ATTR, 'fix-edit-btn');
         fixEditBtn.setAttribute('data-mcp-server', serverName);
-        fixEditBtn.textContent = '⚙️ Edit Settings';
-        fixEditBtn.title = `Edit settings for "${serverName}"`;
+        fixEditBtn.textContent = '⚙️ 설정 수정';
+        fixEditBtn.title = `"${serverName}" 설정 수정`;
         fixEditBtn.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -381,6 +522,10 @@ function mountMcpManager(env = {}) {
   function onKeyDown(e) {
     if (!e) return;
     if (e.key === 'Escape') {
+      if (modal.isOAuthConnectModalOpen()) {
+        modal.closeOAuthConnectModal();
+        return;
+      }
       if (modal.isEditPopupOpen()) {
         modal.closeEditPopup();
         return;
@@ -409,6 +554,10 @@ function mountMcpManager(env = {}) {
     openEditPopup: (serverName, options) => modal.openEditPopup(serverName, options),
     closeEditPopup: () => modal.closeEditPopup(),
     isEditPopupOpen: () => modal.isEditPopupOpen(),
+    openOAuthConnectModal: (serverName, authUrl, options) => modal.openOAuthConnectModal(serverName, authUrl, options),
+    closeOAuthConnectModal: () => modal.closeOAuthConnectModal(),
+    isOAuthConnectModalOpen: () => modal.isOAuthConnectModalOpen(),
+    renderSettingsPageContent: (container) => modal.renderSettingsPageContent(container),
     reload: () => modal.reloadData(),
     bridge,
     schema,
@@ -418,6 +567,7 @@ function mountMcpManager(env = {}) {
         observer = null;
       }
       win.removeEventListener('keydown', onKeyDown);
+      modal.closeOAuthConnectModal();
       modal.closeEditPopup();
       modal.closeModal();
       cleanupLegacyStatusBarArtifacts(win, doc);

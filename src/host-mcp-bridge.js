@@ -371,6 +371,28 @@ function createHostMcpBridge(opts = {}) {
     return false;
   }
 
+  async function waitForServerOAuthOrReady(serverName, timeoutMs = 3500) {
+    if (!serverName) return null;
+    const deadline = Date.now() + Math.max(200, Number(timeoutMs) || 3500);
+    let latestState = null;
+    while (Date.now() <= deadline) {
+      const res = await fetchServerStates();
+      const states = Array.isArray(res?.states) ? res.states : [];
+      const found = states.find(
+        (st) => st && (st.serverName === serverName || st.spec?.serverName === serverName)
+      );
+      if (found) {
+        latestState = found;
+        if (found.authUrl || found.hasAuthToken || found.status === 2 || (found.status === 3 && found.error)) {
+          return found;
+        }
+      }
+      if (Date.now() + 280 > deadline) break;
+      await new Promise((r) => setTimeout(r, 280));
+    }
+    return latestState;
+  }
+
   async function applyAuthHeadersToServers(serverNames, authHeaders) {
     const { config } = await readMcpConfig();
     const nextServers = { ...(config.mcpServers || {}) };
@@ -557,6 +579,7 @@ function createHostMcpBridge(opts = {}) {
     completeOAuth,
     disconnectOAuth,
     openAuthUrl,
+    waitForServerOAuthOrReady,
     applyAuthHeadersToServers,
     toggleServerEnabled,
     upsertCustomServer,

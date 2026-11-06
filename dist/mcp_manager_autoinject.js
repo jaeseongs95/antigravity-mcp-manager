@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Antigravity Custom MCP Server Manager
 // @namespace    https://github.com/jaeseongs95/antigravity-mcp-manager
-// @version      1.1.0
+// @version      1.3.0
 // @description  Add, edit, toggle, and manage custom Stdio & HTTP MCP servers (mcp_config.json) directly inside the Antigravity 2.0 native app.
 // @match        https://antigravity.google.com/*
 // @match        https://*.antigravity.google.com/*
@@ -225,8 +225,13 @@
     }
 
     function extractAuthFromSpec(spec) {
+      const isHttp = Boolean(spec && typeof spec === 'object' && (spec.url || spec.serverUrl || spec.type === 'http'));
       const result = {
-        authMode: 'none', // 'none' | 'bearer' | 'apiKey' | 'basic' | 'oauth'
+        authMode: isHttp ? 'oauth' : 'none', // 'oauth' | 'none' | 'oauth_or_none' | 'bearer' | 'apiKey' | 'basic'
+        oauthClientMode: 'auto', // 'auto' | 'custom'
+        oauthClientId: '',
+        oauthClientSecret: '',
+        oauthScopes: '',
         bearerToken: '',
         apiKeyHeader: 'X-API-Key',
         apiKeyValue: '',
@@ -235,6 +240,22 @@
         extraHeaders: {},
       };
       if (!spec || typeof spec !== 'object') return result;
+
+      if (spec.oauth && typeof spec.oauth === 'object') {
+        result.authMode = 'oauth';
+        result.oauthClientId = typeof spec.oauth.clientId === 'string' ? spec.oauth.clientId : '';
+        result.oauthClientSecret = typeof spec.oauth.clientSecret === 'string' ? spec.oauth.clientSecret : '';
+        result.oauthScopes = Array.isArray(spec.oauth.scopes)
+          ? spec.oauth.scopes.join(' ')
+          : (typeof spec.oauth.scopes === 'string' ? spec.oauth.scopes : '');
+        if (result.oauthClientId || result.oauthClientSecret) {
+          result.oauthClientMode = 'custom';
+        }
+      }
+
+      if (spec.authMode === 'none' || spec.authMode === 'oauth' || spec.authMode === 'oauth_or_none') {
+        result.authMode = spec.authMode;
+      }
 
       const rawHeaders = spec.headers && typeof spec.headers === 'object' ? { ...spec.headers } : {};
       const entries = Object.entries(rawHeaders);
@@ -309,7 +330,10 @@
         return headers;
       }
 
-      if (mode === 'none') {
+      if (mode === 'none' || mode === 'oauth' || mode === 'oauth_or_none') {
+        for (const k of Object.keys(headers)) {
+          if (k.toLowerCase() === 'authorization') delete headers[k];
+        }
         return headers;
       }
 
@@ -689,6 +713,7 @@
 
     function validateAndBuildServerSpec({
       serverName,
+      description,
       transport,
       command,
       args,
@@ -700,6 +725,11 @@
       headers,
       headersText,
       authMode,
+      oauth,
+      oauthClientMode,
+      oauthClientId,
+      oauthClientSecret,
+      oauthScopes,
       bearerToken,
       apiKeyHeader,
       apiKeyValue,
@@ -767,7 +797,12 @@
       delete base.url;
       delete base.serverUrl;
       delete base.headers;
+      delete base.oauth;
+      delete base.authMode;
+      delete base.description;
       delete base.disabled;
+
+      const cleanDesc = typeof description === 'string' ? description.trim() : '';
 
       if (transport === 'http') {
         const rawTrimmedUrl = typeof url === 'string' ? url.trim() : '';
@@ -793,8 +828,23 @@
           ...base,
           url: cleanUrl,
         };
+        if (cleanDesc) {
+          spec.description = cleanDesc;
+        }
         if (Object.keys(finalHeaders).length > 0) {
           spec.headers = finalHeaders;
+        }
+        const cId = typeof oauthClientId === 'string' ? oauthClientId.trim() : (typeof oauth?.clientId === 'string' ? oauth.clientId.trim() : '');
+        const cSec = typeof oauthClientSecret === 'string' ? oauthClientSecret.trim() : (typeof oauth?.clientSecret === 'string' ? oauth.clientSecret.trim() : '');
+        const cScopes = typeof oauthScopes === 'string' ? oauthScopes.trim() : '';
+        if ((authMode === 'oauth' || authMode === 'oauth_or_none' || !authMode) && (oauthClientMode === 'custom' || cId || cSec)) {
+          const oauthObj = {};
+          if (cId) oauthObj.clientId = cId;
+          if (cSec) oauthObj.clientSecret = cSec;
+          if (cScopes) oauthObj.scopes = cScopes.split(/[\s,]+/).filter(Boolean);
+          if (Object.keys(oauthObj).length > 0) {
+            spec.oauth = oauthObj;
+          }
         }
         if (disabled) {
           spec.disabled = true;
@@ -1297,6 +1347,28 @@
         return false;
       }
 
+      async function waitForServerOAuthOrReady(serverName, timeoutMs = 3500) {
+        if (!serverName) return null;
+        const deadline = Date.now() + Math.max(200, Number(timeoutMs) || 3500);
+        let latestState = null;
+        while (Date.now() <= deadline) {
+          const res = await fetchServerStates();
+          const states = Array.isArray(res?.states) ? res.states : [];
+          const found = states.find(
+            (st) => st && (st.serverName === serverName || st.spec?.serverName === serverName)
+          );
+          if (found) {
+            latestState = found;
+            if (found.authUrl || found.hasAuthToken || found.status === 2 || (found.status === 3 && found.error)) {
+              return found;
+            }
+          }
+          if (Date.now() + 280 > deadline) break;
+          await new Promise((r) => setTimeout(r, 280));
+        }
+        return latestState;
+      }
+
       async function applyAuthHeadersToServers(serverNames, authHeaders) {
         const { config } = await readMcpConfig();
         const nextServers = { ...(config.mcpServers || {}) };
@@ -1483,6 +1555,7 @@
         completeOAuth,
         disconnectOAuth,
         openAuthUrl,
+        waitForServerOAuthOrReady,
         applyAuthHeadersToServers,
         toggleServerEnabled,
         upsertCustomServer,
@@ -1520,21 +1593,26 @@
 
     const MODAL_ID = 'agy-mcp-manager-modal-backdrop';
     const EDIT_POPUP_ID = 'agy-mcp-edit-popup-backdrop';
+    const OAUTH_MODAL_ID = 'agy-mcp-oauth-connect-backdrop';
     const STYLE_ID = 'agy-mcp-manager-styles';
 
     function isAuthErrorText(errText) {
       if (!errText || typeof errText !== 'string') return false;
-      return /unauthorized|401|403|forbidden|authentication|unauthenticated|invalid[_\s-]?token|missing.*authorization|bearer|api[_\s-]?key/i.test(
+      return /unauthorized|401|403|forbidden|authentication|unauthenticated|invalid[_\s-]?token|missing.*authorization|bearer|api[_\s-]?key|oauth/i.test(
         errText
       );
     }
 
     function ensureModalStyles(doc) {
-      if (!doc || doc.getElementById(STYLE_ID)) return;
-      const style = doc.createElement('style');
-      style.id = STYLE_ID;
+      if (!doc || !doc.head) return;
+      let style = doc.getElementById(STYLE_ID);
+      if (!style) {
+        style = doc.createElement('style');
+        style.id = STYLE_ID;
+        doc.head.appendChild(style);
+      }
       style.textContent = `
-        #${MODAL_ID}, #${EDIT_POPUP_ID} {
+        #${MODAL_ID}, #${EDIT_POPUP_ID}, #${OAUTH_MODAL_ID} {
           position: fixed;
           inset: 0;
           z-index: 2147483645;
@@ -1551,24 +1629,118 @@
         #${EDIT_POPUP_ID} {
           z-index: 2147483646;
         }
-        #${MODAL_ID} *, #${EDIT_POPUP_ID} * {
+        #${OAUTH_MODAL_ID} {
+          z-index: 2147483647;
+        }
+        #${MODAL_ID} *, #${EDIT_POPUP_ID} *, #${OAUTH_MODAL_ID} *, #agy-mcp-settings-pane * {
           box-sizing: border-box;
         }
         .agy-mcp-dialog {
           width: min(860px, 96vw);
-          max-height: min(780px, 92vh);
+          max-height: min(800px, 92vh);
           background: #161821;
           border: 1px solid #2c3144;
-          border-radius: 12px;
+          border-radius: 14px;
           box-shadow: 0 22px 60px rgba(0, 0, 0, 0.65);
           display: flex;
           flex-direction: column;
           overflow: hidden;
         }
         .agy-mcp-dialog.popup {
-          width: min(680px, 95vw);
-          max-height: min(740px, 90vh);
+          width: min(640px, 95vw);
+          max-height: min(780px, 92vh);
           border-color: #3b425e;
+        }
+        .agy-mcp-dialog.oauth-connect {
+          width: min(440px, 94vw);
+          background: #181a24;
+          border: 1px solid #32384e;
+          border-radius: 20px;
+          padding: 26px 24px 22px 24px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          text-align: center;
+          gap: 14px;
+          position: relative;
+        }
+        .agy-mcp-oauth-icons {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 12px;
+          margin-top: 4px;
+        }
+        .agy-mcp-oauth-icon-box {
+          width: 52px;
+          height: 52px;
+          border-radius: 14px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 24px;
+          font-weight: 700;
+          background: #232738;
+          border: 1px solid #383f58;
+          color: #f8fafc;
+          box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+        }
+        .agy-mcp-oauth-icon-box.brand {
+          background: linear-gradient(135deg, #4f46e5, #3730a3);
+          border-color: #6366f1;
+        }
+        .agy-mcp-oauth-dots {
+          color: #64748b;
+          font-size: 18px;
+          letter-spacing: 2px;
+          font-weight: 700;
+        }
+        .agy-mcp-oauth-title {
+          font-size: 20px;
+          font-weight: 700;
+          color: #f8fafc;
+          margin: 2px 0 0 0;
+        }
+        .agy-mcp-oauth-desc {
+          font-size: 12.5px;
+          line-height: 1.55;
+          color: #94a3b8;
+          text-align: left;
+          background: rgba(255, 255, 255, 0.025);
+          border: 1px solid rgba(148, 163, 184, 0.14);
+          border-radius: 10px;
+          padding: 12px 14px;
+          width: 100%;
+        }
+        .agy-mcp-oauth-full-btn {
+          width: 100%;
+          padding: 11px 16px;
+          border-radius: 999px;
+          font-size: 13.5px;
+          font-weight: 600;
+          cursor: pointer;
+          border: 1px solid transparent;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+          transition: all 0.14s ease;
+        }
+        .agy-mcp-oauth-full-btn.launch {
+          background: #4f46e5;
+          border-color: #6366f1;
+          color: #ffffff;
+        }
+        .agy-mcp-oauth-full-btn.launch:hover {
+          background: #4338ca;
+        }
+        .agy-mcp-oauth-full-btn.cancel {
+          background: #25293a;
+          border-color: #383f58;
+          color: #e2e8f0;
+        }
+        .agy-mcp-oauth-full-btn.cancel:hover {
+          background: #2f354a;
         }
         .agy-mcp-header {
           display: flex;
@@ -1642,9 +1814,6 @@
           background: #272c3f;
           border-color: #3b425e;
         }
-        .agy-mcp-tab-spacer {
-          flex: 1;
-        }
         .agy-mcp-status-banner {
           padding: 8px 18px;
           font-size: 12px;
@@ -1678,7 +1847,7 @@
           background: #262b3d;
           color: #e4e7ef;
           border: 1px solid #383f58;
-          border-radius: 6px;
+          border-radius: 7px;
           padding: 6px 11px;
           font-size: 12px;
           font-weight: 500;
@@ -1710,7 +1879,7 @@
         .agy-mcp-card {
           background: #1d202d;
           border: 1px solid #2b3042;
-          border-radius: 8px;
+          border-radius: 10px;
           padding: 12px 14px;
           display: flex;
           flex-direction: column;
@@ -1777,7 +1946,7 @@
           color: #9aa2b8;
           background: #141722;
           padding: 5px 8px;
-          border-radius: 5px;
+          border-radius: 6px;
           border: 1px solid #232838;
           word-break: break-all;
         }
@@ -1816,32 +1985,87 @@
           grid-column: 1 / -1;
         }
         .agy-mcp-label {
-          font-size: 12px;
-          font-weight: 500;
-          color: #cbd5e1;
+          font-size: 12.5px;
+          font-weight: 600;
+          color: #e2e8f0;
         }
         .agy-mcp-hint {
-          font-size: 11px;
-          color: #828ca6;
+          font-size: 11.5px;
+          color: #8b95b0;
+          line-height: 1.45;
         }
         .agy-mcp-input, .agy-mcp-textarea, .agy-mcp-select {
           width: 100%;
           background: #12151f;
           border: 1px solid #2d3348;
-          border-radius: 6px;
-          padding: 7px 10px;
+          border-radius: 8px;
+          padding: 8px 11px;
           color: #f1f5f9;
           font-size: 12.5px;
           font-family: inherit;
         }
         .agy-mcp-textarea {
           font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-          min-height: 74px;
+          min-height: 70px;
           resize: vertical;
         }
         .agy-mcp-input:focus, .agy-mcp-textarea:focus, .agy-mcp-select:focus {
           outline: none;
           border-color: #6366f1;
+        }
+        .agy-mcp-segmented {
+          display: inline-flex;
+          align-items: center;
+          background: #11141d;
+          border: 1px solid #2b3147;
+          border-radius: 999px;
+          padding: 2px;
+          gap: 2px;
+        }
+        .agy-mcp-seg-btn {
+          background: transparent;
+          border: none;
+          color: #94a3b8;
+          font-size: 11.5px;
+          font-weight: 600;
+          padding: 4px 12px;
+          border-radius: 999px;
+          cursor: pointer;
+          transition: all 0.12s ease;
+        }
+        .agy-mcp-seg-btn.active {
+          background: #272d42;
+          color: #f8fafc;
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+        }
+        .agy-mcp-adv-oauth-card {
+          background: #191d2b;
+          border: 1px solid #2d344d;
+          border-radius: 10px;
+          padding: 12px 14px;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+        .agy-mcp-adv-oauth-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          cursor: pointer;
+          user-select: none;
+        }
+        .agy-mcp-risk-notice {
+          background: rgba(245, 158, 11, 0.08);
+          border: 1px solid rgba(245, 158, 11, 0.28);
+          border-radius: 10px;
+          padding: 10px 13px;
+          font-size: 11.5px;
+          color: #fcd34d;
+          display: flex;
+          align-items: flex-start;
+          gap: 8px;
+          line-height: 1.45;
         }
         .agy-mcp-templates-bar {
           display: flex;
@@ -1879,13 +2103,13 @@
           background: #4338ca;
         }
         .agy-mcp-btn.auth {
-          background: rgba(245, 158, 11, 0.16);
-          border-color: rgba(245, 158, 11, 0.45);
-          color: #fde68a;
+          background: rgba(99, 102, 241, 0.18);
+          border-color: rgba(99, 102, 241, 0.48);
+          color: #c7d2fe;
         }
         .agy-mcp-btn.auth:hover {
-          background: rgba(245, 158, 11, 0.28);
-          border-color: rgba(245, 158, 11, 0.65);
+          background: rgba(99, 102, 241, 0.3);
+          border-color: rgba(99, 102, 241, 0.7);
         }
         .agy-mcp-inline-row-btn {
           background: #252a3d;
@@ -1909,25 +2133,24 @@
           color: #ffffff;
         }
         .agy-mcp-inline-row-btn.auth {
-          background: rgba(245, 158, 11, 0.16);
-          border-color: rgba(245, 158, 11, 0.45);
-          color: #fde68a;
+          background: rgba(99, 102, 241, 0.18);
+          border-color: rgba(99, 102, 241, 0.48);
+          color: #c7d2fe;
         }
         .agy-mcp-inline-row-btn.auth:hover {
-          background: rgba(245, 158, 11, 0.28);
-          border-color: rgba(245, 158, 11, 0.7);
+          background: rgba(99, 102, 241, 0.32);
+          border-color: rgba(99, 102, 241, 0.75);
         }
         .agy-mcp-auth-box {
-          background: rgba(99, 102, 241, 0.07);
-          border: 1px solid rgba(99, 102, 241, 0.32);
-          border-radius: 8px;
+          background: rgba(99, 102, 241, 0.06);
+          border: 1px solid rgba(99, 102, 241, 0.28);
+          border-radius: 10px;
           padding: 12px 14px;
           display: flex;
           flex-direction: column;
           gap: 10px;
         }
       `;
-      doc.head.appendChild(style);
     }
 
     function statusPillInfo(statusCode, isDisabled) {
@@ -1946,16 +2169,24 @@
       return { label: 'CONFIGURED', cls: 'pending' };
     }
 
-    function formatSpecPreview(spec) {
+    function formatSpecPreview(spec, runtimeState) {
       if (!spec || typeof spec !== 'object') return '(managed by plugin)';
       if (spec.url || spec.serverUrl) {
-        const hasAuth = Boolean(
+        const hasCustomAuthHdr = Boolean(
           spec.headers &&
           Object.keys(spec.headers).some((k) =>
             /^(?:authorization|x-api-key|api-key|x-auth-token|x-mcp-token|x-access-token)$/i.test(k)
           )
         );
-        return `HTTP ${spec.url || spec.serverUrl}${hasAuth ? '  [🔑 Auth Header Configured]' : ''}`;
+        const hasOAuth = Boolean(runtimeState?.hasAuthToken || runtimeState?.authUrl || spec.oauth);
+        const suffix = runtimeState?.hasAuthToken
+          ? '  [🔗 OAuth Connected]'
+          : hasCustomAuthHdr
+          ? '  [🔑 Auth Header Configured]'
+          : hasOAuth
+          ? '  [🔗 OAuth]'
+          : '';
+        return `HTTP ${spec.url || spec.serverUrl}${suffix}`;
       }
       const cmd = spec.command || '';
       const args = Array.isArray(spec.args) ? spec.args.join(' ') : '';
@@ -1966,14 +2197,20 @@
       return {
         originalName: '',
         serverName: '',
-        transport: 'stdio',
+        description: '',
+        transport: 'http',
         command: 'npx',
         argsText: '',
         envText: '',
         cwd: '',
         url: '',
         headersText: '',
-        authMode: 'none',
+        authMode: 'oauth',
+        oauthClientMode: 'auto',
+        oauthClientId: '',
+        oauthClientSecret: '',
+        oauthScopes: '',
+        advancedOAuthOpen: false,
         bearerToken: '',
         apiKeyHeader: 'X-API-Key',
         apiKeyValue: '',
@@ -1994,6 +2231,7 @@
       let cachedStates = [];
       let bannerState = { type: '', message: '' };
       let popupBannerState = { type: '', message: '' };
+      let oauthPollTimer = null;
 
       function setBanner(type, message) {
         bannerState = { type, message };
@@ -2042,6 +2280,13 @@
         );
       }
 
+      function refreshEmbeddedSettingsPaneIfVisible() {
+        const pane = doc.getElementById('agy-mcp-settings-pane');
+        if (pane && pane.style.display !== 'none') {
+          renderSettingsPageContent(pane);
+        }
+      }
+
       async function reloadData() {
         try {
           const [cfgResult, statesResult] = await Promise.all([
@@ -2056,6 +2301,7 @@
           if (typeof onStateChanged === 'function') {
             onStateChanged({ config: cachedConfig.config, states: cachedStates });
           }
+          refreshEmbeddedSettingsPaneIfVisible();
         } catch (err) {
           setBanner('error', `Failed to load MCP configuration: ${err.message || err}`);
         }
@@ -2064,24 +2310,16 @@
       function buildFormStateFromSpec(serverName, spec, options = {}) {
         const runtimeState = findRuntimeState(serverName);
         const effectiveSpec = spec || runtimeState?.spec || {};
-        const isHttp = Boolean(
-          effectiveSpec && (effectiveSpec.url || effectiveSpec.serverUrl || effectiveSpec.type === 'http')
-        );
-        const extractedAuth = extractAuthFromSpec(effectiveSpec);
-        let authMode = extractedAuth.authMode;
-        if (authMode === 'none') {
-          if (runtimeState?.authUrl && !runtimeState?.hasAuthToken) {
-            authMode = 'oauth';
-          } else if (
-            isHttp &&
-            (options.focusAuth || isAuthErrorText(runtimeState?.error))
-          ) {
-            authMode = 'bearer';
-          }
-        }
+        const hasExplicitCmd = Boolean(effectiveSpec && typeof effectiveSpec.command === 'string' && effectiveSpec.command.trim());
+        const hasExplicitUrl = Boolean(effectiveSpec && (effectiveSpec.url || effectiveSpec.serverUrl || effectiveSpec.type === 'http'));
+        const isHttp = hasExplicitUrl || (!hasExplicitCmd && !serverName);
+        const extractedAuth = extractAuthFromSpec(isHttp ? { ...effectiveSpec, url: effectiveSpec.url || effectiveSpec.serverUrl || 'https://example.com/mcp' } : effectiveSpec);
+        const authMode = extractedAuth.authMode || (isHttp ? 'oauth' : 'none');
+
         return {
           originalName: serverName || '',
           serverName: serverName || '',
+          description: (effectiveSpec && typeof effectiveSpec.description === 'string') ? effectiveSpec.description : '',
           transport: isHttp ? 'http' : 'stdio',
           command: effectiveSpec && effectiveSpec.command ? effectiveSpec.command : 'npx',
           argsText: formatArgsForEditor(effectiveSpec && effectiveSpec.args),
@@ -2089,10 +2327,17 @@
           cwd: effectiveSpec && effectiveSpec.cwd ? effectiveSpec.cwd : '',
           url: (effectiveSpec && (effectiveSpec.url || effectiveSpec.serverUrl)) || '',
           headersText: formatKeyValueForEditor(
-            authMode === 'none' ? (effectiveSpec && effectiveSpec.headers) : extractedAuth.extraHeaders,
+            (authMode === 'none' || authMode === 'oauth' || authMode === 'oauth_or_none')
+              ? extractedAuth.extraHeaders
+              : extractedAuth.extraHeaders,
             ': '
           ),
           authMode,
+          oauthClientMode: extractedAuth.oauthClientMode || 'auto',
+          oauthClientId: extractedAuth.oauthClientId || '',
+          oauthClientSecret: extractedAuth.oauthClientSecret || '',
+          oauthScopes: extractedAuth.oauthScopes || '',
+          advancedOAuthOpen: Boolean(extractedAuth.oauthClientId || extractedAuth.oauthClientSecret || options.focusAuth),
           bearerToken: extractedAuth.bearerToken,
           apiKeyHeader: extractedAuth.apiKeyHeader || 'X-API-Key',
           apiKeyValue: extractedAuth.apiKeyValue,
@@ -2113,6 +2358,192 @@
         editingForm = createDefaultFormState();
       }
 
+      function closeOAuthConnectModal() {
+        if (oauthPollTimer) {
+          clearInterval(oauthPollTimer);
+          oauthPollTimer = null;
+        }
+        const backdrop = doc.getElementById(OAUTH_MODAL_ID);
+        if (backdrop && backdrop.parentNode) {
+          backdrop.parentNode.removeChild(backdrop);
+        }
+      }
+
+      function isOAuthConnectModalOpen() {
+        return Boolean(doc.getElementById(OAUTH_MODAL_ID));
+      }
+
+      async function openOAuthConnectModal(serverName, initialAuthUrl = '') {
+        ensureModalStyles(doc);
+        closeOAuthConnectModal();
+        await reloadData();
+
+        let st = findRuntimeState(serverName);
+        if (!initialAuthUrl && (!st || (!st.authUrl && !st.hasAuthToken)) && typeof bridge.waitForServerOAuthOrReady === 'function') {
+          st = await bridge.waitForServerOAuthOrReady(serverName, 2500);
+          await reloadData();
+        }
+        const authUrl = initialAuthUrl || st?.authUrl || '';
+
+        const backdrop = doc.createElement('div');
+        backdrop.id = OAUTH_MODAL_ID;
+        backdrop.setAttribute('data-testid', 'agy-mcp-oauth-connect-modal');
+        backdrop.addEventListener('click', (e) => {
+          if (e.target === backdrop) closeOAuthConnectModal();
+        });
+
+        const dialog = doc.createElement('div');
+        dialog.className = 'agy-mcp-dialog oauth-connect';
+        dialog.setAttribute('role', 'dialog');
+        dialog.setAttribute('aria-label', `Connect ${serverName}`);
+
+        const closeBtn = doc.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'agy-mcp-close-btn';
+        closeBtn.style.position = 'absolute';
+        closeBtn.style.top = '14px';
+        closeBtn.style.right = '14px';
+        closeBtn.textContent = '✕';
+        closeBtn.addEventListener('click', () => closeOAuthConnectModal());
+        dialog.appendChild(closeBtn);
+
+        const iconsRow = doc.createElement('div');
+        iconsRow.className = 'agy-mcp-oauth-icons';
+        const brandIcon = doc.createElement('div');
+        brandIcon.className = 'agy-mcp-oauth-icon-box brand';
+        brandIcon.textContent = 'A';
+        const dots = doc.createElement('span');
+        dots.className = 'agy-mcp-oauth-dots';
+        dots.textContent = '•••';
+        const mcpIcon = doc.createElement('div');
+        mcpIcon.className = 'agy-mcp-oauth-icon-box';
+        mcpIcon.textContent = '🔗';
+        iconsRow.appendChild(brandIcon);
+        iconsRow.appendChild(dots);
+        iconsRow.appendChild(mcpIcon);
+        dialog.appendChild(iconsRow);
+
+        const titleEl = doc.createElement('h2');
+        titleEl.className = 'agy-mcp-oauth-title';
+        titleEl.textContent = `${serverName} 연결`;
+        dialog.appendChild(titleEl);
+
+        const descEl = doc.createElement('div');
+        descEl.className = 'agy-mcp-oauth-desc';
+        descEl.textContent =
+          `Antigravity는 "${serverName}" MCP 서버와의 상호작용을 위해 브라우저 OAuth 인증을 진행합니다. 아래 연결 버튼을 눌러 브라우저에서 로그인 및 권한 승인을 완료하면 자동으로 연결됩니다.`;
+        dialog.appendChild(descEl);
+
+        const statusLine = doc.createElement('div');
+        statusLine.className = 'agy-mcp-hint';
+        statusLine.style.color = authUrl ? '#a5b4fc' : '#fcd34d';
+        statusLine.textContent = authUrl
+          ? 'OAuth 인증 URL이 준비되었습니다.'
+          : '호스트에서 OAuth 인증 URL을 확인하고 있습니다...';
+        dialog.appendChild(statusLine);
+
+        const codeSection = doc.createElement('div');
+        codeSection.style.display = 'none';
+        codeSection.style.width = '100%';
+        codeSection.style.flexDirection = 'column';
+        codeSection.style.gap = '6px';
+
+        const codeInputRow = doc.createElement('div');
+        codeInputRow.style.display = 'flex';
+        codeInputRow.style.gap = '6px';
+        codeInputRow.style.width = '100%';
+
+        const codeInput = doc.createElement('input');
+        codeInput.type = 'text';
+        codeInput.className = 'agy-mcp-input';
+        codeInput.style.flex = '1';
+        codeInput.setAttribute('data-field', 'oauthModalCode');
+        codeInput.placeholder = '브라우저에서 인증 코드가 표시되면 여기에 붙여넣으세요 (자동 콜백 시 불필요)';
+
+        const codeSubmitBtn = doc.createElement('button');
+        codeSubmitBtn.type = 'button';
+        codeSubmitBtn.className = 'agy-mcp-btn primary';
+        codeSubmitBtn.textContent = '코드 제출';
+        codeSubmitBtn.addEventListener('click', async () => {
+          const code = codeInput.value.trim();
+          if (!code) return;
+          statusLine.textContent = 'OAuth 인가 코드를 제출하는 중...';
+          const res = await bridge.completeOAuth(serverName, code);
+          if (!res || !res.ok) {
+            statusLine.style.color = '#fca5a5';
+            statusLine.textContent = (res && res.error) || 'OAuth 코드 제출에 실패했습니다.';
+            return;
+          }
+          await reloadData();
+          closeOAuthConnectModal();
+          setBanner('success', `"${serverName}" OAuth 인증 및 연결이 완료되었습니다.`);
+          if (isOpen()) renderModalContent();
+          if (isEditPopupOpen()) renderEditPopupBody();
+        });
+
+        codeInputRow.appendChild(codeInput);
+        codeInputRow.appendChild(codeSubmitBtn);
+        codeSection.appendChild(codeInputRow);
+        dialog.appendChild(codeSection);
+
+        const launchBtn = doc.createElement('button');
+        launchBtn.type = 'button';
+        launchBtn.className = 'agy-mcp-oauth-full-btn launch';
+        launchBtn.setAttribute('data-testid', 'agy-mcp-oauth-launch-btn');
+        launchBtn.textContent = `${serverName} 연결 ↗`;
+        launchBtn.addEventListener('click', async () => {
+          let targetUrl = authUrl;
+          if (!targetUrl && typeof bridge.waitForServerOAuthOrReady === 'function') {
+            statusLine.textContent = '호스트에 OAuth 세션 생성을 요청하는 중...';
+            await bridge.refreshServers(serverName);
+            const refreshedState = await bridge.waitForServerOAuthOrReady(serverName, 3500);
+            targetUrl = refreshedState?.authUrl || '';
+          }
+          if (targetUrl) {
+            bridge.openAuthUrl(targetUrl);
+            statusLine.style.color = '#6ee7b7';
+            statusLine.textContent = '브라우저에서 OAuth 인증 창을 열었습니다. 로그인 완료 시 자동으로 연결됩니다.';
+            codeSection.style.display = 'flex';
+            if (oauthPollTimer) clearInterval(oauthPollTimer);
+            let ticks = 0;
+            oauthPollTimer = setInterval(async () => {
+              ticks++;
+              if (ticks > 60 || !isOAuthConnectModalOpen()) {
+                clearInterval(oauthPollTimer);
+                oauthPollTimer = null;
+                return;
+              }
+              await reloadData();
+              const cur = findRuntimeState(serverName);
+              if (cur && (cur.hasAuthToken || cur.status === 2)) {
+                clearInterval(oauthPollTimer);
+                oauthPollTimer = null;
+                closeOAuthConnectModal();
+                setBanner('success', `"${serverName}" OAuth 인증 및 연결이 완료되었습니다.`);
+                if (isOpen()) renderModalContent();
+                if (isEditPopupOpen()) renderEditPopupBody();
+              }
+            }, 1200);
+          } else {
+            statusLine.style.color = '#fca5a5';
+            statusLine.textContent =
+              '호스트에서 OAuth 인증 URL(authUrl)을 받지 못했습니다. 서버 URL이 OAuth Discovery(/.well-known/oauth-authorization-server)를 지원하는지 확인하세요.';
+          }
+        });
+        dialog.appendChild(launchBtn);
+
+        const cancelBtn = doc.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'agy-mcp-oauth-full-btn cancel';
+        cancelBtn.setAttribute('data-testid', 'agy-mcp-oauth-cancel-btn');
+        cancelBtn.textContent = '취소';
+        cancelBtn.addEventListener('click', () => closeOAuthConnectModal());
+        dialog.appendChild(cancelBtn);
+
+        backdrop.appendChild(dialog);
+        doc.body.appendChild(backdrop);
+      }
+
       function renderSmartAutoAddBar(container) {
         const box = doc.createElement('div');
         box.className = 'agy-mcp-card';
@@ -2121,7 +2552,7 @@
 
         const label = doc.createElement('div');
         label.className = 'agy-mcp-label';
-        label.textContent = '⚡ Quick Auto-Add (Enter MCP Server URL, GitHub/npm Address, Command, or JSON):';
+        label.textContent = '⚡ Quick Auto-Add (Enter MCP Portal / Server URL, GitHub/npm Address, Command, or JSON):';
         box.appendChild(label);
 
         const row = doc.createElement('div');
@@ -2133,21 +2564,13 @@
         const input = doc.createElement('input');
         input.type = 'text';
         input.className = 'agy-mcp-input';
-        input.style.flex = '2';
-        input.style.minWidth = '220px';
+        input.style.flex = '1';
+        input.style.minWidth = '240px';
         input.setAttribute('data-testid', 'agy-mcp-smart-input');
-        input.placeholder = 'https://mcp.example.com/mcp, https://github.com/owner/repo, @playwright/mcp, or npx -y ...';
-
-        const tokenInput = doc.createElement('input');
-        tokenInput.type = 'password';
-        tokenInput.className = 'agy-mcp-input';
-        tokenInput.style.flex = '1';
-        tokenInput.style.minWidth = '170px';
-        tokenInput.setAttribute('data-testid', 'agy-mcp-smart-token-input');
-        tokenInput.placeholder = '🔑 Optional Bearer Token / API Key';
+        input.placeholder = 'https://example.com/mcp (OAuth auto-discovered), https://github.com/owner/repo, or npx -y ...';
 
         async function handleQuickConnect() {
-          const parsed = parseSmartMcpInput(input.value, tokenInput.value);
+          const parsed = parseSmartMcpInput(input.value);
           if (!parsed.ok) {
             setBanner('error', parsed.error);
             return;
@@ -2177,34 +2600,28 @@
                 setBanner('error', res.error);
                 return;
               }
+              let st = null;
+              if ((parsed.spec?.url || parsed.spec?.serverUrl) && typeof bridge.waitForServerOAuthOrReady === 'function') {
+                st = await bridge.waitForServerOAuthOrReady(parsed.serverName, 3000);
+              }
               await reloadData();
-              const st = findRuntimeState(parsed.serverName);
-              if (st && (isAuthErrorText(st.error) || (st.authUrl && !st.hasAuthToken))) {
-                setBanner(
-                  'info',
-                  `Added "${parsed.serverName}", which requires authentication. Enter your token or complete OAuth below.`
-                );
-                openEditPopup(parsed.serverName, { focusAuth: true });
+              st = st || findRuntimeState(parsed.serverName);
+              if (st && st.authUrl && !st.hasAuthToken) {
+                setBanner('info', `"${parsed.serverName}" OAuth 인증이 감지되었습니다. 연결 창에서 인증을 진행하세요.`);
+                openOAuthConnectModal(parsed.serverName, st.authUrl);
               } else {
                 setBanner('success', `Automatically added and connected "${parsed.serverName}".`);
               }
             }
             input.value = '';
-            tokenInput.value = '';
             activeTab = 'servers';
-            renderModalContent();
+            if (isOpen()) renderModalContent();
           } catch (err) {
             setBanner('error', err.message || String(err));
           }
         }
 
         input.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            handleQuickConnect();
-          }
-        });
-        tokenInput.addEventListener('keydown', (e) => {
           if (e.key === 'Enter') {
             e.preventDefault();
             handleQuickConnect();
@@ -2224,19 +2641,18 @@
         fillFormBtn.setAttribute('data-testid', 'agy-mcp-smart-fill-btn');
         fillFormBtn.textContent = 'Auto-Fill Form';
         fillFormBtn.addEventListener('click', () => {
-          const parsed = parseSmartMcpInput(input.value, tokenInput.value);
+          const parsed = parseSmartMcpInput(input.value);
           if (!parsed.ok) {
             setBanner('error', parsed.error);
             return;
           }
           populateFormFromSpec(parsed.serverName, parsed.spec);
           activeTab = 'editor';
-          setBanner('info', `Auto-filled form for "${parsed.serverName}". Review settings or authentication below, then click Save & Connect Server.`);
-          renderModalContent();
+          setBanner('info', `Auto-filled form for "${parsed.serverName}". Review OAuth / connection settings below.`);
+          if (isOpen()) renderModalContent();
         });
 
         row.appendChild(input);
-        row.appendChild(tokenInput);
         row.appendChild(autoConnectBtn);
         row.appendChild(fillFormBtn);
         box.appendChild(row);
@@ -2248,30 +2664,24 @@
         authBox.className = 'agy-mcp-auth-box';
         authBox.setAttribute('data-testid', 'agy-mcp-auth-section');
 
-        const topRow = doc.createElement('div');
-        topRow.style.display = 'flex';
-        topRow.style.alignItems = 'center';
-        topRow.style.justifyContent = 'space-between';
-        topRow.style.gap = '10px';
-        topRow.style.flexWrap = 'wrap';
+        const authField = doc.createElement('div');
+        authField.className = 'agy-mcp-field full';
 
-        const titleEl = doc.createElement('div');
+        const titleEl = doc.createElement('label');
         titleEl.className = 'agy-mcp-label';
-        titleEl.style.color = '#e0e7ff';
-        titleEl.textContent = '🔐 Authentication Settings (Bearer Token / API Key / Basic / OAuth)';
-        topRow.appendChild(titleEl);
+        titleEl.textContent = '인증 (Authentication)';
+        authField.appendChild(titleEl);
 
         const modeSelect = doc.createElement('select');
         modeSelect.className = 'agy-mcp-select';
-        modeSelect.style.width = 'auto';
-        modeSelect.style.minWidth = '260px';
         modeSelect.setAttribute('data-field', 'authMode');
         const authOptions = [
-          { value: 'none', label: 'None (No authentication)' },
+          { value: 'oauth', label: 'OAuth' },
+          { value: 'none', label: '인증 없음 (No Authentication)' },
+          { value: 'oauth_or_none', label: 'OAuth 또는 인증 없음 (OAuth or No Authentication)' },
           { value: 'bearer', label: 'Bearer Token (Authorization: Bearer <token>)' },
           { value: 'apiKey', label: 'API Key Header (X-API-Key or Custom Header)' },
           { value: 'basic', label: 'Basic Auth (Username & Password)' },
-          { value: 'oauth', label: 'Native OAuth / Browser Sign-In' },
         ];
         for (const opt of authOptions) {
           const o = doc.createElement('option');
@@ -2279,15 +2689,260 @@
           o.textContent = opt.label;
           modeSelect.appendChild(o);
         }
-        modeSelect.value = formObj.authMode || 'none';
+        modeSelect.value = formObj.authMode || (formObj.transport === 'http' ? 'oauth' : 'none');
         modeSelect.addEventListener('change', (e) => {
           formObj.authMode = e.target.value;
           reRenderFn();
         });
-        topRow.appendChild(modeSelect);
-        authBox.appendChild(topRow);
+        authField.appendChild(modeSelect);
+        authBox.appendChild(authField);
 
-        if (formObj.authMode === 'bearer') {
+        if (formObj.authMode === 'oauth' || formObj.authMode === 'oauth_or_none') {
+          const authUrl = runtimeState?.authUrl || '';
+          const hasToken = Boolean(runtimeState?.hasAuthToken);
+          const activeServerName = formObj.serverName || formObj.originalName;
+
+          // Instant OAuth Connect bar if server is already registered or has authUrl
+          if (authUrl || hasToken || activeServerName) {
+            const quickOAuthBar = doc.createElement('div');
+            quickOAuthBar.style.display = 'flex';
+            quickOAuthBar.style.alignItems = 'center';
+            quickOAuthBar.style.justifyContent = 'space-between';
+            quickOAuthBar.style.flexWrap = 'wrap';
+            quickOAuthBar.style.gap = '8px';
+            quickOAuthBar.style.padding = '8px 11px';
+            quickOAuthBar.style.borderRadius = '8px';
+            quickOAuthBar.style.background = hasToken ? 'rgba(16, 185, 129, 0.12)' : 'rgba(79, 70, 229, 0.14)';
+            quickOAuthBar.style.border = hasToken
+              ? '1px solid rgba(16, 185, 129, 0.35)'
+              : '1px solid rgba(99, 102, 241, 0.38)';
+
+            const statusTxt = doc.createElement('span');
+            statusTxt.style.fontSize = '12px';
+            statusTxt.style.color = hasToken ? '#6ee7b7' : '#c7d2fe';
+            statusTxt.textContent = hasToken
+              ? `● OAuth 인증 연결됨 (${activeServerName})`
+              : authUrl
+              ? `🔗 OAuth 인증 준비됨 — 브라우저에서 "${activeServerName}" 로그인을 진행하세요.`
+              : '저장 후 자동으로 MCP 포털 OAuth 설정을 감지하여 인증 창을 엽니다.';
+            quickOAuthBar.appendChild(statusTxt);
+
+            const btnWrap = doc.createElement('div');
+            btnWrap.style.display = 'flex';
+            btnWrap.style.gap = '6px';
+
+            if (activeServerName && !hasToken) {
+              const connectBtn = doc.createElement('button');
+              connectBtn.type = 'button';
+              connectBtn.className = 'agy-mcp-btn primary';
+              connectBtn.setAttribute('data-testid', 'agy-mcp-open-oauth-connect-btn');
+              connectBtn.textContent = `${activeServerName} 연결 ↗`;
+              connectBtn.addEventListener('click', () => {
+                openOAuthConnectModal(activeServerName, authUrl);
+              });
+              btnWrap.appendChild(connectBtn);
+            }
+
+            if (hasToken && activeServerName) {
+              const signOutBtn = doc.createElement('button');
+              signOutBtn.type = 'button';
+              signOutBtn.className = 'agy-mcp-btn danger';
+              signOutBtn.textContent = 'OAuth 연결 해제';
+              signOutBtn.addEventListener('click', async () => {
+                const res = await bridge.disconnectOAuth(activeServerName);
+                if (!res || !res.ok) {
+                  bannerFn('error', (res && res.error) || 'Failed to disconnect OAuth.');
+                  return;
+                }
+                await reloadData();
+                bannerFn('info', `"${activeServerName}" OAuth 연결이 해제되었습니다.`);
+                reRenderFn();
+              });
+              btnWrap.appendChild(signOutBtn);
+            }
+
+            quickOAuthBar.appendChild(btnWrap);
+            authBox.appendChild(quickOAuthBar);
+          }
+
+          // Collapsible "고급 OAuth 설정 (Advanced OAuth Settings)" card matching ChatGPT's UI
+          const advCard = doc.createElement('div');
+          advCard.className = 'agy-mcp-adv-oauth-card';
+
+          const advHeader = doc.createElement('div');
+          advHeader.className = 'agy-mcp-adv-oauth-header';
+          advHeader.setAttribute('data-testid', 'agy-mcp-advanced-oauth-toggle');
+
+          const advLeft = doc.createElement('div');
+          advLeft.style.display = 'flex';
+          advLeft.style.flexDirection = 'column';
+          advLeft.style.gap = '3px';
+
+          const advTitle = doc.createElement('div');
+          advTitle.className = 'agy-mcp-label';
+          advTitle.textContent = '고급 OAuth 설정 (Advanced OAuth Settings)';
+
+          const advSub = doc.createElement('div');
+          advSub.className = 'agy-mcp-hint';
+          advSub.textContent =
+            '자동으로 감지된 OAuth 설정을 확인하거나 직접 입력한 다음, 클라이언트 설정 방식을 선택하고 기본 권한 범위를 설정하세요';
+
+          advLeft.appendChild(advTitle);
+          advLeft.appendChild(advSub);
+
+          const advArrow = doc.createElement('span');
+          advArrow.style.fontSize = '16px';
+          advArrow.style.color = '#94a3b8';
+          advArrow.textContent = formObj.advancedOAuthOpen ? '⌄' : '›';
+
+          advHeader.appendChild(advLeft);
+          advHeader.appendChild(advArrow);
+          advHeader.addEventListener('click', () => {
+            formObj.advancedOAuthOpen = !formObj.advancedOAuthOpen;
+            reRenderFn();
+          });
+          advCard.appendChild(advHeader);
+
+          if (formObj.advancedOAuthOpen) {
+            const advBody = doc.createElement('div');
+            advBody.style.display = 'flex';
+            advBody.style.flexDirection = 'column';
+            advBody.style.gap = '10px';
+            advBody.style.paddingTop = '8px';
+            advBody.style.borderTop = '1px solid #2b324a';
+
+            const clientModeField = doc.createElement('div');
+            clientModeField.className = 'agy-mcp-field';
+            const cmLbl = doc.createElement('label');
+            cmLbl.className = 'agy-mcp-label';
+            cmLbl.textContent = '클라이언트 설정 방식 (Client Configuration)';
+            const cmSelect = doc.createElement('select');
+            cmSelect.className = 'agy-mcp-select';
+            cmSelect.setAttribute('data-field', 'oauthClientMode');
+            const optAuto = doc.createElement('option');
+            optAuto.value = 'auto';
+            optAuto.textContent = '자동 감지 / 동적 클라이언트 등록 (Automatic Discovery & Dynamic Registration)';
+            const optCustom = doc.createElement('option');
+            optCustom.value = 'custom';
+            optCustom.textContent = '직접 입력 (Custom Client ID & Secret)';
+            cmSelect.appendChild(optAuto);
+            cmSelect.appendChild(optCustom);
+            cmSelect.value = formObj.oauthClientMode || 'auto';
+            cmSelect.addEventListener('change', (e) => {
+              formObj.oauthClientMode = e.target.value;
+              reRenderFn();
+            });
+            clientModeField.appendChild(cmLbl);
+            clientModeField.appendChild(cmSelect);
+            advBody.appendChild(clientModeField);
+
+            if (formObj.oauthClientMode === 'custom') {
+              const grid = doc.createElement('div');
+              grid.className = 'agy-mcp-form-grid';
+
+              const cidField = doc.createElement('div');
+              cidField.className = 'agy-mcp-field';
+              const cidLbl = doc.createElement('label');
+              cidLbl.className = 'agy-mcp-label';
+              cidLbl.textContent = 'Client ID';
+              const cidInput = doc.createElement('input');
+              cidInput.className = 'agy-mcp-input';
+              cidInput.setAttribute('data-field', 'oauthClientId');
+              cidInput.placeholder = 'OAuth Client ID';
+              cidInput.value = formObj.oauthClientId || '';
+              cidInput.addEventListener('input', (e) => {
+                formObj.oauthClientId = e.target.value;
+              });
+              cidField.appendChild(cidLbl);
+              cidField.appendChild(cidInput);
+
+              const csecField = doc.createElement('div');
+              csecField.className = 'agy-mcp-field';
+              const csecLbl = doc.createElement('label');
+              csecLbl.className = 'agy-mcp-label';
+              csecLbl.textContent = 'Client Secret (선택 사항)';
+              const csecInput = doc.createElement('input');
+              csecInput.type = 'password';
+              csecInput.className = 'agy-mcp-input';
+              csecInput.setAttribute('data-field', 'oauthClientSecret');
+              csecInput.placeholder = 'OAuth Client Secret (optional)';
+              csecInput.value = formObj.oauthClientSecret || '';
+              csecInput.addEventListener('input', (e) => {
+                formObj.oauthClientSecret = e.target.value;
+              });
+              csecField.appendChild(csecLbl);
+              csecField.appendChild(csecInput);
+
+              grid.appendChild(cidField);
+              grid.appendChild(csecField);
+              advBody.appendChild(grid);
+            }
+
+            const scopeField = doc.createElement('div');
+            scopeField.className = 'agy-mcp-field';
+            const scopeLbl = doc.createElement('label');
+            scopeLbl.className = 'agy-mcp-label';
+            scopeLbl.textContent = '기본 권한 범위 / Scopes (선택 사항)';
+            const scopeInput = doc.createElement('input');
+            scopeInput.className = 'agy-mcp-input';
+            scopeInput.setAttribute('data-field', 'oauthScopes');
+            scopeInput.placeholder = '자동 감지됨 (예: openid profile mcp:tools)';
+            scopeInput.value = formObj.oauthScopes || '';
+            scopeInput.addEventListener('input', (e) => {
+              formObj.oauthScopes = e.target.value;
+            });
+            scopeField.appendChild(scopeLbl);
+            scopeField.appendChild(scopeInput);
+            advBody.appendChild(scopeField);
+
+            // Manual authorization code fallback row
+            const manualCodeRow = doc.createElement('div');
+            manualCodeRow.style.display = 'flex';
+            manualCodeRow.style.gap = '6px';
+            manualCodeRow.style.alignItems = 'center';
+
+            const codeInput = doc.createElement('input');
+            codeInput.type = 'text';
+            codeInput.className = 'agy-mcp-input';
+            codeInput.style.flex = '1';
+            codeInput.setAttribute('data-field', 'oauthCode');
+            codeInput.placeholder = '수동 인가 코드 입력 (Enter authorization code...)';
+            codeInput.value = formObj.oauthCode || '';
+            codeInput.addEventListener('input', (e) => {
+              formObj.oauthCode = e.target.value;
+            });
+
+            const submitCodeBtn = doc.createElement('button');
+            submitCodeBtn.type = 'button';
+            submitCodeBtn.className = 'agy-mcp-btn';
+            submitCodeBtn.setAttribute('data-testid', 'agy-mcp-submit-oauth-btn');
+            submitCodeBtn.textContent = 'Submit Auth Code';
+            submitCodeBtn.addEventListener('click', async () => {
+              const targetServer = formObj.serverName || formObj.originalName;
+              if (!targetServer) {
+                bannerFn('error', 'Save the server first or enter a Server Name before submitting an OAuth code.');
+                return;
+              }
+              const res = await bridge.completeOAuth(targetServer, formObj.oauthCode);
+              if (!res || !res.ok) {
+                bannerFn('error', (res && res.error) || 'Failed to complete OAuth.');
+                return;
+              }
+              formObj.oauthCode = '';
+              await reloadData();
+              bannerFn('success', `OAuth authentication completed for "${targetServer}".`);
+              reRenderFn();
+            });
+
+            manualCodeRow.appendChild(codeInput);
+            manualCodeRow.appendChild(submitCodeBtn);
+            advBody.appendChild(manualCodeRow);
+
+            advCard.appendChild(advBody);
+          }
+
+          authBox.appendChild(advCard);
+        } else if (formObj.authMode === 'bearer') {
           const field = doc.createElement('div');
           field.className = 'agy-mcp-field';
           const lbl = doc.createElement('label');
@@ -2421,102 +3076,9 @@
           grid.appendChild(uField);
           grid.appendChild(pField);
           authBox.appendChild(grid);
-        } else if (formObj.authMode === 'oauth') {
-          const oauthWrap = doc.createElement('div');
-          oauthWrap.style.display = 'flex';
-          oauthWrap.style.flexDirection = 'column';
-          oauthWrap.style.gap = '8px';
-
-          const authUrl = runtimeState?.authUrl || '';
-          const hasToken = Boolean(runtimeState?.hasAuthToken);
-
-          const statusNote = doc.createElement('div');
-          statusNote.className = 'agy-mcp-hint';
-          statusNote.textContent = hasToken
-            ? 'OAuth status: Authenticated token is active on host.'
-            : authUrl
-            ? 'OAuth URL provided by server. Click "Open Auth URL in Browser", sign in, and paste the authorization code below.'
-            : 'If this remote MCP server uses Bearer tokens instead of dynamic OAuth registration, switch Authentication Type to "Bearer Token".';
-          oauthWrap.appendChild(statusNote);
-
-          const oauthActions = doc.createElement('div');
-          oauthActions.style.display = 'flex';
-          oauthActions.style.gap = '8px';
-          oauthActions.style.alignItems = 'center';
-          oauthActions.style.flexWrap = 'wrap';
-
-          if (authUrl) {
-            const openBrowserBtn = doc.createElement('button');
-            openBrowserBtn.type = 'button';
-            openBrowserBtn.className = 'agy-mcp-btn auth';
-            openBrowserBtn.textContent = '🌐 Open Auth URL in Browser';
-            openBrowserBtn.addEventListener('click', () => {
-              bridge.openAuthUrl(authUrl);
-              bannerFn('info', 'Opened OAuth authorization page in browser. Paste the resulting code below.');
-            });
-            oauthActions.appendChild(openBrowserBtn);
-          }
-
-          const codeInput = doc.createElement('input');
-          codeInput.type = 'text';
-          codeInput.className = 'agy-mcp-input';
-          codeInput.style.flex = '1';
-          codeInput.style.minWidth = '200px';
-          codeInput.setAttribute('data-field', 'oauthCode');
-          codeInput.placeholder = 'Enter authorization code...';
-          codeInput.value = formObj.oauthCode || '';
-          codeInput.addEventListener('input', (e) => {
-            formObj.oauthCode = e.target.value;
-          });
-          oauthActions.appendChild(codeInput);
-
-          const submitCodeBtn = doc.createElement('button');
-          submitCodeBtn.type = 'button';
-          submitCodeBtn.className = 'agy-mcp-btn primary';
-          submitCodeBtn.setAttribute('data-testid', 'agy-mcp-submit-oauth-btn');
-          submitCodeBtn.textContent = 'Submit Auth Code';
-          submitCodeBtn.addEventListener('click', async () => {
-            const targetServer = formObj.serverName || formObj.originalName;
-            if (!targetServer) {
-              bannerFn('error', 'Save the server first or enter a Server Name before submitting an OAuth code.');
-              return;
-            }
-            const res = await bridge.completeOAuth(targetServer, formObj.oauthCode);
-            if (!res || !res.ok) {
-              bannerFn('error', (res && res.error) || 'Failed to complete OAuth.');
-              return;
-            }
-            formObj.oauthCode = '';
-            await reloadData();
-            bannerFn('success', `OAuth authentication completed for "${targetServer}".`);
-            reRenderFn();
-          });
-          oauthActions.appendChild(submitCodeBtn);
-
-          if (hasToken) {
-            const signOutBtn = doc.createElement('button');
-            signOutBtn.type = 'button';
-            signOutBtn.className = 'agy-mcp-btn danger';
-            signOutBtn.textContent = 'Disconnect OAuth';
-            signOutBtn.addEventListener('click', async () => {
-              const targetServer = formObj.serverName || formObj.originalName;
-              const res = await bridge.disconnectOAuth(targetServer);
-              if (!res || !res.ok) {
-                bannerFn('error', (res && res.error) || 'Failed to disconnect OAuth.');
-                return;
-              }
-              await reloadData();
-              bannerFn('info', `Disconnected OAuth session for "${targetServer}".`);
-              reRenderFn();
-            });
-            oauthActions.appendChild(signOutBtn);
-          }
-
-          oauthWrap.appendChild(oauthActions);
-          authBox.appendChild(oauthWrap);
         }
 
-        // Batch apply checkbox when multiple custom HTTP servers exist
+        // Batch apply checkbox when multiple custom HTTP servers exist and custom header auth is selected
         const customServers = (cachedConfig.config && cachedConfig.config.mcpServers) || {};
         const httpServerNames = Object.keys(customServers).filter((k) =>
           Boolean(customServers[k]?.url || customServers[k]?.serverUrl)
@@ -2556,16 +3118,16 @@
         const grid = doc.createElement('div');
         grid.className = 'agy-mcp-form-grid';
 
-        // Server Name
+        // 1. Name (이름)
         const nameField = doc.createElement('div');
-        nameField.className = 'agy-mcp-field';
+        nameField.className = 'agy-mcp-field full';
         const nameLabel = doc.createElement('label');
         nameLabel.className = 'agy-mcp-label';
-        nameLabel.textContent = 'Server Name (Optional — auto-filled from URL/Command)';
+        nameLabel.textContent = '이름 (Server Name)';
         const nameInput = doc.createElement('input');
         nameInput.className = 'agy-mcp-input';
         nameInput.setAttribute('data-field', 'serverName');
-        nameInput.placeholder = 'Auto-detected if left blank (e.g. filesystem, github)';
+        nameInput.placeholder = '사용자 지정 도구 (비워두면 서버 URL에서 자동 생성)';
         nameInput.value = formObj.serverName;
         nameInput.addEventListener('input', (e) => {
           formObj.serverName = e.target.value;
@@ -2574,67 +3136,102 @@
         nameField.appendChild(nameInput);
         grid.appendChild(nameField);
 
-        // Transport
-        const transField = doc.createElement('div');
-        transField.className = 'agy-mcp-field';
-        const transLabel = doc.createElement('label');
-        transLabel.className = 'agy-mcp-label';
-        transLabel.textContent = 'Transport Type';
+        // 2. Description (설명 - 선택 사항)
+        const descField = doc.createElement('div');
+        descField.className = 'agy-mcp-field full';
+        const descLabel = doc.createElement('label');
+        descLabel.className = 'agy-mcp-label';
+        descLabel.textContent = '설명 (선택 사항)';
+        const descInput = doc.createElement('input');
+        descInput.className = 'agy-mcp-input';
+        descInput.setAttribute('data-field', 'description');
+        descInput.placeholder = '앱의 기능을 간단히 설명하세요';
+        descInput.value = formObj.description || '';
+        descInput.addEventListener('input', (e) => {
+          formObj.description = e.target.value;
+        });
+        descField.appendChild(descLabel);
+        descField.appendChild(descInput);
+        grid.appendChild(descField);
+
+        // 3. Connection header + Segmented toggle (연결: 서버 URL | 로컬 프로세스)
+        const connHeaderField = doc.createElement('div');
+        connHeaderField.className = 'agy-mcp-field full';
+        const connTopRow = doc.createElement('div');
+        connTopRow.style.display = 'flex';
+        connTopRow.style.alignItems = 'center';
+        connTopRow.style.justifyContent = 'space-between';
+        connTopRow.style.gap = '10px';
+
+        const connLabel = doc.createElement('label');
+        connLabel.className = 'agy-mcp-label';
+        connLabel.textContent = '연결 (Connection)';
+
+        const segWrap = doc.createElement('div');
+        segWrap.className = 'agy-mcp-segmented';
+
+        const segHttpBtn = doc.createElement('button');
+        segHttpBtn.type = 'button';
+        segHttpBtn.className = `agy-mcp-seg-btn${formObj.transport === 'http' ? ' active' : ''}`;
+        segHttpBtn.textContent = '서버 URL';
+        segHttpBtn.addEventListener('click', () => {
+          formObj.transport = 'http';
+          if (!formObj.authMode || formObj.authMode === 'none') {
+            formObj.authMode = 'oauth';
+          }
+          reRenderFn();
+        });
+
+        const segStdioBtn = doc.createElement('button');
+        segStdioBtn.type = 'button';
+        segStdioBtn.className = `agy-mcp-seg-btn${formObj.transport === 'stdio' ? ' active' : ''}`;
+        segStdioBtn.textContent = '로컬 / 터널 (Stdio)';
+        segStdioBtn.addEventListener('click', () => {
+          formObj.transport = 'stdio';
+          reRenderFn();
+        });
+
+        segWrap.appendChild(segHttpBtn);
+        segWrap.appendChild(segStdioBtn);
+
+        // Keep hidden/accessible select for [data-field="transport"] programmatic compatibility
         const transSelect = doc.createElement('select');
         transSelect.className = 'agy-mcp-select';
+        transSelect.style.display = 'none';
         transSelect.setAttribute('data-field', 'transport');
-        const optStdio = doc.createElement('option');
-        optStdio.value = 'stdio';
-        optStdio.textContent = 'Stdio (Local Process: npx / uvx / node / python / docker)';
         const optHttp = doc.createElement('option');
         optHttp.value = 'http';
         optHttp.textContent = 'Streamable HTTP / Remote URL';
-        transSelect.appendChild(optStdio);
+        const optStdio = doc.createElement('option');
+        optStdio.value = 'stdio';
+        optStdio.textContent = 'Stdio (Local Process: npx / uvx / node / python / docker)';
         transSelect.appendChild(optHttp);
+        transSelect.appendChild(optStdio);
         transSelect.value = formObj.transport;
         transSelect.addEventListener('change', (e) => {
           formObj.transport = e.target.value;
           reRenderFn();
         });
-        transField.appendChild(transLabel);
-        transField.appendChild(transSelect);
-        grid.appendChild(transField);
+
+        connTopRow.appendChild(connLabel);
+        connTopRow.appendChild(segWrap);
+        connHeaderField.appendChild(connTopRow);
+        connHeaderField.appendChild(transSelect);
 
         if (formObj.transport === 'http') {
-          const urlField = doc.createElement('div');
-          urlField.className = 'agy-mcp-field full';
-          const urlLabel = doc.createElement('label');
-          urlLabel.className = 'agy-mcp-label';
-          urlLabel.textContent = 'Remote MCP Server URL (http:// or https://)';
           const urlInput = doc.createElement('input');
           urlInput.className = 'agy-mcp-input';
           urlInput.setAttribute('data-field', 'url');
-          urlInput.placeholder = 'https://mcp.example.com/mcp';
+          urlInput.placeholder = 'https://example.com/mcp';
           urlInput.value = formObj.url;
           urlInput.addEventListener('input', (e) => {
             formObj.url = e.target.value;
           });
-          urlField.appendChild(urlLabel);
-          urlField.appendChild(urlInput);
-          grid.appendChild(urlField);
-
-          const hdrField = doc.createElement('div');
-          hdrField.className = 'agy-mcp-field full';
-          const hdrLabel = doc.createElement('label');
-          hdrLabel.className = 'agy-mcp-label';
-          hdrLabel.textContent = 'HTTP Headers (One "Header: Value" per line or JSON object)';
-          const hdrArea = doc.createElement('textarea');
-          hdrArea.className = 'agy-mcp-textarea';
-          hdrArea.setAttribute('data-field', 'headersText');
-          hdrArea.placeholder = 'Authorization: Bearer <TOKEN>';
-          hdrArea.value = formObj.headersText;
-          hdrArea.addEventListener('input', (e) => {
-            formObj.headersText = e.target.value;
-          });
-          hdrField.appendChild(hdrLabel);
-          hdrField.appendChild(hdrArea);
-          grid.appendChild(hdrField);
+          connHeaderField.appendChild(urlInput);
+          grid.appendChild(connHeaderField);
         } else {
+          grid.appendChild(connHeaderField);
+
           const cmdField = doc.createElement('div');
           cmdField.className = 'agy-mcp-field';
           const cmdLabel = doc.createElement('label');
@@ -2735,9 +3332,263 @@
           }
         }
 
+        let st = null;
+        if (
+          formObj.transport === 'http' &&
+          (formObj.authMode === 'oauth' || formObj.authMode === 'oauth_or_none') &&
+          typeof bridge.waitForServerOAuthOrReady === 'function'
+        ) {
+          st = await bridge.waitForServerOAuthOrReady(built.serverName, 3000);
+        }
+
         await reloadData();
-        bannerFn('success', `Saved and triggered reload for "${built.serverName}".`);
-        return { ok: true, serverName: built.serverName, spec: built.spec };
+        st = st || findRuntimeState(built.serverName);
+
+        if (
+          formObj.transport === 'http' &&
+          (formObj.authMode === 'oauth' || formObj.authMode === 'oauth_or_none') &&
+          st &&
+          st.authUrl &&
+          !st.hasAuthToken
+        ) {
+          bannerFn('info', `"${built.serverName}" OAuth 인증 창이 준비되었습니다.`);
+          openOAuthConnectModal(built.serverName, st.authUrl);
+        } else {
+          bannerFn('success', `Saved and triggered reload for "${built.serverName}".`);
+        }
+
+        return { ok: true, serverName: built.serverName, spec: built.spec, runtimeState: st };
+      }
+
+      function renderServerCardsList(container, customBannerFn = setBanner) {
+        const customMap = (cachedConfig.config && cachedConfig.config.mcpServers) || {};
+        const stateByName = new Map();
+        for (const st of cachedStates) {
+          const sName = st && (st.serverName || st.spec?.serverName);
+          if (sName) {
+            stateByName.set(sName, st);
+          }
+        }
+
+        const allServerNames = Array.from(
+          new Set([...Object.keys(customMap), ...Array.from(stateByName.keys())])
+        );
+
+        if (allServerNames.length === 0) {
+          const empty = doc.createElement('div');
+          empty.className = 'agy-mcp-card';
+          empty.style.textAlign = 'center';
+          empty.style.padding = '28px 16px';
+          empty.style.color = '#9aa2b8';
+          empty.textContent = 'No custom MCP servers configured yet. Click "+ Add Custom MCP Server" to register a remote OAuth MCP portal or local Stdio server.';
+          container.appendChild(empty);
+          return;
+        }
+
+        for (const name of allServerNames) {
+          const customSpec = customMap[name] || null;
+          const runtimeState = stateByName.get(name) || null;
+          const isCustom = Boolean(customSpec);
+          const isDisabled = Boolean((customSpec && customSpec.disabled) || (runtimeState && runtimeState.status === 4));
+          const pill = statusPillInfo(runtimeState ? runtimeState.status : 0, isDisabled);
+          const hasOAuthUrl = Boolean(runtimeState?.authUrl && !runtimeState?.hasAuthToken);
+          const needsAuth = Boolean(hasOAuthUrl || (runtimeState && isAuthErrorText(runtimeState.error)));
+
+          const card = doc.createElement('div');
+          card.className = 'agy-mcp-card';
+          card.setAttribute('data-mcp-server-card', name);
+
+          const topRow = doc.createElement('div');
+          topRow.className = 'agy-mcp-card-top';
+
+          const titleRow = doc.createElement('div');
+          titleRow.className = 'agy-mcp-card-title-row';
+
+          const nameEl = doc.createElement('span');
+          nameEl.className = 'agy-mcp-server-name';
+          nameEl.textContent = name;
+          titleRow.appendChild(nameEl);
+
+          const statusBadge = doc.createElement('span');
+          statusBadge.className = `agy-mcp-pill ${pill.cls}`;
+          statusBadge.textContent = pill.label;
+          titleRow.appendChild(statusBadge);
+
+          const sourceBadge = doc.createElement('span');
+          sourceBadge.className = `agy-mcp-pill ${isCustom ? 'source-custom' : 'source-plugin'}`;
+          sourceBadge.textContent = isCustom ? 'Custom' : 'Plugin';
+          titleRow.appendChild(sourceBadge);
+
+          topRow.appendChild(titleRow);
+
+          const actionsRow = doc.createElement('div');
+          actionsRow.style.display = 'flex';
+          actionsRow.style.gap = '6px';
+          actionsRow.style.flexWrap = 'wrap';
+
+          if (hasOAuthUrl) {
+            const oauthConnectBtn = doc.createElement('button');
+            oauthConnectBtn.type = 'button';
+            oauthConnectBtn.className = 'agy-mcp-btn primary';
+            oauthConnectBtn.setAttribute('data-testid', `agy-mcp-oauth-connect-btn-${name}`);
+            oauthConnectBtn.textContent = `🔗 ${name} 연결 ↗`;
+            oauthConnectBtn.addEventListener('click', () => {
+              openOAuthConnectModal(name, runtimeState.authUrl);
+            });
+            actionsRow.appendChild(oauthConnectBtn);
+          }
+
+          if (isCustom || needsAuth) {
+            const authBtn = doc.createElement('button');
+            authBtn.type = 'button';
+            authBtn.className = `agy-mcp-btn${needsAuth ? ' auth' : ''}`;
+            authBtn.setAttribute('data-testid', `agy-mcp-auth-btn-${name}`);
+            authBtn.textContent = hasOAuthUrl ? '⚙️ OAuth 설정' : '🔑 Authenticate';
+            authBtn.addEventListener('click', () => {
+              if (hasOAuthUrl) {
+                openOAuthConnectModal(name, runtimeState.authUrl);
+              } else {
+                openEditPopup(name, { focusAuth: true });
+              }
+            });
+            actionsRow.appendChild(authBtn);
+          }
+
+          const toggleBtn = doc.createElement('button');
+          toggleBtn.className = 'agy-mcp-btn';
+          toggleBtn.textContent = isDisabled ? 'Enable' : 'Disable';
+          toggleBtn.addEventListener('click', async () => {
+            try {
+              await bridge.toggleServerEnabled(name, isDisabled);
+              await reloadData();
+              customBannerFn('success', `Server "${name}" ${isDisabled ? 'enabled' : 'disabled'}.`);
+              if (isOpen()) renderBody();
+            } catch (err) {
+              customBannerFn('error', `Failed to toggle "${name}": ${err.message || err}`);
+            }
+          });
+          actionsRow.appendChild(toggleBtn);
+
+          const restartBtn = doc.createElement('button');
+          restartBtn.className = 'agy-mcp-btn';
+          restartBtn.textContent = '↻ Restart';
+          restartBtn.addEventListener('click', async () => {
+            customBannerFn('info', `Restarting "${name}"...`);
+            await bridge.refreshServers(name);
+            await reloadData();
+            customBannerFn('success', `Restarted "${name}".`);
+            if (isOpen()) renderBody();
+          });
+          actionsRow.appendChild(restartBtn);
+
+          if (isCustom) {
+            const editBtn = doc.createElement('button');
+            editBtn.className = 'agy-mcp-btn';
+            editBtn.setAttribute('data-testid', `agy-mcp-edit-btn-${name}`);
+            editBtn.textContent = 'Edit';
+            editBtn.addEventListener('click', () => {
+              openEditPopup(name);
+            });
+            actionsRow.appendChild(editBtn);
+
+            const delBtn = doc.createElement('button');
+            delBtn.className = 'agy-mcp-btn danger';
+            delBtn.textContent = 'Delete';
+            delBtn.addEventListener('click', async () => {
+              try {
+                await bridge.deleteCustomServer(name);
+                await reloadData();
+                customBannerFn('success', `Removed custom server "${name}".`);
+                if (isOpen()) renderBody();
+              } catch (err) {
+                customBannerFn('error', `Failed to delete "${name}": ${err.message || err}`);
+              }
+            });
+            actionsRow.appendChild(delBtn);
+          }
+
+          topRow.appendChild(actionsRow);
+          card.appendChild(topRow);
+
+          const preview = doc.createElement('div');
+          preview.className = 'agy-mcp-cmd-preview';
+          preview.textContent = formatSpecPreview(customSpec || (runtimeState && runtimeState.spec), runtimeState);
+          card.appendChild(preview);
+
+          if (runtimeState && runtimeState.error) {
+            const errBox = doc.createElement('div');
+            errBox.style.display = 'flex';
+            errBox.style.alignItems = 'center';
+            errBox.style.justifyContent = 'space-between';
+            errBox.style.gap = '8px';
+            errBox.style.flexWrap = 'wrap';
+            errBox.style.fontSize = '11.5px';
+            errBox.style.color = '#fca5a5';
+
+            const errMsg = doc.createElement('span');
+            errMsg.textContent = `Error: ${runtimeState.error}`;
+            errBox.appendChild(errMsg);
+
+            if (needsAuth || isCustom) {
+              const fixAuthBtn = doc.createElement('button');
+              fixAuthBtn.type = 'button';
+              fixAuthBtn.className = 'agy-mcp-inline-row-btn auth';
+              fixAuthBtn.textContent = hasOAuthUrl ? `🔗 ${name} 연결 ↗` : '⚙️ 설정 수정 / OAuth 연결';
+              fixAuthBtn.addEventListener('click', () => {
+                if (hasOAuthUrl) {
+                  openOAuthConnectModal(name, runtimeState.authUrl);
+                } else {
+                  openEditPopup(name, { focusAuth: true });
+                }
+              });
+              errBox.appendChild(fixAuthBtn);
+            }
+            card.appendChild(errBox);
+          }
+
+          const tools = (runtimeState && Array.isArray(runtimeState.tools)) ? runtimeState.tools : [];
+          const disabledToolsSet = new Set(
+            (customSpec && Array.isArray(customSpec.disabledTools)) ? customSpec.disabledTools : []
+          );
+
+          if (tools.length > 0) {
+            const toolsHeader = doc.createElement('div');
+            toolsHeader.style.fontSize = '11px';
+            toolsHeader.style.color = '#8b95b0';
+            toolsHeader.textContent = `Tools (${tools.length}) ${isCustom ? '— click a tool chip to enable/disable it in mcp_config.json' : ''}:`;
+            card.appendChild(toolsHeader);
+
+            const toolsWrap = doc.createElement('div');
+            toolsWrap.className = 'agy-mcp-tools-wrap';
+
+            for (const t of tools) {
+              const toolName = t && (t.name || t.toolName);
+              if (!toolName) continue;
+              const isToolDisabled = disabledToolsSet.has(toolName);
+              const chip = doc.createElement('button');
+              chip.type = 'button';
+              chip.className = `agy-mcp-tool-chip${isToolDisabled ? ' disabled' : ''}`;
+              chip.textContent = toolName;
+              chip.title = (t && t.description) ? t.description : toolName;
+              if (isCustom) {
+                chip.addEventListener('click', async () => {
+                  try {
+                    await bridge.toggleServerTool(name, toolName, isToolDisabled);
+                    await reloadData();
+                    customBannerFn('success', `Tool "${toolName}" on "${name}" ${isToolDisabled ? 'enabled' : 'disabled'}.`);
+                    if (isOpen()) renderBody();
+                  } catch (err) {
+                    customBannerFn('error', `Failed to toggle tool: ${err.message || err}`);
+                  }
+                });
+              }
+              toolsWrap.appendChild(chip);
+            }
+            card.appendChild(toolsWrap);
+          }
+
+          container.appendChild(card);
+        }
       }
 
       function renderServersTab(container) {
@@ -2797,216 +3648,7 @@
         topActions.appendChild(btnGroup);
         container.appendChild(topActions);
 
-        const customMap = (cachedConfig.config && cachedConfig.config.mcpServers) || {};
-        const stateByName = new Map();
-        for (const st of cachedStates) {
-          const sName = st && (st.serverName || st.spec?.serverName);
-          if (sName) {
-            stateByName.set(sName, st);
-          }
-        }
-
-        const allServerNames = Array.from(
-          new Set([...Object.keys(customMap), ...Array.from(stateByName.keys())])
-        );
-
-        if (allServerNames.length === 0) {
-          const empty = doc.createElement('div');
-          empty.className = 'agy-mcp-card';
-          empty.style.textAlign = 'center';
-          empty.style.padding = '28px 16px';
-          empty.style.color = '#9aa2b8';
-          empty.textContent = 'No custom MCP servers configured yet. Click "+ Add Custom MCP Server" to register a local Stdio or remote HTTP MCP server.';
-          container.appendChild(empty);
-          return;
-        }
-
-        for (const name of allServerNames) {
-          const customSpec = customMap[name] || null;
-          const runtimeState = stateByName.get(name) || null;
-          const isCustom = Boolean(customSpec);
-          const isDisabled = Boolean((customSpec && customSpec.disabled) || (runtimeState && runtimeState.status === 4));
-          const pill = statusPillInfo(runtimeState ? runtimeState.status : 0, isDisabled);
-          const needsAuth = Boolean(
-            (runtimeState && isAuthErrorText(runtimeState.error)) ||
-            (runtimeState?.authUrl && !runtimeState?.hasAuthToken)
-          );
-
-          const card = doc.createElement('div');
-          card.className = 'agy-mcp-card';
-          card.setAttribute('data-mcp-server-card', name);
-
-          const topRow = doc.createElement('div');
-          topRow.className = 'agy-mcp-card-top';
-
-          const titleRow = doc.createElement('div');
-          titleRow.className = 'agy-mcp-card-title-row';
-
-          const nameEl = doc.createElement('span');
-          nameEl.className = 'agy-mcp-server-name';
-          nameEl.textContent = name;
-          titleRow.appendChild(nameEl);
-
-          const statusBadge = doc.createElement('span');
-          statusBadge.className = `agy-mcp-pill ${pill.cls}`;
-          statusBadge.textContent = pill.label;
-          titleRow.appendChild(statusBadge);
-
-          const sourceBadge = doc.createElement('span');
-          sourceBadge.className = `agy-mcp-pill ${isCustom ? 'source-custom' : 'source-plugin'}`;
-          sourceBadge.textContent = isCustom ? 'Custom' : 'Plugin';
-          titleRow.appendChild(sourceBadge);
-
-          topRow.appendChild(titleRow);
-
-          const actionsRow = doc.createElement('div');
-          actionsRow.style.display = 'flex';
-          actionsRow.style.gap = '6px';
-          actionsRow.style.flexWrap = 'wrap';
-
-          if (isCustom || needsAuth) {
-            const authBtn = doc.createElement('button');
-            authBtn.type = 'button';
-            authBtn.className = `agy-mcp-btn${needsAuth ? ' auth' : ''}`;
-            authBtn.setAttribute('data-testid', `agy-mcp-auth-btn-${name}`);
-            authBtn.textContent = '🔑 Authenticate';
-            authBtn.addEventListener('click', () => {
-              openEditPopup(name, { focusAuth: true });
-            });
-            actionsRow.appendChild(authBtn);
-          }
-
-          const toggleBtn = doc.createElement('button');
-          toggleBtn.className = 'agy-mcp-btn';
-          toggleBtn.textContent = isDisabled ? 'Enable' : 'Disable';
-          toggleBtn.addEventListener('click', async () => {
-            try {
-              await bridge.toggleServerEnabled(name, isDisabled);
-              await reloadData();
-              setBanner('success', `Server "${name}" ${isDisabled ? 'enabled' : 'disabled'}.`);
-              renderBody();
-            } catch (err) {
-              setBanner('error', `Failed to toggle "${name}": ${err.message || err}`);
-            }
-          });
-          actionsRow.appendChild(toggleBtn);
-
-          const restartBtn = doc.createElement('button');
-          restartBtn.className = 'agy-mcp-btn';
-          restartBtn.textContent = '↻ Restart';
-          restartBtn.addEventListener('click', async () => {
-            setBanner('info', `Restarting "${name}"...`);
-            await bridge.refreshServers(name);
-            await reloadData();
-            setBanner('success', `Restarted "${name}".`);
-            renderBody();
-          });
-          actionsRow.appendChild(restartBtn);
-
-          if (isCustom) {
-            const editBtn = doc.createElement('button');
-            editBtn.className = 'agy-mcp-btn';
-            editBtn.setAttribute('data-testid', `agy-mcp-edit-btn-${name}`);
-            editBtn.textContent = 'Edit';
-            editBtn.addEventListener('click', () => {
-              openEditPopup(name);
-            });
-            actionsRow.appendChild(editBtn);
-
-            const delBtn = doc.createElement('button');
-            delBtn.className = 'agy-mcp-btn danger';
-            delBtn.textContent = 'Delete';
-            delBtn.addEventListener('click', async () => {
-              try {
-                await bridge.deleteCustomServer(name);
-                await reloadData();
-                setBanner('success', `Removed custom server "${name}".`);
-                renderBody();
-              } catch (err) {
-                setBanner('error', `Failed to delete "${name}": ${err.message || err}`);
-              }
-            });
-            actionsRow.appendChild(delBtn);
-          }
-
-          topRow.appendChild(actionsRow);
-          card.appendChild(topRow);
-
-          const preview = doc.createElement('div');
-          preview.className = 'agy-mcp-cmd-preview';
-          preview.textContent = formatSpecPreview(customSpec || (runtimeState && runtimeState.spec));
-          card.appendChild(preview);
-
-          if (runtimeState && runtimeState.error) {
-            const errBox = doc.createElement('div');
-            errBox.style.display = 'flex';
-            errBox.style.alignItems = 'center';
-            errBox.style.justifyContent = 'space-between';
-            errBox.style.gap = '8px';
-            errBox.style.flexWrap = 'wrap';
-            errBox.style.fontSize = '11.5px';
-            errBox.style.color = '#fca5a5';
-
-            const errMsg = doc.createElement('span');
-            errMsg.textContent = `Error: ${runtimeState.error}`;
-            errBox.appendChild(errMsg);
-
-            if (needsAuth || isCustom) {
-              const fixAuthBtn = doc.createElement('button');
-              fixAuthBtn.type = 'button';
-              fixAuthBtn.className = 'agy-mcp-inline-row-btn auth';
-              fixAuthBtn.textContent = '🔑 Configure Auth / Edit Settings';
-              fixAuthBtn.addEventListener('click', () => {
-                openEditPopup(name, { focusAuth: true });
-              });
-              errBox.appendChild(fixAuthBtn);
-            }
-            card.appendChild(errBox);
-          }
-
-          const tools = (runtimeState && Array.isArray(runtimeState.tools)) ? runtimeState.tools : [];
-          const disabledToolsSet = new Set(
-            (customSpec && Array.isArray(customSpec.disabledTools)) ? customSpec.disabledTools : []
-          );
-
-          if (tools.length > 0) {
-            const toolsHeader = doc.createElement('div');
-            toolsHeader.style.fontSize = '11px';
-            toolsHeader.style.color = '#8b95b0';
-            toolsHeader.textContent = `Tools (${tools.length}) ${isCustom ? '— click a tool chip to enable/disable it in mcp_config.json' : ''}:`;
-            card.appendChild(toolsHeader);
-
-            const toolsWrap = doc.createElement('div');
-            toolsWrap.className = 'agy-mcp-tools-wrap';
-
-            for (const t of tools) {
-              const toolName = t && (t.name || t.toolName);
-              if (!toolName) continue;
-              const isToolDisabled = disabledToolsSet.has(toolName);
-              const chip = doc.createElement('button');
-              chip.type = 'button';
-              chip.className = `agy-mcp-tool-chip${isToolDisabled ? ' disabled' : ''}`;
-              chip.textContent = toolName;
-              chip.title = (t && t.description) ? t.description : toolName;
-              if (isCustom) {
-                chip.addEventListener('click', async () => {
-                  try {
-                    await bridge.toggleServerTool(name, toolName, isToolDisabled);
-                    await reloadData();
-                    setBanner('success', `Tool "${toolName}" on "${name}" ${isToolDisabled ? 'enabled' : 'disabled'}.`);
-                    renderBody();
-                  } catch (err) {
-                    setBanner('error', `Failed to toggle tool: ${err.message || err}`);
-                  }
-                });
-              }
-              toolsWrap.appendChild(chip);
-            }
-            card.appendChild(toolsWrap);
-          }
-
-          container.appendChild(card);
-        }
+        renderServerCardsList(container, setBanner);
       }
 
       function renderEditorTab(container) {
@@ -3033,6 +3675,7 @@
               ...createDefaultFormState(),
               originalName: editingForm.originalName,
               serverName: tpl.serverName,
+              description: tpl.description || '',
               transport: tpl.transport,
               command: tpl.command || 'npx',
               argsText: formatArgsForEditor(tpl.args || []),
@@ -3040,9 +3683,10 @@
               cwd: tpl.cwd || '',
               url: tpl.url || '',
               headersText: formatKeyValueForEditor(tpl.headers || {}, ': '),
+              authMode: tpl.transport === 'http' ? 'oauth' : 'none',
               disabled: false,
             };
-            setBanner('info', `Loaded preset "${tpl.label}". Review placeholders before saving.`);
+            setBanner('info', `Loaded preset "${tpl.label}".`);
             renderBody();
           });
           tplBar.appendChild(btn);
@@ -3053,6 +3697,12 @@
         const runtimeState = findRuntimeState(editingForm.serverName || editingForm.originalName);
         renderServerConnectionFields(container, editingForm, renderBody);
         renderAuthFieldsSection(container, editingForm, runtimeState, renderBody, setBanner);
+
+        const riskBox = doc.createElement('div');
+        riskBox.className = 'agy-mcp-risk-notice';
+        riskBox.textContent =
+          '⚠️ 사용자 지정 MCP 서버에는 위험이 따릅니다. 신뢰할 수 있는 MCP 서버에만 연결하세요.';
+        container.appendChild(riskBox);
 
         const footerRow = doc.createElement('div');
         footerRow.style.display = 'flex';
@@ -3262,7 +3912,7 @@
 
         const newOpt = doc.createElement('option');
         newOpt.value = '';
-        newOpt.textContent = '+ New Custom MCP Server';
+        newOpt.textContent = '+ 사용자 지정 MCP 서버 추가 (New Custom MCP Server)';
         sel.appendChild(newOpt);
 
         const allCandidateNames = Array.from(new Set([...customNames, ...(activeName ? [activeName] : [])]));
@@ -3317,9 +3967,14 @@
 
         body.appendChild(selectorCard);
 
-        // Put Authentication section right at the top when editing/authenticating
-        renderAuthFieldsSection(body, popupForm, runtimeState, renderEditPopupBody, setPopupBanner);
         renderServerConnectionFields(body, popupForm, renderEditPopupBody);
+        renderAuthFieldsSection(body, popupForm, runtimeState, renderEditPopupBody, setPopupBanner);
+
+        const riskBox = doc.createElement('div');
+        riskBox.className = 'agy-mcp-risk-notice';
+        riskBox.textContent =
+          '⚠️ 사용자 지정 MCP 서버에는 위험이 따릅니다. 신뢰할 수 있는 MCP 서버에만 연결하세요.';
+        body.appendChild(riskBox);
 
         const footerRow = doc.createElement('div');
         footerRow.style.display = 'flex';
@@ -3403,7 +4058,7 @@
         saveBtn.type = 'button';
         saveBtn.className = 'agy-mcp-btn primary';
         saveBtn.setAttribute('data-testid', 'agy-mcp-popup-save-btn');
-        saveBtn.textContent = 'Save & Reconnect';
+        saveBtn.textContent = popupForm.originalName ? 'Save & Reconnect' : '플러그인으로 생성 (Save & Connect)';
         saveBtn.addEventListener('click', async () => {
           try {
             const res = await saveServerForm(popupForm, setPopupBanner);
@@ -3430,7 +4085,9 @@
 
         const customMap = (cachedConfig.config && cachedConfig.config.mcpServers) || {};
         const customNames = Object.keys(customMap);
-        const targetName = serverName || customNames[0] || '';
+        const targetName = serverName !== undefined && serverName !== null && serverName !== ''
+          ? serverName
+          : (options.createNew ? '' : (customNames[0] || ''));
         const targetSpec = targetName ? customMap[targetName] : null;
         popupForm = buildFormStateFromSpec(targetName, targetSpec, options);
 
@@ -3446,7 +4103,7 @@
           const dialog = doc.createElement('div');
           dialog.className = 'agy-mcp-dialog popup';
           dialog.setAttribute('role', 'dialog');
-          dialog.setAttribute('aria-label', 'Edit Custom MCP Server & Authentication');
+          dialog.setAttribute('aria-label', '사용자 지정 MCP 서버 추가 및 설정');
 
           const header = doc.createElement('div');
           header.className = 'agy-mcp-header';
@@ -3454,10 +4111,10 @@
           titleWrap.className = 'agy-mcp-title-wrap';
           const title = doc.createElement('h2');
           title.className = 'agy-mcp-title';
-          title.textContent = '⚙️ Edit Custom MCP Server & Authentication';
+          title.textContent = targetName ? '⚙️ 사용자 지정 MCP 서버 설정 수정' : '사용자 지정 MCP 서버 추가';
           const badge = doc.createElement('span');
           badge.className = 'agy-mcp-badge';
-          badge.textContent = 'Custom Config';
+          badge.textContent = 'OAuth & Custom MCP';
           titleWrap.appendChild(title);
           titleWrap.appendChild(badge);
 
@@ -3497,6 +4154,102 @@
 
       function isEditPopupOpen() {
         return Boolean(doc.getElementById(EDIT_POPUP_ID));
+      }
+
+      // Render full Settings page content when user selects "MCP 서버" tab inside native Settings modal (.settings-modal-container)
+      function renderSettingsPageContent(container) {
+        if (!container) return;
+        ensureModalStyles(doc);
+        while (container.firstChild) container.removeChild(container.firstChild);
+
+        const wrapper = doc.createElement('div');
+        wrapper.className = 'p-6 flex flex-col gap-5 w-full max-w-2xl mx-auto';
+        wrapper.style.padding = '24px';
+        wrapper.style.display = 'flex';
+        wrapper.style.flexDirection = 'column';
+        wrapper.style.gap = '18px';
+        wrapper.style.maxWidth = '720px';
+        wrapper.style.margin = '0 auto';
+
+        const pageHdr = doc.createElement('div');
+        pageHdr.style.display = 'flex';
+        pageHdr.style.alignItems = 'flex-start';
+        pageHdr.style.justifyContent = 'space-between';
+        pageHdr.style.gap = '12px';
+        pageHdr.style.flexWrap = 'wrap';
+
+        const titleCol = doc.createElement('div');
+        titleCol.style.display = 'flex';
+        titleCol.style.flexDirection = 'column';
+        titleCol.style.gap = '4px';
+
+        const h2 = doc.createElement('h2');
+        h2.style.fontSize = '20px';
+        h2.style.fontWeight = '600';
+        h2.style.margin = '0';
+        h2.style.color = '#f8fafc';
+        h2.textContent = 'MCP 서버';
+
+        const sub = doc.createElement('div');
+        sub.style.fontSize = '13px';
+        sub.style.color = '#94a3b8';
+        sub.textContent = '원격 OAuth MCP 포털 및 로컬(Stdio) 사용자 지정 MCP 서버를 등록·인증·관리합니다.';
+
+        titleCol.appendChild(h2);
+        titleCol.appendChild(sub);
+        pageHdr.appendChild(titleCol);
+
+        const hdrActions = doc.createElement('div');
+        hdrActions.style.display = 'flex';
+        hdrActions.style.gap = '8px';
+        hdrActions.style.flexWrap = 'wrap';
+
+        const addPopupBtn = doc.createElement('button');
+        addPopupBtn.type = 'button';
+        addPopupBtn.className = 'agy-mcp-btn primary';
+        addPopupBtn.setAttribute('data-testid', 'agy-mcp-settings-add-btn');
+        addPopupBtn.textContent = '+ 사용자 지정 MCP 서버 추가';
+        addPopupBtn.addEventListener('click', () => {
+          openEditPopup('', { createNew: true });
+        });
+
+        const editPopupBtn = doc.createElement('button');
+        editPopupBtn.type = 'button';
+        editPopupBtn.className = 'agy-mcp-btn';
+        editPopupBtn.setAttribute('data-testid', 'agy-mcp-settings-edit-btn');
+        editPopupBtn.textContent = '⚙️ 서버 설정 수정';
+        editPopupBtn.addEventListener('click', () => {
+          openEditPopup();
+        });
+
+        const rawModalBtn = doc.createElement('button');
+        rawModalBtn.type = 'button';
+        rawModalBtn.className = 'agy-mcp-btn';
+        rawModalBtn.textContent = '{ } mcp_config.json 편집';
+        rawModalBtn.addEventListener('click', () => {
+          openModal('raw');
+        });
+
+        const refreshBtn = doc.createElement('button');
+        refreshBtn.type = 'button';
+        refreshBtn.className = 'agy-mcp-btn';
+        refreshBtn.textContent = '↻ 새로고침';
+        refreshBtn.addEventListener('click', async () => {
+          await bridge.refreshServers();
+          await reloadData();
+        });
+
+        hdrActions.appendChild(addPopupBtn);
+        hdrActions.appendChild(editPopupBtn);
+        hdrActions.appendChild(rawModalBtn);
+        hdrActions.appendChild(refreshBtn);
+        pageHdr.appendChild(hdrActions);
+        wrapper.appendChild(pageHdr);
+
+        renderSmartAutoAddBar(wrapper);
+        renderServerCardsList(wrapper, setBanner);
+
+        container.appendChild(wrapper);
       }
 
       async function openModal(initialTab = 'servers') {
@@ -3604,6 +4357,10 @@
         openEditPopup,
         closeEditPopup,
         isEditPopupOpen,
+        openOAuthConnectModal,
+        closeOAuthConnectModal,
+        isOAuthConnectModalOpen,
+        renderSettingsPageContent,
         reloadData,
         getCachedState: () => ({ config: cachedConfig.config, states: cachedStates }),
       };
@@ -3612,6 +4369,7 @@
     module.exports = {
       MODAL_ID,
       EDIT_POPUP_ID,
+      OAUTH_MODAL_ID,
       STYLE_ID,
       isAuthErrorText,
       ensureModalStyles,
@@ -3627,7 +4385,7 @@
     const { createHostMcpBridge } = require('./host-mcp-bridge');
     const { ensureModalStyles, createModalController } = require('./modal-ui');
 
-    const MCP_MANAGER_VERSION = 'v1.2.0';
+    const MCP_MANAGER_VERSION = 'v1.3.0';
     const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
     function extractServerNameFromRow(row) {
@@ -3709,7 +4467,145 @@
         bridge,
       });
 
-      // Inject "+ Custom MCP Server", "⚙️ Edit Settings", and "🔑 Authenticate" controls strictly into Antigravity's native Customizations / MCP views
+      async function handleServerAuthenticateAction(serverName) {
+        if (!serverName) {
+          modal.openEditPopup('', { focusAuth: true });
+          return;
+        }
+        try {
+          const states = await bridge.getMcpServerStates();
+          const matched = (states || []).find((s) => s && s.serverName === serverName);
+          if (matched && matched.authUrl) {
+            modal.openOAuthConnectModal(serverName, matched.authUrl);
+            return;
+          }
+        } catch (_e) {
+          // fallback to edit popup
+        }
+        modal.openEditPopup(serverName, { focusAuth: true });
+      }
+
+      // Inject "MCP 서버" sidebar tab inside Antigravity's native Settings modal (.settings-modal-container), right below "한글 번역" (or "모델")
+      function ensureNativeSettingsModalIntegration() {
+        if (!doc.body) return;
+        const settingsModal = doc.querySelector('.settings-modal-container');
+        if (!settingsModal) return;
+
+        const modelsNavBtn = settingsModal.querySelector('button[data-testid="settings-nav-item-Models"]');
+        if (!modelsNavBtn) return;
+
+        const navGroup = modelsNavBtn.closest('.flex.flex-col.gap-0\\.5') || modelsNavBtn.parentElement;
+        if (!navGroup) return;
+
+        let mcpNavBtn = navGroup.querySelector('button[data-testid="settings-nav-item-McpManager"]');
+        const koNavBtn = navGroup.querySelector('button[data-testid="settings-nav-item-KoTranslator"]');
+
+        if (!mcpNavBtn) {
+          mcpNavBtn = doc.createElement('button');
+          mcpNavBtn.type = 'button';
+          mcpNavBtn.setAttribute('data-testid', 'settings-nav-item-McpManager');
+          mcpNavBtn.setAttribute(NATIVE_BTN_ATTR, 'settings-nav-item');
+          mcpNavBtn.className =
+            'flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-sm cursor-pointer transition-colors text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-secondary/50';
+          const labelSpan = doc.createElement('span');
+          labelSpan.className = 'truncate';
+          labelSpan.textContent = 'MCP 서버';
+          mcpNavBtn.appendChild(labelSpan);
+
+          if (koNavBtn && koNavBtn.nextSibling) {
+            navGroup.insertBefore(mcpNavBtn, koNavBtn.nextSibling);
+          } else {
+            navGroup.appendChild(mcpNavBtn);
+          }
+
+          mcpNavBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            // Update sidebar active state across all buttons in navGroup
+            navGroup.querySelectorAll('button').forEach((b) => {
+              b.className =
+                'flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-sm cursor-pointer transition-colors text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-secondary/50';
+            });
+            mcpNavBtn.className =
+              'flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-sm cursor-pointer transition-colors bg-sidebar-secondary text-sidebar-foreground font-medium';
+
+            const contentContainer = settingsModal.querySelector('.grow.w-full');
+            if (!contentContainer) return;
+
+            // Hide other panes (including native settings content and #agy-ko-settings-pane)
+            Array.from(contentContainer.children).forEach((child) => {
+              if (child.id !== 'agy-mcp-settings-pane') {
+                if (child.id !== 'agy-ko-settings-pane' && !child.hasAttribute('data-agy-mcp-prev-display')) {
+                  child.setAttribute('data-agy-mcp-prev-display', child.style.display || '');
+                }
+                child.style.display = 'none';
+              }
+            });
+
+            let pane = contentContainer.querySelector('#agy-mcp-settings-pane');
+            if (!pane) {
+              pane = doc.createElement('div');
+              pane.id = 'agy-mcp-settings-pane';
+              pane.setAttribute(NATIVE_BTN_ATTR, 'settings-pane');
+              pane.className = 'w-full h-full overflow-y-auto px-6 py-5 select-none';
+              contentContainer.appendChild(pane);
+            }
+            pane.style.display = 'block';
+            modal.renderSettingsPageContent(pane);
+          });
+        } else if (koNavBtn && koNavBtn.nextElementSibling !== mcpNavBtn) {
+          // Keep "MCP 서버" neatly positioned right after "한글 번역" if both exist
+          if (koNavBtn.nextSibling) {
+            navGroup.insertBefore(mcpNavBtn, koNavBtn.nextSibling);
+          } else {
+            navGroup.appendChild(mcpNavBtn);
+          }
+        }
+
+        if (!settingsModal.hasAttribute('data-agy-mcp-nav-bound')) {
+          settingsModal.setAttribute('data-agy-mcp-nav-bound', 'true');
+          settingsModal.addEventListener(
+            'click',
+            (e) => {
+              const btn = e.target && typeof e.target.closest === 'function'
+                ? e.target.closest('button[data-testid^="settings-nav-item-"]')
+                : null;
+              if (!btn) return;
+              const testId = btn.getAttribute('data-testid') || '';
+              if (testId === 'settings-nav-item-McpManager') return;
+
+              const contentContainer = settingsModal.querySelector('.grow.w-full');
+              if (!contentContainer) return;
+
+              const pane = contentContainer.querySelector('#agy-mcp-settings-pane');
+              const wasMcpPaneVisible = Boolean(pane && pane.style.display !== 'none');
+              if (pane) {
+                pane.style.display = 'none';
+              }
+
+              if (mcpNavBtn) {
+                mcpNavBtn.className =
+                  'flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-sm cursor-pointer transition-colors text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-secondary/50';
+              }
+
+              // Restore native children only if switching from MCP pane to a native tab (not KoTranslator)
+              if (wasMcpPaneVisible && testId !== 'settings-nav-item-KoTranslator') {
+                Array.from(contentContainer.children).forEach((child) => {
+                  if (child.id !== 'agy-mcp-settings-pane' && child.id !== 'agy-ko-settings-pane') {
+                    const prev = child.getAttribute('data-agy-mcp-prev-display');
+                    child.style.display = prev !== null ? prev : '';
+                    child.removeAttribute('data-agy-mcp-prev-display');
+                  }
+                });
+              }
+            },
+            true
+          );
+        }
+      }
+
+      // Inject "+ Custom MCP Server", "⚙️ Edit Settings", and "🔗 OAuth / Auth" controls strictly into Antigravity's native Customizations / MCP views
       function buildQuickActionToolbar() {
         const wrap = doc.createElement('div');
         wrap.setAttribute(NATIVE_BTN_ATTR, 'empty-mcp-note');
@@ -3725,7 +4621,7 @@
         addCustomBtn.type = 'button';
         addCustomBtn.className = 'agy-mcp-injected-native-btn';
         addCustomBtn.style.marginLeft = '0';
-        addCustomBtn.textContent = '+ Add Custom MCP Server';
+        addCustomBtn.textContent = '+ 사용자 지정 MCP 서버 추가';
         addCustomBtn.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -3736,7 +4632,7 @@
         editCustomBtn.type = 'button';
         editCustomBtn.className = 'agy-mcp-btn';
         editCustomBtn.setAttribute(NATIVE_BTN_ATTR, 'toolbar-edit-popup-btn');
-        editCustomBtn.textContent = '⚙️ Edit Custom MCP Settings';
+        editCustomBtn.textContent = '⚙️ 커스텀 MCP 설정 수정';
         editCustomBtn.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -3747,7 +4643,7 @@
         authCustomBtn.type = 'button';
         authCustomBtn.className = 'agy-mcp-btn auth';
         authCustomBtn.setAttribute(NATIVE_BTN_ATTR, 'toolbar-auth-popup-btn');
-        authCustomBtn.textContent = '🔑 MCP Auth Settings';
+        authCustomBtn.textContent = '🔗 OAuth / 인증 설정';
         authCustomBtn.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -3757,7 +4653,7 @@
         const rawBtn = doc.createElement('button');
         rawBtn.type = 'button';
         rawBtn.className = 'agy-mcp-btn';
-        rawBtn.textContent = '{ } Edit mcp_config.json';
+        rawBtn.textContent = '{ } mcp_config.json 편집';
         rawBtn.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -3774,6 +4670,9 @@
       function injectIntoNativeMcpScreens() {
         if (!doc.body) return;
 
+        // 0) Native Settings Modal ("한글 번역" 아래 "MCP 서버" 탭)
+        ensureNativeSettingsModalIntegration();
+
         // A) Next to native [data-testid="add-mcp-button"] in Customizations -> MCP Servers header
         const addMcpBtns = doc.querySelectorAll('[data-testid="add-mcp-button"]');
         addMcpBtns.forEach((nativeBtn) => {
@@ -3784,7 +4683,7 @@
             customBtn.type = 'button';
             customBtn.className = 'agy-mcp-injected-native-btn';
             customBtn.setAttribute(NATIVE_BTN_ATTR, 'beside-add-btn');
-            customBtn.textContent = '+ Custom MCP';
+            customBtn.textContent = '+ 커스텀 MCP';
             customBtn.title = 'Add or manage custom MCP servers in ~/.gemini/config/mcp_config.json';
             customBtn.addEventListener('click', (e) => {
               e.preventDefault();
@@ -3799,8 +4698,8 @@
             editBtn.className = 'agy-mcp-btn';
             editBtn.style.marginLeft = '6px';
             editBtn.setAttribute(NATIVE_BTN_ATTR, 'beside-edit-btn');
-            editBtn.textContent = '⚙️ Edit Custom MCP';
-            editBtn.title = 'Edit custom MCP server settings & authentication';
+            editBtn.textContent = '⚙️ 설정 수정';
+            editBtn.title = 'Edit custom MCP server settings & OAuth authentication';
             editBtn.addEventListener('click', (e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -3832,7 +4731,7 @@
           banner.style.fontSize = '12px';
 
           const desc = doc.createElement('span');
-          desc.textContent = 'Custom Stdio (npx / uvx / node / python) or HTTP MCP server:';
+          desc.textContent = '사용자 지정 MCP 서버 (OAuth 서버 URL 또는 로컬/터널 Stdio):';
 
           const btnGroup = doc.createElement('div');
           btnGroup.style.display = 'flex';
@@ -3843,7 +4742,7 @@
           openEditorBtn.type = 'button';
           openEditorBtn.className = 'agy-mcp-injected-native-btn';
           openEditorBtn.style.marginLeft = '0';
-          openEditorBtn.textContent = '+ Add Custom MCP Server';
+          openEditorBtn.textContent = '+ 사용자 지정 MCP 서버 추가';
           openEditorBtn.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -3853,7 +4752,7 @@
           const editAuthBtn = doc.createElement('button');
           editAuthBtn.type = 'button';
           editAuthBtn.className = 'agy-mcp-btn';
-          editAuthBtn.textContent = '⚙️ Edit Custom MCP Settings';
+          editAuthBtn.textContent = '⚙️ 커스텀 MCP 설정 수정';
           editAuthBtn.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -3863,7 +4762,7 @@
           const manageBtn = doc.createElement('button');
           manageBtn.type = 'button';
           manageBtn.className = 'agy-mcp-btn';
-          manageBtn.textContent = 'Manage Custom Servers';
+          manageBtn.textContent = '서버 목록 관리';
           manageBtn.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -3908,7 +4807,7 @@
           }
         }
 
-        // D) Inside each native [data-testid="mcp-server-row"] item: inject "⚙️ Edit Settings" and "🔑 Authenticate" buttons
+        // D) Inside each native [data-testid="mcp-server-row"] item: inject "⚙️ 설정 수정" and "🔗 인증 / 연결" buttons
         const rows = doc.querySelectorAll('[data-testid="mcp-server-row"]');
         rows.forEach((row) => {
           const serverName = extractServerNameFromRow(row);
@@ -3923,8 +4822,8 @@
             editRowBtn.className = 'agy-mcp-inline-row-btn';
             editRowBtn.setAttribute(NATIVE_BTN_ATTR, 'row-edit-btn');
             editRowBtn.setAttribute('data-mcp-server', serverName);
-            editRowBtn.textContent = '⚙️ Edit Settings';
-            editRowBtn.title = `Edit settings & authentication for "${serverName}"`;
+            editRowBtn.textContent = '⚙️ 설정 수정';
+            editRowBtn.title = `"${serverName}" 서버 설정 및 OAuth 인증 방식 수정`;
             editRowBtn.addEventListener('click', (e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -3936,12 +4835,12 @@
             authRowBtn.className = 'agy-mcp-inline-row-btn auth';
             authRowBtn.setAttribute(NATIVE_BTN_ATTR, 'row-auth-btn');
             authRowBtn.setAttribute('data-mcp-server', serverName);
-            authRowBtn.textContent = '🔑 Authenticate';
-            authRowBtn.title = `Configure Bearer token, API Key, or OAuth for "${serverName}"`;
+            authRowBtn.textContent = '🔗 OAuth 연결 / 인증';
+            authRowBtn.title = `"${serverName}" OAuth 연결 창 열기 또는 인증 설정`;
             authRowBtn.addEventListener('click', (e) => {
               e.preventDefault();
               e.stopPropagation();
-              modal.openEditPopup(serverName, { focusAuth: true });
+              handleServerAuthenticateAction(serverName);
             });
 
             leftGroup.appendChild(editRowBtn);
@@ -3962,12 +4861,12 @@
             fixAuthBtn.className = 'agy-mcp-inline-row-btn auth';
             fixAuthBtn.setAttribute(NATIVE_BTN_ATTR, 'fix-auth-btn');
             fixAuthBtn.setAttribute('data-mcp-server', serverName);
-            fixAuthBtn.textContent = '🔑 Authenticate';
-            fixAuthBtn.title = `Configure authentication for "${serverName}"`;
+            fixAuthBtn.textContent = '🔗 OAuth 연결 / 인증';
+            fixAuthBtn.title = `"${serverName}" OAuth 연결 또는 인증 방식 설정`;
             fixAuthBtn.addEventListener('click', (e) => {
               e.preventDefault();
               e.stopPropagation();
-              modal.openEditPopup(serverName, { focusAuth: true });
+              handleServerAuthenticateAction(serverName);
             });
 
             const fixEditBtn = doc.createElement('button');
@@ -3975,8 +4874,8 @@
             fixEditBtn.className = 'agy-mcp-inline-row-btn';
             fixEditBtn.setAttribute(NATIVE_BTN_ATTR, 'fix-edit-btn');
             fixEditBtn.setAttribute('data-mcp-server', serverName);
-            fixEditBtn.textContent = '⚙️ Edit Settings';
-            fixEditBtn.title = `Edit settings for "${serverName}"`;
+            fixEditBtn.textContent = '⚙️ 설정 수정';
+            fixEditBtn.title = `"${serverName}" 설정 수정`;
             fixEditBtn.addEventListener('click', (e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -4004,6 +4903,10 @@
       function onKeyDown(e) {
         if (!e) return;
         if (e.key === 'Escape') {
+          if (modal.isOAuthConnectModalOpen()) {
+            modal.closeOAuthConnectModal();
+            return;
+          }
           if (modal.isEditPopupOpen()) {
             modal.closeEditPopup();
             return;
@@ -4032,6 +4935,10 @@
         openEditPopup: (serverName, options) => modal.openEditPopup(serverName, options),
         closeEditPopup: () => modal.closeEditPopup(),
         isEditPopupOpen: () => modal.isEditPopupOpen(),
+        openOAuthConnectModal: (serverName, authUrl, options) => modal.openOAuthConnectModal(serverName, authUrl, options),
+        closeOAuthConnectModal: () => modal.closeOAuthConnectModal(),
+        isOAuthConnectModalOpen: () => modal.isOAuthConnectModalOpen(),
+        renderSettingsPageContent: (container) => modal.renderSettingsPageContent(container),
         reload: () => modal.reloadData(),
         bridge,
         schema,
@@ -4041,6 +4948,7 @@
             observer = null;
           }
           win.removeEventListener('keydown', onKeyDown);
+          modal.closeOAuthConnectModal();
           modal.closeEditPopup();
           modal.closeModal();
           cleanupLegacyStatusBarArtifacts(win, doc);

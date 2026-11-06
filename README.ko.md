@@ -2,27 +2,27 @@
 
 [English Documentation (README.md)](./README.md)
 
-**Google Antigravity 2.0 네이티브 데스크톱 앱**의 기본 **`Customizations` -> `MCP Servers`** 및 **`Add MCP Server`** 화면 안에서 공식 스토어 카탈로그에 없는 **커스텀 MCP 서버**(로컬 `Stdio` 명령 `npx`, `uvx`, `node`, `python`, `docker` 및 원격 `Streamable HTTP` 서버)를 앱 재시작 없이 즉시 추가·수정·삭제·토글할 수 있는 확장 도구입니다.
+**Google Antigravity 2.0 네이티브 데스크톱 앱**의 좌측 **`설정(Settings)` -> `MCP 서버` 탭** 및 기본 **`Customizations` -> `MCP Servers`** 화면에서 공식 카탈로그에 없는 **사용자 지정 MCP 서버**(원격 OAuth MCP 포털/서버 및 로컬 `Stdio` 명령 `npx`, `uvx`, `node`, `python`, `docker`)를 앱 재시작 없이 즉시 추가·OAuth 연결·수정·삭제·토글할 수 있는 확장 도구입니다.
 
 ---
 
-## 주요 기능
+## 주요 기능 (`v1.3.0`)
 
-1. **네이티브 `Customizations` -> `MCP Servers` 및 `Add MCP Server` 화면 통합**
-   - 하단 상태바는 건드리지 않고, 안티그래비티 기본 `Customizations` -> `MCP Servers` 섹션(`[data-testid="add-mcp-button"]`), `Add MCP Server` 모달(`[data-testid="add-mcp-screen"]`), 그리고 각 서버 행(`[data-testid="mcp-server-row"]`)에 `+ Custom MCP`, `⚙️ Edit Settings` (`설정 수정`), `🔑 Authenticate` (`인증 설정`) 버튼을 주입합니다.
-2. **커스텀 MCP 설정 및 인증 수정 전용 팝업창 (`⚙️ Edit Custom MCP Server & Authentication`)**
-   - 네이티브 MCP 서버 목록이나 `Unauthorized` 오류 박스(`Fix with Agent` 옆)에서 `🔑 인증 설정` 또는 `⚙️ 설정 수정` 버튼을 누르면 즉시 전용 수정 팝업창이 열려 서버 주소·명령어·인증 정보를 바로 고치고 재연결할 수 있습니다.
-3. **MCP 인증(Authentication) 완벽 지원 (`v1.2.0`)**
-   - **Bearer 토큰 (`Authorization: Bearer <token>`)**, **API Key 헤더 (`X-API-Key` 등)**, **Basic 인증**, **네이티브 OAuth (`completeMcpOAuth` / `disconnectMcpOAuth`)**를 모두 지원합니다.
-   - 여러 커스텀 HTTP 서버에 동일한 토큰을 한 번에 적용하는 **일괄 인증 적용(`Apply this authentication to all custom HTTP servers`)** 기능과 `⚡ 빠른 자동 추가` 바의 선택적 토큰 입력칸을 제공합니다.
-4. **단축키 지원 (`Ctrl+Shift+M`)**
-   - 언제든 `Ctrl+Shift+M`을 눌러 커스텀 MCP 서버 관리 모달을 열거나 닫을 수 있습니다.
-5. **앱 재시작 없는 즉시 연결 (`refreshMcpServers`)**
-   - `~/.gemini/config/mcp_config.json` 저장 직후 내부 Language Server RPC인 `refreshMcpServers({ shallow: false })`와 `getMcpServerStates()`를 호출해 앱을 껐다 켜지 않아도 즉시 MCP 서버 프로세스를 스폰하고 도구 목록을 불러옵니다.
-6. **서버별 활성/비활성 및 개별 도구(`disabledTools`) 클릭 토글**
-   - 서버 카드에서 각 도구(tool) 칩을 클릭하면 `disabledTools` 배열에 즉시 반영되어 특정 도구만 선택적으로 켜고 끌 수 있습니다.
-7. **8종 원클릭 프리셋 템플릿 & Raw `mcp_config.json` 편집기**
-   - Filesystem, Memory, Fetch, GitHub, PostgreSQL, SQLite, Playwright, Streamable HTTP 프리셋과 원시 JSON 편집기를 함께 제공합니다.
+1. **안티그래비티 `설정(Settings)` 좌측 사이드바 `"MCP 서버"` 탭 통합**
+   - `설정(Settings)` 모달 좌측 네비게이션의 `"한글 번역"` 탭 바로 아래에 **`"MCP 서버"` (`settings-nav-item-McpManager`)** 탭을 추가합니다.
+   - `"MCP 서버"` 탭을 클릭하면 우측 패널에서 전체 MCP 서버 상태 조회, 빠른 자동 추가(`Quick Auto-Add`), `+ 사용자 지정 MCP 서버 추가`, `⚙️ 서버 설정 수정`, `🔗 OAuth 연결 ↗`, `{ } mcp_config.json 편집`을 한 화면에서 관리할 수 있습니다.
+2. **OAuth 중심 사용자 지정 MCP 서버 등록 & 자동 `<서버이름> 연결 ↗` 모달**
+   - 수동 토큰 입력을 강요하지 않고, MCP 포털/서버 URL만 입력하면 안티그래비티 호스트(`language_server.exe`)의 RFC 9728 / RFC 8414 OAuth Discovery(`/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`)를 통해 `authUrl`을 자동 감지합니다.
+   - OAuth가 필요한 서버는 저장 직후 **`<서버이름> 연결` 모달 (`<서버이름> 연결 ↗` 버튼)**이 자동으로 열려 브라우저 OAuth 로그인으로 즉시 연결됩니다.
+3. **ChatGPT 스타일 `사용자 지정 MCP 서버 추가` / `설정 수정` 팝업창**
+   - **이름 (`Server Name`)** 및 **설명 (`선택 사항`)**
+   - **연결 (`Connection`)**: `[ 서버 URL | 로컬 / 터널 (Stdio) ]` 세그먼트 토글 (기본값 `서버 URL`)
+   - **인증 (`Authentication`)**: **`OAuth` (기본값)**, **`인증 없음`**, **`OAuth 또는 인증 없음`**, 그리고 필요 시 선택 가능한 Bearer Token / API Key / Basic Auth
+   - **고급 OAuth 설정 (`Advanced OAuth Settings`) >**: 자동 감지(동적 클라이언트 등록) 또는 직접 입력(`Client ID`, `Client Secret`, 기본 권한 범위 `Scopes`) 지원
+4. **네이티브 `Customizations` -> `MCP Servers` 및 `Add MCP Server` 화면 통합**
+   - 하단 상태바는 건드리지 않고, 각 서버 행(`[data-testid="mcp-server-row"]`)과 `Unauthorized` 오류 박스(`Fix with Agent` 옆)에 `🔗 OAuth 연결 / 인증` 및 `⚙️ 설정 수정` 버튼을 주입합니다.
+5. **단축키(`Ctrl+Shift+M`) 및 앱 재시작 없는 즉시 반영(`refreshMcpServers`)**
+   - 언제든 `Ctrl+Shift+M`으로 관리 모달을 열 수 있으며, `mcp_config.json` 저장 즉시 `refreshMcpServers({ shallow: false })`를 호출해 재시작 없이 반영됩니다.
 
 ---
 

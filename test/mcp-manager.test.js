@@ -357,7 +357,36 @@ test('extractAuthFromSpec, buildAuthHeaders, and parseSmartMcpInput support Bear
   assert.equal(urlUserToken.spec.url, 'https://ssh-approval-origin.jaeseong.dev/mcp');
   assert.deepEqual(urlUserToken.spec.headers, { Authorization: 'Bearer tok_123' });
 
-  // 4. extractAuthFromSpec & buildAuthHeaders round-trip
+  // 4. extractAuthFromSpec defaults to 'oauth' for HTTP URL servers without static auth headers
+  const defaultOAuth = extractAuthFromSpec({
+    url: 'https://ledger-mcp.jaeseong.dev/mcp',
+  });
+  assert.equal(defaultOAuth.authMode, 'oauth');
+  assert.equal(defaultOAuth.oauthClientMode, 'auto');
+
+  // 5. validateAndBuildServerSpec builds custom OAuth client settings and strips stale Authorization when authMode='oauth'
+  const builtOAuthCustom = validateAndBuildServerSpec({
+    serverName: 'ledger-mcp-jaeseong',
+    description: 'Ledger OAuth MCP Server',
+    transport: 'http',
+    url: 'https://ledger-mcp.jaeseong.dev/mcp',
+    authMode: 'oauth',
+    oauthClientMode: 'custom',
+    oauthClientId: 'my-client-id',
+    oauthClientSecret: 'my-client-secret',
+    oauthScopes: 'mcp:tools openid',
+    headersText: 'Authorization: Bearer stale_token\nX-Custom: 1',
+  });
+  assert.equal(builtOAuthCustom.ok, true);
+  assert.equal(builtOAuthCustom.spec.description, 'Ledger OAuth MCP Server');
+  assert.deepEqual(builtOAuthCustom.spec.headers, { 'X-Custom': '1' });
+  assert.deepEqual(builtOAuthCustom.spec.oauth, {
+    clientId: 'my-client-id',
+    clientSecret: 'my-client-secret',
+    scopes: ['mcp:tools', 'openid'],
+  });
+
+  // 6. extractAuthFromSpec & buildAuthHeaders round-trip for Bearer and Basic
   const extractedBearer = extractAuthFromSpec({
     url: 'https://ledger-mcp.jaeseong.dev/mcp',
     headers: { Authorization: 'Bearer abc_999', 'X-Trace': '1' },
@@ -449,6 +478,238 @@ test('buildBundle produces valid self-contained userscript bundle without status
   const res = buildBundle();
   assert.ok(res.size > 5000);
   assert.ok(res.bundle.includes('Antigravity Custom MCP Server Manager'));
-  assert.ok(res.bundle.includes('Edit Custom MCP Server & Authentication'));
+  assert.ok(res.bundle.includes('사용자 지정 MCP 서버 추가'));
+  assert.ok(res.bundle.includes('고급 OAuth 설정'));
+  assert.ok(res.bundle.includes('settings-nav-item-McpManager'));
   assert.ok(!res.bundle.includes('.registerAdapter('));
+});
+
+test('createModalController builds OAuth-first edit popup, OAuth connect modal, and Settings page content', async () => {
+  const { createModalController } = require('../src/modal-ui');
+
+  // Minimal DOM mock for modal-ui verification
+  function makeEl(tag) {
+    const el = {
+      tagName: String(tag).toUpperCase(),
+      id: '',
+      className: '',
+      textContent: '',
+      value: '',
+      type: '',
+      placeholder: '',
+      checked: false,
+      style: {},
+      attributes: new Map(),
+      children: [],
+      listeners: new Map(),
+      parentNode: null,
+      parentElement: null,
+      get firstChild() {
+        return this.children[0] || null;
+      },
+      get options() {
+        return this.children.filter((c) => c.tagName === 'OPTION');
+      },
+      setAttribute(k, v) {
+        this.attributes.set(k, String(v));
+        if (k === 'id') this.id = String(v);
+      },
+      getAttribute(k) {
+        if (k === 'id') return this.id || null;
+        return this.attributes.has(k) ? this.attributes.get(k) : null;
+      },
+      hasAttribute(k) {
+        return k === 'id' ? Boolean(this.id) : this.attributes.has(k);
+      },
+      removeAttribute(k) {
+        this.attributes.delete(k);
+      },
+      appendChild(child) {
+        if (child.parentNode) child.parentNode.removeChild(child);
+        child.parentNode = this;
+        child.parentElement = this;
+        this.children.push(child);
+        return child;
+      },
+      removeChild(child) {
+        const idx = this.children.indexOf(child);
+        if (idx !== -1) {
+          this.children.splice(idx, 1);
+          child.parentNode = null;
+          child.parentElement = null;
+        }
+        return child;
+      },
+      addEventListener(ev, fn) {
+        if (!this.listeners.has(ev)) this.listeners.set(ev, []);
+        this.listeners.get(ev).push(fn);
+      },
+      click() {
+        const fns = this.listeners.get('click') || [];
+        for (const fn of fns) fn({ target: this, preventDefault() {}, stopPropagation() {} });
+      },
+      closest(sel) {
+        let cur = this;
+        while (cur) {
+          if (sel === '.flex.flex-col.gap-0\\.5' && cur.className === 'flex flex-col gap-0.5') return cur;
+          cur = cur.parentElement;
+        }
+        return null;
+      },
+      querySelector(sel) {
+        return this.querySelectorAll(sel)[0] || null;
+      },
+      querySelectorAll(sel) {
+        const out = [];
+        const match = (node) => {
+          if (sel.startsWith('#')) return node.id === sel.slice(1);
+          if (sel === '.grow.w-full') return node.className === 'grow w-full';
+          if (sel.startsWith('.')) return (node.className || '').split(/\s+/).includes(sel.slice(1));
+          const mTagAttr = /^([a-z0-9_-]+)\[([^=\]]+)="([^"]+)"\]$/i.exec(sel);
+          if (mTagAttr) {
+            return node.tagName === mTagAttr[1].toUpperCase() && node.getAttribute(mTagAttr[2]) === mTagAttr[3];
+          }
+          const mAttr = /^\[([^=\]]+)="([^"]+)"\]$/.exec(sel);
+          if (mAttr) return node.getAttribute(mAttr[1]) === mAttr[2];
+          return node.tagName === sel.toUpperCase();
+        };
+        const walk = (node) => {
+          for (const c of node.children) {
+            if (match(c)) out.push(c);
+            walk(c);
+          }
+        };
+        walk(this);
+        return out;
+      },
+    };
+    return el;
+  }
+
+  const doc = {
+    head: makeEl('head'),
+    body: makeEl('body'),
+    createElement: (tag) => makeEl(tag),
+    getElementById(id) {
+      return this.head.querySelector(`#${id}`) || this.body.querySelector(`#${id}`);
+    },
+    querySelector(sel) {
+      return this.body.querySelector(sel);
+    },
+    querySelectorAll(sel) {
+      return this.body.querySelectorAll(sel);
+    },
+  };
+
+  let openedUrl = '';
+  const mockBridge = {
+    async readMcpConfig() {
+      return {
+        uri: 'file:///C:/Users/TestUser/.gemini/config/mcp_config.json',
+        rawText: '{"mcpServers":{"ledger-mcp-jaeseong":{"url":"https://ledger-mcp.jaeseong.dev/mcp"}}}',
+        config: {
+          mcpServers: {
+            'ledger-mcp-jaeseong': { url: 'https://ledger-mcp.jaeseong.dev/mcp' },
+          },
+        },
+      };
+    },
+    async fetchServerStates() {
+      return {
+        ok: true,
+        states: [
+          {
+            serverName: 'ledger-mcp-jaeseong',
+            status: 1,
+            authUrl: 'https://ledger-mcp.jaeseong.dev/oauth/authorize?client_id=abc',
+            spec: { serverName: 'ledger-mcp-jaeseong', serverUrl: 'https://ledger-mcp.jaeseong.dev/mcp' },
+          },
+        ],
+      };
+    },
+    openAuthUrl(url) {
+      openedUrl = url;
+      return { ok: true };
+    },
+  };
+
+  const modal = createModalController({ doc, bridge: mockBridge });
+
+  // 1. Open Edit Popup -> verify OAuth is selected by default and options match ChatGPT UX
+  await modal.openEditPopup('ledger-mcp-jaeseong', { focusAuth: true });
+  assert.equal(modal.isEditPopupOpen(), true);
+  const authSelect = doc.body.querySelector('[data-field="authMode"]');
+  assert.ok(authSelect);
+  assert.equal(authSelect.value, 'oauth');
+  assert.deepEqual(
+    authSelect.options.map((o) => o.value),
+    ['oauth', 'none', 'oauth_or_none', 'bearer', 'apiKey', 'basic']
+  );
+  const advToggle = doc.body.querySelector('[data-testid="agy-mcp-advanced-oauth-toggle"]');
+  assert.ok(advToggle);
+  modal.closeEditPopup();
+  assert.equal(modal.isEditPopupOpen(), false);
+
+  // 2. Open OAuth Connect Modal (<서버이름> 연결 ↗)
+  await modal.openOAuthConnectModal('test', 'https://example.com/oauth/authorize');
+  assert.equal(modal.isOAuthConnectModalOpen(), true);
+  const launchBtn = doc.body.querySelector('[data-testid="agy-mcp-oauth-launch-btn"]');
+  assert.ok(launchBtn);
+  assert.equal(launchBtn.textContent, 'test 연결 ↗');
+  launchBtn.click();
+  assert.equal(openedUrl, 'https://example.com/oauth/authorize');
+  modal.closeOAuthConnectModal();
+  assert.equal(modal.isOAuthConnectModalOpen(), false);
+
+  // 3. Render Settings Page Content inside #agy-mcp-settings-pane
+  const settingsPane = makeEl('div');
+  settingsPane.id = 'agy-mcp-settings-pane';
+  doc.body.appendChild(settingsPane);
+  modal.renderSettingsPageContent(settingsPane);
+  const addBtn = settingsPane.querySelector('[data-testid="agy-mcp-settings-add-btn"]');
+  assert.ok(addBtn);
+  assert.equal(addBtn.textContent, '+ 사용자 지정 MCP 서버 추가');
+
+  // 4. Verify mountMcpManager injects "MCP 서버" tab into .settings-modal-container right below "한글 번역"
+  const { mountMcpManager } = require('../src/index');
+  const settingsModal = makeEl('div');
+  settingsModal.className = 'settings-modal-container';
+  const navGroup = makeEl('div');
+  navGroup.className = 'flex flex-col gap-0.5';
+  const modelsBtn = makeEl('button');
+  modelsBtn.setAttribute('data-testid', 'settings-nav-item-Models');
+  modelsBtn.textContent = '모델';
+  const koBtn = makeEl('button');
+  koBtn.setAttribute('data-testid', 'settings-nav-item-KoTranslator');
+  koBtn.textContent = '한글 번역';
+  navGroup.appendChild(modelsBtn);
+  navGroup.appendChild(koBtn);
+
+  const contentArea = makeEl('div');
+  contentArea.className = 'grow w-full';
+  const nativeGeneralPane = makeEl('div');
+  nativeGeneralPane.id = 'native-general';
+  contentArea.appendChild(nativeGeneralPane);
+
+  settingsModal.appendChild(navGroup);
+  settingsModal.appendChild(contentArea);
+  doc.body.appendChild(settingsModal);
+
+  const mockWin = {
+    document: doc,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const mgr = mountMcpManager({ window: mockWin, document: doc, bridge: mockBridge });
+  assert.equal(mgr.version, 'v1.3.0');
+
+  const mcpNavBtn = navGroup.querySelector('[data-testid="settings-nav-item-McpManager"]');
+  assert.ok(mcpNavBtn);
+  assert.equal(mcpNavBtn.children[0].textContent, 'MCP 서버');
+  mcpNavBtn.click();
+
+  const injectedPane = contentArea.querySelector('#agy-mcp-settings-pane');
+  assert.ok(injectedPane);
+  assert.equal(injectedPane.style.display, 'block');
+  assert.equal(nativeGeneralPane.style.display, 'none');
 });

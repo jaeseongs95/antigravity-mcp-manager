@@ -209,8 +209,13 @@ function decodeBase64(b64) {
 }
 
 function extractAuthFromSpec(spec) {
+  const isHttp = Boolean(spec && typeof spec === 'object' && (spec.url || spec.serverUrl || spec.type === 'http'));
   const result = {
-    authMode: 'none', // 'none' | 'bearer' | 'apiKey' | 'basic' | 'oauth'
+    authMode: isHttp ? 'oauth' : 'none', // 'oauth' | 'none' | 'oauth_or_none' | 'bearer' | 'apiKey' | 'basic'
+    oauthClientMode: 'auto', // 'auto' | 'custom'
+    oauthClientId: '',
+    oauthClientSecret: '',
+    oauthScopes: '',
     bearerToken: '',
     apiKeyHeader: 'X-API-Key',
     apiKeyValue: '',
@@ -219,6 +224,22 @@ function extractAuthFromSpec(spec) {
     extraHeaders: {},
   };
   if (!spec || typeof spec !== 'object') return result;
+
+  if (spec.oauth && typeof spec.oauth === 'object') {
+    result.authMode = 'oauth';
+    result.oauthClientId = typeof spec.oauth.clientId === 'string' ? spec.oauth.clientId : '';
+    result.oauthClientSecret = typeof spec.oauth.clientSecret === 'string' ? spec.oauth.clientSecret : '';
+    result.oauthScopes = Array.isArray(spec.oauth.scopes)
+      ? spec.oauth.scopes.join(' ')
+      : (typeof spec.oauth.scopes === 'string' ? spec.oauth.scopes : '');
+    if (result.oauthClientId || result.oauthClientSecret) {
+      result.oauthClientMode = 'custom';
+    }
+  }
+
+  if (spec.authMode === 'none' || spec.authMode === 'oauth' || spec.authMode === 'oauth_or_none') {
+    result.authMode = spec.authMode;
+  }
 
   const rawHeaders = spec.headers && typeof spec.headers === 'object' ? { ...spec.headers } : {};
   const entries = Object.entries(rawHeaders);
@@ -293,7 +314,10 @@ function buildAuthHeaders({
     return headers;
   }
 
-  if (mode === 'none') {
+  if (mode === 'none' || mode === 'oauth' || mode === 'oauth_or_none') {
+    for (const k of Object.keys(headers)) {
+      if (k.toLowerCase() === 'authorization') delete headers[k];
+    }
     return headers;
   }
 
@@ -673,6 +697,7 @@ function parseSmartMcpInput(rawInput, optionalAuthToken = '') {
 
 function validateAndBuildServerSpec({
   serverName,
+  description,
   transport,
   command,
   args,
@@ -684,6 +709,11 @@ function validateAndBuildServerSpec({
   headers,
   headersText,
   authMode,
+  oauth,
+  oauthClientMode,
+  oauthClientId,
+  oauthClientSecret,
+  oauthScopes,
   bearerToken,
   apiKeyHeader,
   apiKeyValue,
@@ -751,7 +781,12 @@ function validateAndBuildServerSpec({
   delete base.url;
   delete base.serverUrl;
   delete base.headers;
+  delete base.oauth;
+  delete base.authMode;
+  delete base.description;
   delete base.disabled;
+
+  const cleanDesc = typeof description === 'string' ? description.trim() : '';
 
   if (transport === 'http') {
     const rawTrimmedUrl = typeof url === 'string' ? url.trim() : '';
@@ -777,8 +812,23 @@ function validateAndBuildServerSpec({
       ...base,
       url: cleanUrl,
     };
+    if (cleanDesc) {
+      spec.description = cleanDesc;
+    }
     if (Object.keys(finalHeaders).length > 0) {
       spec.headers = finalHeaders;
+    }
+    const cId = typeof oauthClientId === 'string' ? oauthClientId.trim() : (typeof oauth?.clientId === 'string' ? oauth.clientId.trim() : '');
+    const cSec = typeof oauthClientSecret === 'string' ? oauthClientSecret.trim() : (typeof oauth?.clientSecret === 'string' ? oauth.clientSecret.trim() : '');
+    const cScopes = typeof oauthScopes === 'string' ? oauthScopes.trim() : '';
+    if ((authMode === 'oauth' || authMode === 'oauth_or_none' || !authMode) && (oauthClientMode === 'custom' || cId || cSec)) {
+      const oauthObj = {};
+      if (cId) oauthObj.clientId = cId;
+      if (cSec) oauthObj.clientSecret = cSec;
+      if (cScopes) oauthObj.scopes = cScopes.split(/[\s,]+/).filter(Boolean);
+      if (Object.keys(oauthObj).length > 0) {
+        spec.oauth = oauthObj;
+      }
     }
     if (disabled) {
       spec.disabled = true;
