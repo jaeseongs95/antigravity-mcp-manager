@@ -51,7 +51,7 @@ function buildBundle() {
   const header =
     `// ==UserScript==\n` +
     `// @name         Antigravity Custom MCP Server Manager\n` +
-    `// @namespace    https://github.com/superselect321/antigravity-mcp-manager\n` +
+    `// @namespace    https://github.com/jaeseongs95/antigravity-mcp-manager\n` +
     `// @version      ${pkgVersion}\n` +
     `// @description  Add, edit, toggle, and manage custom Stdio & HTTP MCP servers (mcp_config.json) directly inside the Antigravity 2.0 native app and Remote Control web.\n` +
     `// @match        https://antigravity.google.com/*\n` +

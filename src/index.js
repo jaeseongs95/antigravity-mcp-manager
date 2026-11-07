@@ -10,7 +10,7 @@ const {
   createModalController,
 } = require('./modal-ui');
 
-const MCP_MANAGER_VERSION = 'v1.4.4';
+const MCP_MANAGER_VERSION = 'v1.4.5';
 const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
 function extractServerNameFromRow(row) {
@@ -182,7 +182,7 @@ function ensureRemoteCompanionScripts(win, doc, bridge) {
           );
           if (ok) loaded.push('antigravity-statusbar');
         }
-        if (info.hasKoTranslator && !win.__agyKoThoughtCleanup) {
+        if (info.hasKoTranslator && !win.__agyKoLocalizerActive && !win.__agyKoThoughtCleanup) {
           const ok = await injectRemoteOrHostFallback(
             '__agyLoadingKoThoughtCompanion',
             'https://raw.githubusercontent.com/jaeseongs95/antigravity-ko-translator/main/plugins/ko-thought-translator/scripts/ko_thought_autoinject.js',

@@ -999,7 +999,8 @@ test('fetchHostInstalledPluginInfo and ensureRemoteCompanionScripts respect sing
     const res = await ensureRemoteCompanionScripts(win, doc, bridge);
     assert.deepEqual(res.loaded, ['antigravity-statusbar']);
     assert.equal(fetchedUrls.length, 1);
-    assert.ok(fetchedUrls[0].includes('statusbar_autoinject.js'));
+    assert.ok(fetchedUrls[0].includes('jaeseongs95/antigravity-statusbar/main/dist/statusbar_autoinject.js'));
+    assert.ok(!fetchedUrls[0].includes('superselect321'));
     assert.equal(scriptsAdded.length, 1);
   }
 

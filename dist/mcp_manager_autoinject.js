@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Antigravity Custom MCP Server Manager
-// @namespace    https://github.com/superselect321/antigravity-mcp-manager
-// @version      1.4.4
+// @namespace    https://github.com/jaeseongs95/antigravity-mcp-manager
+// @version      1.4.5
 // @description  Add, edit, toggle, and manage custom Stdio & HTTP MCP servers (mcp_config.json) directly inside the Antigravity 2.0 native app and Remote Control web.
 // @match        https://antigravity.google.com/*
 // @match        https://*.antigravity.google.com/*
@@ -4757,7 +4757,7 @@
       createModalController,
     } = require('./modal-ui');
 
-    const MCP_MANAGER_VERSION = 'v1.4.4';
+    const MCP_MANAGER_VERSION = 'v1.4.5';
     const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
     function extractServerNameFromRow(row) {
@@ -4929,7 +4929,7 @@
               );
               if (ok) loaded.push('antigravity-statusbar');
             }
-            if (info.hasKoTranslator && !win.__agyKoThoughtCleanup) {
+            if (info.hasKoTranslator && !win.__agyKoLocalizerActive && !win.__agyKoThoughtCleanup) {
               const ok = await injectRemoteOrHostFallback(
                 '__agyLoadingKoThoughtCompanion',
                 'https://raw.githubusercontent.com/jaeseongs95/antigravity-ko-translator/main/plugins/ko-thought-translator/scripts/ko_thought_autoinject.js',
