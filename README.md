@@ -1,4 +1,4 @@
-# Antigravity Custom MCP Server Manager (`antigravity-mcp-manager` `v1.4.5`)
+# Antigravity Custom MCP Server Manager (`antigravity-mcp-manager` `v1.4.6`)
 
 **Languages:** **English ([README.md](./README.md))** | **[한국어 (README.ko.md)](./README.ko.md)**
 

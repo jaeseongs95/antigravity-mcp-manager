@@ -10,7 +10,7 @@ const {
   createModalController,
 } = require('./modal-ui');
 
-const MCP_MANAGER_VERSION = 'v1.4.5';
+const MCP_MANAGER_VERSION = 'v1.4.6';
 const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
 function extractServerNameFromRow(row) {
@@ -165,34 +165,45 @@ function ensureRemoteCompanionScripts(win, doc, bridge) {
       return false;
     };
 
-    return Promise.resolve(
-      bridge && typeof bridge.fetchHostInstalledPluginInfo === 'function'
-        ? bridge.fetchHostInstalledPluginInfo()
-        : null
-    )
-      .then(async (info) => {
-        const loaded = [];
-        if (!info) return { loaded };
+    let attempts = 0;
+    const tryLoadCompanions = async () => {
+      attempts += 1;
+      const info =
+        bridge && typeof bridge.fetchHostInstalledPluginInfo === 'function'
+          ? await bridge.fetchHostInstalledPluginInfo()
+          : null;
+      const loaded = [];
+      if (!info) {
+        if (attempts < 5) {
+          const setTimeoutFn = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : (typeof setTimeout === 'function' ? setTimeout : null);
+          if (setTimeoutFn) {
+            const t = setTimeoutFn(tryLoadCompanions, 1500);
+            if (t && typeof t.unref === 'function') t.unref();
+          }
+        }
+        return { loaded };
+      }
 
-        if (info.hasStatusbar && !win.agyStatusBar) {
-          const ok = await injectRemoteOrHostFallback(
-            '__agyLoadingStatusBarCompanion',
-            'https://raw.githubusercontent.com/jaeseongs95/antigravity-statusbar/main/dist/statusbar_autoinject.js',
-            info.statusbarBlock
-          );
-          if (ok) loaded.push('antigravity-statusbar');
-        }
-        if (info.hasKoTranslator && !win.__agyKoLocalizerActive && !win.__agyKoThoughtCleanup) {
-          const ok = await injectRemoteOrHostFallback(
-            '__agyLoadingKoThoughtCompanion',
-            'https://raw.githubusercontent.com/jaeseongs95/antigravity-ko-translator/main/plugins/ko-thought-translator/scripts/ko_thought_autoinject.js',
-            info.koBlock
-          );
-          if (ok) loaded.push('ko-thought-translator');
-        }
-        return { loaded, hostInfo: info };
-      })
-      .catch(() => ({ loaded: [] }));
+      if (info.hasStatusbar && !win.agyStatusBar) {
+        const ok = await injectRemoteOrHostFallback(
+          '__agyLoadingStatusBarCompanion',
+          'https://raw.githubusercontent.com/jaeseongs95/antigravity-statusbar/main/dist/statusbar_autoinject.js',
+          info.statusbarBlock
+        );
+        if (ok) loaded.push('antigravity-statusbar');
+      }
+      if (info.hasKoTranslator && !win.__agyKoLocalizerActive && !win.__agyKoThoughtCleanup) {
+        const ok = await injectRemoteOrHostFallback(
+          '__agyLoadingKoThoughtCompanion',
+          'https://raw.githubusercontent.com/jaeseongs95/antigravity-ko-translator/main/plugins/ko-thought-translator/scripts/ko_thought_autoinject.js',
+          info.koBlock
+        );
+        if (ok) loaded.push('ko-thought-translator');
+      }
+      return { loaded, hostInfo: info };
+    };
+
+    return tryLoadCompanions().catch(() => ({ loaded: [] }));
   } catch (_e) {
     return Promise.resolve({ loaded: [] });
   }
@@ -470,8 +481,15 @@ function mountMcpManager(env = {}) {
   function ensureRemoteIframeMounted() {
     try {
       const iframe = doc.querySelector?.('ga-remote-control iframe');
-      const iframeWin = iframe?.contentWindow;
-      const iframeDoc = iframe?.contentDocument || iframeWin?.document;
+      if (!iframe) return false;
+      if (!iframe.__agyMcpLoadBound && typeof iframe.addEventListener === 'function') {
+        iframe.__agyMcpLoadBound = true;
+        iframe.addEventListener('load', () => {
+          ensureRemoteIframeMounted();
+        });
+      }
+      const iframeWin = iframe.contentWindow;
+      const iframeDoc = iframe.contentDocument || iframeWin?.document;
       if (iframeWin && iframeDoc && iframeDoc.body) {
         if (!iframeWin.agyMcpManager || iframeWin.agyMcpManager.version !== MCP_MANAGER_VERSION) {
           mountMcpManager({
@@ -479,10 +497,35 @@ function mountMcpManager(env = {}) {
             document: iframeDoc,
             bridge,
           });
+        } else if (typeof iframeWin.agyMcpManager.injectIntoNativeMcpScreens === 'function') {
+          iframeWin.agyMcpManager.injectIntoNativeMcpScreens();
         }
+        return true;
       }
     } catch (_e) {
       // Cross-origin or not yet ready
+    }
+    return false;
+  }
+
+  let remoteIframePollTimer = null;
+  if (doc.querySelector?.('ga-remote-control') && !ensureRemoteIframeMounted()) {
+    let pollCount = 0;
+    const setTimer = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : (typeof setTimeout === 'function' ? setTimeout : null);
+    const pollIframe = () => {
+      remoteIframePollTimer = null;
+      pollCount += 1;
+      if (ensureRemoteIframeMounted() || pollCount >= 12 || ! setTimer) return;
+      remoteIframePollTimer = setTimer(pollIframe, 1000);
+      if (remoteIframePollTimer && typeof remoteIframePollTimer.unref === 'function') {
+        remoteIframePollTimer.unref();
+      }
+    };
+    if (setTimer) {
+      remoteIframePollTimer = setTimer(pollIframe, 500);
+      if (remoteIframePollTimer && typeof remoteIframePollTimer.unref === 'function') {
+        remoteIframePollTimer.unref();
+      }
     }
   }
 
@@ -780,6 +823,11 @@ function mountMcpManager(env = {}) {
         const clr = typeof win.clearTimeout === 'function' ? win.clearTimeout.bind(win) : clearTimeout;
         clr(injectTimer);
         injectTimer = null;
+      }
+      if (remoteIframePollTimer) {
+        const clr = typeof win.clearTimeout === 'function' ? win.clearTimeout.bind(win) : clearTimeout;
+        clr(remoteIframePollTimer);
+        remoteIframePollTimer = null;
       }
       if (observer) {
         observer.disconnect();

@@ -1065,4 +1065,92 @@ test('covers D-0005~D-0011 regressions: writeMcpConfig/toggleServerTool persiste
 
   const toggleToolAttempt = await roBridge.toggleServerTool('my-srv', 'tool_a', false);
   assert.equal(toggleToolAttempt.ok, false, 'toggleServerTool must return ok:false when host service lacks writeFile');
+
+  // 3. D-0013: getRemoteControlProxyAdapter captures RemoteControlComponent via default_GoogleAntigravity prototype + __agy_probe__ when __ngContext__ is absent
+  class FakeRemoteControlComponent {
+    handleIframeMessage(_ev) {}
+    async proxyCommand(rpcPath, _bytes) {
+      if (rpcPath.endsWith('/GetMcpServerStates')) {
+        return {
+          payload: new TextEncoder().encode(JSON.stringify({ states: [{ serverName: 'rc-srv', status: 2 }] })),
+        };
+      }
+      return { payload: new TextEncoder().encode('{}') };
+    }
+  }
+  const rcCompInstance = new FakeRemoteControlComponent();
+  let messageListener = null;
+  const rcWin = {
+    default_GoogleAntigravity: {
+      rcMod: { RemoteControlComponent: FakeRemoteControlComponent },
+    },
+    MessageEvent: class {
+      constructor(type, init) {
+        this.type = type;
+        this.data = init?.data;
+      }
+    },
+    dispatchEvent(ev) {
+      if (messageListener) messageListener(ev);
+    },
+  };
+  const rcDoc = {
+    querySelector(sel) {
+      if (sel === 'ga-remote-control') return {}; // no __ngContext__
+      return null;
+    },
+  };
+  const rcBridge = createHostMcpBridge({ window: rcWin, document: rcDoc });
+  // Trigger prototype hook registration first, then wire listener as Angular component does
+  messageListener = (ev) => rcCompInstance.handleIframeMessage(ev);
+  const rcStatesRes = await rcBridge.fetchServerStates();
+  assert.equal(rcStatesRes.ok, true);
+  assert.equal(rcStatesRes.states.length, 1);
+  assert.equal(rcStatesRes.states[0].serverName, 'rc-srv');
+
+  // 4. D-0013: ensureRemoteCompanionScripts retries when fetchHostInstalledPluginInfo initially returns null
+  let fetchInfoCalls = 0;
+  let scheduledRetryFn = null;
+  const retryWin = {
+    location: { hostname: 'antigravity.google.com' },
+    setTimeout(fn) {
+      scheduledRetryFn = fn;
+      return 1;
+    },
+    async fetch() {
+      return { ok: true, async text() { return '// statusbar delayed load'; } };
+    },
+  };
+  const retryScripts = [];
+  const retryDoc = {
+    head: {
+      appendChild(s) {
+        retryScripts.push(s);
+      },
+    },
+    createElement() {
+      return { text: '' };
+    },
+    querySelector() {
+      return null;
+    },
+  };
+  const retryBridge = {
+    async fetchHostInstalledPluginInfo() {
+      fetchInfoCalls += 1;
+      if (fetchInfoCalls === 1) return null;
+      return {
+        hasStatusbar: true,
+        hasMcpManager: true,
+        hasKoTranslator: false,
+        statusbarBlock: 'function mountStatusBar(){}',
+      };
+    },
+  };
+  const firstTry = await ensureRemoteCompanionScripts(retryWin, retryDoc, retryBridge);
+  assert.deepEqual(firstTry.loaded, []);
+  assert.equal(typeof scheduledRetryFn, 'function', 'must schedule retry when host info is not yet available');
+  const secondTry = await scheduledRetryFn();
+  assert.deepEqual(secondTry.loaded, ['antigravity-statusbar']);
+  assert.equal(retryScripts.length, 1);
 });

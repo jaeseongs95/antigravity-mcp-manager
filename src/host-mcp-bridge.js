@@ -128,6 +128,31 @@ function createHostMcpBridge(opts = {}) {
     return null;
   }
 
+  function hookRemoteControlPrototype(w, proto) {
+    if (!proto || proto.__agyMcpRcHooked) return;
+    proto.__agyMcpRcHooked = true;
+    if (typeof proto.handleIframeMessage === 'function') {
+      const origMsg = proto.__agyOrigHandleIframeMessage || proto.handleIframeMessage;
+      proto.__agyOrigHandleIframeMessage = origMsg;
+      proto.handleIframeMessage = function (ev) {
+        if (w) w.__agyRemoteControlInstance = this;
+        if (ev && ev.data === '__agy_probe__') return;
+        return origMsg.apply(this, arguments);
+      };
+    }
+    for (const mName of ['proxyCommand', 'streamProxyCommand']) {
+      if (typeof proto[mName] === 'function') {
+        const origKey = `__agyOrig_${mName}`;
+        const origFn = proto[origKey] || proto[mName];
+        proto[origKey] = origFn;
+        proto[mName] = function () {
+          if (w) w.__agyRemoteControlInstance = this;
+          return origFn.apply(this, arguments);
+        };
+      }
+    }
+  }
+
   function getRemoteControlProxyAdapter() {
     try {
       const candidateWins = [win, win?.parent !== win ? win?.parent : null].filter(Boolean);
@@ -135,6 +160,17 @@ function createHostMcpBridge(opts = {}) {
         let rcInst = w.__agyRemoteControlInstance && !w.__agyRemoteControlInstance.destroyed
           ? w.__agyRemoteControlInstance
           : null;
+        if (!rcInst && w.default_GoogleAntigravity && typeof w.default_GoogleAntigravity === 'object') {
+          for (const k of Object.keys(w.default_GoogleAntigravity)) {
+            const mod = w.default_GoogleAntigravity[k];
+            if (!mod || (typeof mod !== 'object' && typeof mod !== 'function')) continue;
+            const RC = mod.RemoteControlComponent || (typeof mod.prototype?.proxyCommand === 'function' ? mod : null);
+            if (RC && RC.prototype && typeof RC.prototype.proxyCommand === 'function') {
+              hookRemoteControlPrototype(w, RC.prototype);
+              break;
+            }
+          }
+        }
         if (!rcInst && w.document) {
           const rcEl = w.document.querySelector?.('ga-remote-control');
           const ctx = rcEl?.__ngContext__;
@@ -144,10 +180,22 @@ function createHostMcpBridge(opts = {}) {
               if (item && typeof item === 'object' && typeof item.proxyCommand === 'function') {
                 rcInst = item;
                 w.__agyRemoteControlInstance = item;
+                hookRemoteControlPrototype(w, Object.getPrototypeOf(item));
                 break;
               }
             }
           }
+        }
+        if (!rcInst && typeof w.dispatchEvent === 'function') {
+          try {
+            const Evt = w.MessageEvent || (typeof MessageEvent !== 'undefined' ? MessageEvent : null);
+            if (Evt) {
+              w.dispatchEvent(new Evt('message', { data: '__agy_probe__' }));
+              if (w.__agyRemoteControlInstance && !w.__agyRemoteControlInstance.destroyed) {
+                rcInst = w.__agyRemoteControlInstance;
+              }
+            }
+          } catch {}
         }
         if (rcInst && typeof rcInst.proxyCommand === 'function') {
           const callRpc = async (rpcPath, reqObj) => {

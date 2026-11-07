@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Antigravity Custom MCP Server Manager
 // @namespace    https://github.com/jaeseongs95/antigravity-mcp-manager
-// @version      1.4.5
+// @version      1.4.6
 // @description  Add, edit, toggle, and manage custom Stdio & HTTP MCP servers (mcp_config.json) directly inside the Antigravity 2.0 native app and Remote Control web.
 // @match        https://antigravity.google.com/*
 // @match        https://*.antigravity.google.com/*
@@ -1106,6 +1106,31 @@
         return null;
       }
 
+      function hookRemoteControlPrototype(w, proto) {
+        if (!proto || proto.__agyMcpRcHooked) return;
+        proto.__agyMcpRcHooked = true;
+        if (typeof proto.handleIframeMessage === 'function') {
+          const origMsg = proto.__agyOrigHandleIframeMessage || proto.handleIframeMessage;
+          proto.__agyOrigHandleIframeMessage = origMsg;
+          proto.handleIframeMessage = function (ev) {
+            if (w) w.__agyRemoteControlInstance = this;
+            if (ev && ev.data === '__agy_probe__') return;
+            return origMsg.apply(this, arguments);
+          };
+        }
+        for (const mName of ['proxyCommand', 'streamProxyCommand']) {
+          if (typeof proto[mName] === 'function') {
+            const origKey = `__agyOrig_${mName}`;
+            const origFn = proto[origKey] || proto[mName];
+            proto[origKey] = origFn;
+            proto[mName] = function () {
+              if (w) w.__agyRemoteControlInstance = this;
+              return origFn.apply(this, arguments);
+            };
+          }
+        }
+      }
+
       function getRemoteControlProxyAdapter() {
         try {
           const candidateWins = [win, win?.parent !== win ? win?.parent : null].filter(Boolean);
@@ -1113,6 +1138,17 @@
             let rcInst = w.__agyRemoteControlInstance && !w.__agyRemoteControlInstance.destroyed
               ? w.__agyRemoteControlInstance
               : null;
+            if (!rcInst && w.default_GoogleAntigravity && typeof w.default_GoogleAntigravity === 'object') {
+              for (const k of Object.keys(w.default_GoogleAntigravity)) {
+                const mod = w.default_GoogleAntigravity[k];
+                if (!mod || (typeof mod !== 'object' && typeof mod !== 'function')) continue;
+                const RC = mod.RemoteControlComponent || (typeof mod.prototype?.proxyCommand === 'function' ? mod : null);
+                if (RC && RC.prototype && typeof RC.prototype.proxyCommand === 'function') {
+                  hookRemoteControlPrototype(w, RC.prototype);
+                  break;
+                }
+              }
+            }
             if (!rcInst && w.document) {
               const rcEl = w.document.querySelector?.('ga-remote-control');
               const ctx = rcEl?.__ngContext__;
@@ -1122,10 +1158,22 @@
                   if (item && typeof item === 'object' && typeof item.proxyCommand === 'function') {
                     rcInst = item;
                     w.__agyRemoteControlInstance = item;
+                    hookRemoteControlPrototype(w, Object.getPrototypeOf(item));
                     break;
                   }
                 }
               }
+            }
+            if (!rcInst && typeof w.dispatchEvent === 'function') {
+              try {
+                const Evt = w.MessageEvent || (typeof MessageEvent !== 'undefined' ? MessageEvent : null);
+                if (Evt) {
+                  w.dispatchEvent(new Evt('message', { data: '__agy_probe__' }));
+                  if (w.__agyRemoteControlInstance && !w.__agyRemoteControlInstance.destroyed) {
+                    rcInst = w.__agyRemoteControlInstance;
+                  }
+                }
+              } catch {}
             }
             if (rcInst && typeof rcInst.proxyCommand === 'function') {
               const callRpc = async (rpcPath, reqObj) => {
@@ -4757,7 +4805,7 @@
       createModalController,
     } = require('./modal-ui');
 
-    const MCP_MANAGER_VERSION = 'v1.4.5';
+    const MCP_MANAGER_VERSION = 'v1.4.6';
     const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
     function extractServerNameFromRow(row) {
@@ -4912,34 +4960,45 @@
           return false;
         };
 
-        return Promise.resolve(
-          bridge && typeof bridge.fetchHostInstalledPluginInfo === 'function'
-            ? bridge.fetchHostInstalledPluginInfo()
-            : null
-        )
-          .then(async (info) => {
-            const loaded = [];
-            if (!info) return { loaded };
+        let attempts = 0;
+        const tryLoadCompanions = async () => {
+          attempts += 1;
+          const info =
+            bridge && typeof bridge.fetchHostInstalledPluginInfo === 'function'
+              ? await bridge.fetchHostInstalledPluginInfo()
+              : null;
+          const loaded = [];
+          if (!info) {
+            if (attempts < 5) {
+              const setTimeoutFn = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : (typeof setTimeout === 'function' ? setTimeout : null);
+              if (setTimeoutFn) {
+                const t = setTimeoutFn(tryLoadCompanions, 1500);
+                if (t && typeof t.unref === 'function') t.unref();
+              }
+            }
+            return { loaded };
+          }
 
-            if (info.hasStatusbar && !win.agyStatusBar) {
-              const ok = await injectRemoteOrHostFallback(
-                '__agyLoadingStatusBarCompanion',
-                'https://raw.githubusercontent.com/jaeseongs95/antigravity-statusbar/main/dist/statusbar_autoinject.js',
-                info.statusbarBlock
-              );
-              if (ok) loaded.push('antigravity-statusbar');
-            }
-            if (info.hasKoTranslator && !win.__agyKoLocalizerActive && !win.__agyKoThoughtCleanup) {
-              const ok = await injectRemoteOrHostFallback(
-                '__agyLoadingKoThoughtCompanion',
-                'https://raw.githubusercontent.com/jaeseongs95/antigravity-ko-translator/main/plugins/ko-thought-translator/scripts/ko_thought_autoinject.js',
-                info.koBlock
-              );
-              if (ok) loaded.push('ko-thought-translator');
-            }
-            return { loaded, hostInfo: info };
-          })
-          .catch(() => ({ loaded: [] }));
+          if (info.hasStatusbar && !win.agyStatusBar) {
+            const ok = await injectRemoteOrHostFallback(
+              '__agyLoadingStatusBarCompanion',
+              'https://raw.githubusercontent.com/jaeseongs95/antigravity-statusbar/main/dist/statusbar_autoinject.js',
+              info.statusbarBlock
+            );
+            if (ok) loaded.push('antigravity-statusbar');
+          }
+          if (info.hasKoTranslator && !win.__agyKoLocalizerActive && !win.__agyKoThoughtCleanup) {
+            const ok = await injectRemoteOrHostFallback(
+              '__agyLoadingKoThoughtCompanion',
+              'https://raw.githubusercontent.com/jaeseongs95/antigravity-ko-translator/main/plugins/ko-thought-translator/scripts/ko_thought_autoinject.js',
+              info.koBlock
+            );
+            if (ok) loaded.push('ko-thought-translator');
+          }
+          return { loaded, hostInfo: info };
+        };
+
+        return tryLoadCompanions().catch(() => ({ loaded: [] }));
       } catch (_e) {
         return Promise.resolve({ loaded: [] });
       }
@@ -5217,8 +5276,15 @@
       function ensureRemoteIframeMounted() {
         try {
           const iframe = doc.querySelector?.('ga-remote-control iframe');
-          const iframeWin = iframe?.contentWindow;
-          const iframeDoc = iframe?.contentDocument || iframeWin?.document;
+          if (!iframe) return false;
+          if (!iframe.__agyMcpLoadBound && typeof iframe.addEventListener === 'function') {
+            iframe.__agyMcpLoadBound = true;
+            iframe.addEventListener('load', () => {
+              ensureRemoteIframeMounted();
+            });
+          }
+          const iframeWin = iframe.contentWindow;
+          const iframeDoc = iframe.contentDocument || iframeWin?.document;
           if (iframeWin && iframeDoc && iframeDoc.body) {
             if (!iframeWin.agyMcpManager || iframeWin.agyMcpManager.version !== MCP_MANAGER_VERSION) {
               mountMcpManager({
@@ -5226,10 +5292,35 @@
                 document: iframeDoc,
                 bridge,
               });
+            } else if (typeof iframeWin.agyMcpManager.injectIntoNativeMcpScreens === 'function') {
+              iframeWin.agyMcpManager.injectIntoNativeMcpScreens();
             }
+            return true;
           }
         } catch (_e) {
           // Cross-origin or not yet ready
+        }
+        return false;
+      }
+
+      let remoteIframePollTimer = null;
+      if (doc.querySelector?.('ga-remote-control') && !ensureRemoteIframeMounted()) {
+        let pollCount = 0;
+        const setTimer = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : (typeof setTimeout === 'function' ? setTimeout : null);
+        const pollIframe = () => {
+          remoteIframePollTimer = null;
+          pollCount += 1;
+          if (ensureRemoteIframeMounted() || pollCount >= 12 || ! setTimer) return;
+          remoteIframePollTimer = setTimer(pollIframe, 1000);
+          if (remoteIframePollTimer && typeof remoteIframePollTimer.unref === 'function') {
+            remoteIframePollTimer.unref();
+          }
+        };
+        if (setTimer) {
+          remoteIframePollTimer = setTimer(pollIframe, 500);
+          if (remoteIframePollTimer && typeof remoteIframePollTimer.unref === 'function') {
+            remoteIframePollTimer.unref();
+          }
         }
       }
 
@@ -5527,6 +5618,11 @@
             const clr = typeof win.clearTimeout === 'function' ? win.clearTimeout.bind(win) : clearTimeout;
             clr(injectTimer);
             injectTimer = null;
+          }
+          if (remoteIframePollTimer) {
+            const clr = typeof win.clearTimeout === 'function' ? win.clearTimeout.bind(win) : clearTimeout;
+            clr(remoteIframePollTimer);
+            remoteIframePollTimer = null;
           }
           if (observer) {
             observer.disconnect();
