@@ -10,7 +10,7 @@ const {
   createModalController,
 } = require('./modal-ui');
 
-const MCP_MANAGER_VERSION = 'v1.4.6';
+const MCP_MANAGER_VERSION = 'v1.4.7';
 const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
 function extractServerNameFromRow(row) {
@@ -151,6 +151,9 @@ function ensureRemoteCompanionScripts(win, doc, bridge) {
     const injectRemoteOrHostFallback = async (flagKey, url, hostCodeFallback) => {
       if (win[flagKey]) return false;
       win[flagKey] = true;
+      if (hostCodeFallback && execScriptText(hostCodeFallback)) {
+        return true;
+      }
       try {
         if (typeof win.fetch === 'function') {
           const r = await win.fetch(`${url}?t=${Date.now()}`);
@@ -158,9 +161,6 @@ function ensureRemoteCompanionScripts(win, doc, bridge) {
           if (code && execScriptText(code)) return true;
         }
       } catch (_e) {}
-      if (hostCodeFallback && execScriptText(hostCodeFallback)) {
-        return true;
-      }
       win[flagKey] = false;
       return false;
     };

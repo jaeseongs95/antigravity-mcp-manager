@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Antigravity Custom MCP Server Manager
 // @namespace    https://github.com/jaeseongs95/antigravity-mcp-manager
-// @version      1.4.6
+// @version      1.4.7
 // @description  Add, edit, toggle, and manage custom Stdio & HTTP MCP servers (mcp_config.json) directly inside the Antigravity 2.0 native app and Remote Control web.
 // @match        https://antigravity.google.com/*
 // @match        https://*.antigravity.google.com/*
@@ -4805,7 +4805,7 @@
       createModalController,
     } = require('./modal-ui');
 
-    const MCP_MANAGER_VERSION = 'v1.4.6';
+    const MCP_MANAGER_VERSION = 'v1.4.7';
     const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
     function extractServerNameFromRow(row) {
@@ -4946,6 +4946,9 @@
         const injectRemoteOrHostFallback = async (flagKey, url, hostCodeFallback) => {
           if (win[flagKey]) return false;
           win[flagKey] = true;
+          if (hostCodeFallback && execScriptText(hostCodeFallback)) {
+            return true;
+          }
           try {
             if (typeof win.fetch === 'function') {
               const r = await win.fetch(`${url}?t=${Date.now()}`);
@@ -4953,9 +4956,6 @@
               if (code && execScriptText(code)) return true;
             }
           } catch (_e) {}
-          if (hostCodeFallback && execScriptText(hostCodeFallback)) {
-            return true;
-          }
           win[flagKey] = false;
           return false;
         };

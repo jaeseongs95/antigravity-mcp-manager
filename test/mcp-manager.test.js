@@ -988,7 +988,7 @@ test('fetchHostInstalledPluginInfo and ensureRemoteCompanionScripts respect sing
     assert.equal(scriptsAdded.length, 0);
   }
 
-  // Case 2: User installed mcp-manager + statusbar (2 plugins)
+  // Case 2: User installed mcp-manager + statusbar (2 plugins) -> executes host statusbarBlock FIRST without calling external fetch
   currentHostAutoinjectContent = `function mountStatusBar(){}\nwindow.agyStatusBar={};\n${mcpBegin}\nfunction mountMcpManager(){}\n${mcpEnd}`;
   {
     const fetchedUrls = [];
@@ -998,10 +998,36 @@ test('fetchHostInstalledPluginInfo and ensureRemoteCompanionScripts respect sing
     });
     const res = await ensureRemoteCompanionScripts(win, doc, bridge);
     assert.deepEqual(res.loaded, ['antigravity-statusbar']);
-    assert.equal(fetchedUrls.length, 1);
-    assert.ok(fetchedUrls[0].includes('jaeseongs95/antigravity-statusbar/main/dist/statusbar_autoinject.js'));
-    assert.ok(!fetchedUrls[0].includes('superselect321'));
+    assert.equal(fetchedUrls.length, 0, 'must NOT call external fetch when host statusbarBlock is already available');
     assert.equal(scriptsAdded.length, 1);
+    assert.ok(scriptsAdded[0].includes('mountStatusBar'));
+  }
+
+  // Case 2B: When hostCodeFallback is empty, falls back to jaeseongs95 GitHub Raw URL
+  {
+    const fetchedUrls = [];
+    const { win, doc, scriptsAdded } = makeRemoteTestEnv(async (url) => {
+      fetchedUrls.push(url);
+      return { ok: true, async text() { return '// statusbar remote bundle'; } };
+    });
+    const noBlockBridge = {
+      async fetchHostInstalledPluginInfo() {
+        return {
+          hasStatusbar: true,
+          hasMcpManager: true,
+          hasKoTranslator: true,
+          statusbarBlock: '',
+          koBlock: '',
+        };
+      },
+    };
+    const res = await ensureRemoteCompanionScripts(win, doc, noBlockBridge);
+    assert.deepEqual(res.loaded, ['antigravity-statusbar', 'ko-thought-translator']);
+    assert.equal(fetchedUrls.length, 2);
+    assert.ok(fetchedUrls[0].includes('jaeseongs95/antigravity-statusbar/main/dist/statusbar_autoinject.js'));
+    assert.ok(fetchedUrls[1].includes('jaeseongs95/antigravity-ko-translator/main/plugins/ko-thought-translator/scripts/ko_thought_autoinject.js'));
+    assert.ok(!fetchedUrls.some((u) => u.includes('superselect321')));
+    assert.equal(scriptsAdded.length, 2);
   }
 
   // Case 3: User installed all 3 plugins, and network fetch fails -> falls back to host code blocks
