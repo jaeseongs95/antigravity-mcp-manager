@@ -905,6 +905,11 @@ test('createModalController and mountMcpManager render English UI, prevent Mutat
   const settingsAddBtn = injectedPane.querySelector('[data-testid="agy-mcp-settings-add-btn"]');
   assert.ok(settingsAddBtn);
   assert.equal(settingsAddBtn.textContent, '+ Add Custom MCP Server');
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(
+    injectedPane.querySelector('[data-mcp-server-card="ledger-portal-jaeseong"]'),
+    'MCP-CR-01: clicking MCP Servers tab in Settings modal must call reloadData() and render existing server cards'
+  );
 
   // Click Models tab back -> restores highlight on Models tab and clears highlight on MCP Servers tab
   modelsBtn.click();
@@ -1539,4 +1544,189 @@ test('covers MCP-BUG-01..06 regressions: line-anchored marker extraction, 2-plug
     '⚙️ Edit Custom MCP Server Settings',
     're-calling openEditPopup with an existing server while popup is open must update header title'
   );
+
+  // 6. ANTIGRAVITY_MCP_MANAGER-D-0016 (MCP-CR-02..04) regressions:
+  //    a) MCP-CR-02: editing and saving an existing custom server in openEditPopup preserves disabledTools
+  {
+    let upsertedSpec = null;
+    const cr02Els = new Map();
+    function makeCr02Node(tag) {
+      const node = {
+        tagName: String(tag).toUpperCase(),
+        id: '',
+        className: '',
+        textContent: '',
+        value: '',
+        type: '',
+        checked: false,
+        style: {},
+        children: [],
+        attrs: new Map(),
+        listeners: new Map(),
+        classList: {
+          add(...t) {
+            const s = new Set((node.className || '').split(/\s+/).filter(Boolean));
+            for (const x of t) s.add(x);
+            node.className = Array.from(s).join(' ');
+          },
+          remove(...t) {
+            const s = new Set((node.className || '').split(/\s+/).filter(Boolean));
+            for (const x of t) s.delete(x);
+            node.className = Array.from(s).join(' ');
+          },
+        },
+        setAttribute(k, v) {
+          this.attrs.set(k, String(v));
+          if (k === 'id') {
+            this.id = String(v);
+            cr02Els.set(this.id, this);
+          }
+        },
+        getAttribute(k) { return this.attrs.get(k) || null; },
+        appendChild(c) {
+          c.parentNode = this;
+          this.children.push(c);
+          if (c.id) cr02Els.set(c.id, c);
+          return c;
+        },
+        removeChild(c) {
+          const i = this.children.indexOf(c);
+          if (i !== -1) this.children.splice(i, 1);
+        },
+        replaceChildren(...nodes) {
+          this.children = [...nodes];
+        },
+        addEventListener(ev, fn) {
+          this.listeners.set(ev, fn);
+        },
+        click() {
+          const fn = this.listeners.get('click');
+          if (fn) return fn({ target: this, preventDefault() {}, stopPropagation() {} });
+        },
+        querySelector(sel) {
+          const walk = (n) => {
+            for (const ch of n.children || []) {
+              if (sel.startsWith('.') && (ch.className || '').split(/\s+/).includes(sel.slice(1))) return ch;
+              if (sel.startsWith('[data-testid="')) {
+                const tid = sel.slice(14, -2);
+                if (ch.getAttribute && ch.getAttribute('data-testid') === tid) return ch;
+              }
+              const found = walk(ch);
+              if (found) return found;
+            }
+            return null;
+          };
+          return walk(this);
+        },
+      };
+      return node;
+    }
+    const cr02Doc = {
+      head: makeCr02Node('head'),
+      body: makeCr02Node('body'),
+      createElement: (t) => makeCr02Node(t),
+      createDocumentFragment: () => makeCr02Node('frag'),
+      getElementById: (id) => cr02Els.get(id) || null,
+    };
+    const cr02Ctrl = createModalController({
+      document: cr02Doc,
+      bridge: {
+        async readMcpConfig() {
+          return {
+            uri: 'file:///mcp_config.json',
+            rawText: '{}',
+            config: {
+              mcpServers: {
+                fsSrv: {
+                  command: 'npx',
+                  args: ['-y', '@modelcontextprotocol/server-filesystem'],
+                  disabledTools: ['write_file', 'delete_file'],
+                },
+              },
+            },
+          };
+        },
+        async fetchServerStates() { return []; },
+        async upsertCustomServer(_name, spec) {
+          upsertedSpec = spec;
+          return { ok: true };
+        },
+      },
+    });
+    await cr02Ctrl.openEditPopup('fsSrv');
+    const saveBtn = cr02Els.get('agy-mcp-edit-popup-backdrop').querySelector('[data-testid="agy-mcp-popup-save-btn"]');
+    assert.ok(saveBtn);
+    await saveBtn.click();
+    assert.ok(upsertedSpec, 'MCP-CR-02: upsertCustomServer must be called on save');
+    assert.deepEqual(
+      upsertedSpec.disabledTools,
+      ['write_file', 'delete_file'],
+      'MCP-CR-02: editing and saving an existing server must preserve disabledTools'
+    );
+  }
+
+  //    c) MCP-CR-03: saving a URL with embedded token in default oauth mode preserves extracted Authorization header
+  {
+    const urlEmbeddedBuilt = validateAndBuildServerSpec({
+      serverName: 'embedded-tok-srv',
+      transport: 'http',
+      url: 'https://tok_url_123@ssh-approval-origin.jaeseong.dev/mcp',
+      authMode: 'oauth',
+    });
+    assert.equal(urlEmbeddedBuilt.ok, true);
+    assert.equal(urlEmbeddedBuilt.spec.url, 'https://ssh-approval-origin.jaeseong.dev/mcp');
+    assert.deepEqual(
+      urlEmbeddedBuilt.spec.headers,
+      { Authorization: 'Bearer tok_url_123' },
+      'MCP-CR-03: URL-extracted Authorization header must not be wiped when form authMode is default oauth'
+    );
+  }
+
+  //    d) MCP-CR-04: HTTP authMode (none / oauth_or_none), auto-client oauthScopes, and custom apiKeyHeader round-trip
+  {
+    const noneBuilt = validateAndBuildServerSpec({
+      serverName: 'public-http-srv',
+      transport: 'http',
+      url: 'https://public.example.com/mcp',
+      authMode: 'none',
+    });
+    assert.equal(noneBuilt.ok, true);
+    assert.equal(
+      extractAuthFromSpec(noneBuilt.spec).authMode,
+      'none',
+      'MCP-CR-04: HTTP authMode="none" must round-trip through validateAndBuildServerSpec and extractAuthFromSpec'
+    );
+
+    const autoScopesBuilt = validateAndBuildServerSpec({
+      serverName: 'auto-oauth-srv',
+      transport: 'http',
+      url: 'https://oauth.example.com/mcp',
+      authMode: 'oauth',
+      oauthClientMode: 'auto',
+      oauthScopes: 'mcp:tools openid',
+    });
+    assert.equal(autoScopesBuilt.ok, true);
+    assert.deepEqual(
+      autoScopesBuilt.spec.oauth,
+      { scopes: ['mcp:tools', 'openid'] },
+      'MCP-CR-04: oauthScopes in auto client mode must be saved into spec.oauth.scopes'
+    );
+    const extractedAutoScopes = extractAuthFromSpec(autoScopesBuilt.spec);
+    assert.equal(extractedAutoScopes.oauthClientMode, 'auto');
+    assert.equal(extractedAutoScopes.oauthScopes, 'mcp:tools openid');
+
+    const customApiKeyBuilt = validateAndBuildServerSpec({
+      serverName: 'custom-hdr-srv',
+      transport: 'http',
+      url: 'https://api.example.com/mcp',
+      authMode: 'apiKey',
+      apiKeyHeader: 'X-Custom-Auth',
+      apiKeyValue: 'custom_secret_789',
+    });
+    assert.equal(customApiKeyBuilt.ok, true);
+    const extractedCustomKey = extractAuthFromSpec(customApiKeyBuilt.spec);
+    assert.equal(extractedCustomKey.authMode, 'apiKey', 'MCP-CR-04: custom apiKeyHeader must round-trip as apiKey mode');
+    assert.equal(extractedCustomKey.apiKeyHeader, 'X-Custom-Auth');
+    assert.equal(extractedCustomKey.apiKeyValue, 'custom_secret_789');
+  }
 });

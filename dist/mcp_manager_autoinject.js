@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Antigravity Custom MCP Server Manager
 // @namespace    https://github.com/jaeseongs95/antigravity-mcp-manager
-// @version      1.4.11
+// @version      1.4.12
 // @description  Add, edit, toggle, and manage custom Stdio & HTTP MCP servers (mcp_config.json) directly inside the Antigravity 2.0 native app and Remote Control web.
 // @match        https://antigravity.google.com/*
 // @match        https://*.antigravity.google.com/*
@@ -287,6 +287,15 @@
             matchedKey = k;
             break;
           }
+        }
+      }
+      if (!matchedKey && (spec.authMode === 'apiKey' || (entries.length === 1 && !spec.authMode && !spec.oauth))) {
+        const [k, v] = entries[0] || [];
+        if (k && typeof v === 'string') {
+          result.authMode = 'apiKey';
+          result.apiKeyHeader = k;
+          result.apiKeyValue = v.trim();
+          matchedKey = k;
         }
       }
       for (const [k, v] of entries) {
@@ -767,9 +776,13 @@
         }
         const { cleanUrl, extractedHeaders } = extractUrlAuthAndCleanUrl(rawTrimmedUrl);
         const manualHeaders = parseKeyValueInput(headers !== undefined ? headers : headersText);
+        const effectiveAuthMode =
+          extractedHeaders.Authorization && (!authMode || authMode === 'oauth' || authMode === 'oauth_or_none')
+            ? ''
+            : authMode;
         const combinedBaseHeaders = { ...extractedHeaders, ...manualHeaders };
         const finalHeaders = buildAuthHeaders({
-          authMode,
+          authMode: effectiveAuthMode,
           bearerToken,
           apiKeyHeader,
           apiKeyValue,
@@ -787,13 +800,23 @@
         if (Object.keys(finalHeaders).length > 0) {
           spec.headers = finalHeaders;
         }
+        if (
+          (authMode === 'none' || authMode === 'oauth_or_none') &&
+          !extractedHeaders.Authorization
+        ) {
+          spec.authMode = authMode;
+        }
         const cId = typeof oauthClientId === 'string' ? oauthClientId.trim() : (typeof oauth?.clientId === 'string' ? oauth.clientId.trim() : '');
         const cSec = typeof oauthClientSecret === 'string' ? oauthClientSecret.trim() : (typeof oauth?.clientSecret === 'string' ? oauth.clientSecret.trim() : '');
-        const cScopes = typeof oauthScopes === 'string' ? oauthScopes.trim() : '';
-        if ((authMode === 'oauth' || authMode === 'oauth_or_none' || !authMode) && (oauthClientMode === 'custom' || cId || cSec)) {
+        const cScopes = typeof oauthScopes === 'string'
+          ? oauthScopes.trim()
+          : (Array.isArray(oauth?.scopes) ? oauth.scopes.join(' ').trim() : (typeof oauth?.scopes === 'string' ? oauth.scopes.trim() : ''));
+        if ((authMode === 'oauth' || authMode === 'oauth_or_none' || !authMode) && (oauthClientMode === 'custom' || cId || cSec || cScopes)) {
           const oauthObj = {};
-          if (cId) oauthObj.clientId = cId;
-          if (cSec) oauthObj.clientSecret = cSec;
+          if (oauthClientMode !== 'auto') {
+            if (cId) oauthObj.clientId = cId;
+            if (cSec) oauthObj.clientSecret = cSec;
+          }
           if (cScopes) oauthObj.scopes = cScopes.split(/[\s,]+/).filter(Boolean);
           if (Object.keys(oauthObj).length > 0) {
             spec.oauth = oauthObj;
@@ -2883,6 +2906,7 @@
         const authMode = extractedAuth.authMode || (isHttp ? 'oauth' : 'none');
         return {
           originalName: options.isPrefill ? '' : (serverName || ''),
+          existingSpec: options.isPrefill ? null : (effectiveSpec && typeof effectiveSpec === 'object' ? { ...effectiveSpec } : null),
           serverName: serverName || '',
           description: (effectiveSpec && typeof effectiveSpec.description === 'string') ? effectiveSpec.description : '',
           transport: isHttp ? 'http' : 'stdio',
@@ -3778,7 +3802,12 @@
         container.appendChild(grid);
       }
       async function saveServerForm(formObj, bannerFn) {
-        const built = validateAndBuildServerSpec(formObj);
+        const customMap = (cachedConfig.config && cachedConfig.config.mcpServers) || {};
+        const existingSpec =
+          formObj.existingSpec ||
+          (formObj.originalName && customMap[formObj.originalName]) ||
+          null;
+        const built = validateAndBuildServerSpec({ ...formObj, existingSpec });
         if (!built.ok) {
           bannerFn('error', built.error);
           return { ok: false, error: built.error };
@@ -4792,7 +4821,7 @@
       ensureModalStyles,
       createModalController,
     } = require('./modal-ui');
-    const MCP_MANAGER_VERSION = 'v1.4.11';
+    const MCP_MANAGER_VERSION = 'v1.4.12';
     const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
     function getOrCreateTrustedTypesPolicy(win) {
       if (!win) return null;
@@ -5457,6 +5486,7 @@
             }
             pane.style.display = 'block';
             modal.renderSettingsPageContent(pane);
+            void modal.reloadData();
             syncExclusiveNavHighlight('settings-nav-item-McpManager');
           };
           mcpNavBtn.addEventListener('click', (e) => {

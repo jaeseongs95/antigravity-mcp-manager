@@ -746,6 +746,7 @@ function createModalController({ doc: docArg, document: documentArg, bridge, onS
 
     return {
       originalName: options.isPrefill ? '' : (serverName || ''),
+      existingSpec: options.isPrefill ? null : (effectiveSpec && typeof effectiveSpec === 'object' ? { ...effectiveSpec } : null),
       serverName: serverName || '',
       description: (effectiveSpec && typeof effectiveSpec.description === 'string') ? effectiveSpec.description : '',
       transport: isHttp ? 'http' : 'stdio',
@@ -1742,7 +1743,12 @@ function createModalController({ doc: docArg, document: documentArg, bridge, onS
   }
 
   async function saveServerForm(formObj, bannerFn) {
-    const built = validateAndBuildServerSpec(formObj);
+    const customMap = (cachedConfig.config && cachedConfig.config.mcpServers) || {};
+    const existingSpec =
+      formObj.existingSpec ||
+      (formObj.originalName && customMap[formObj.originalName]) ||
+      null;
+    const built = validateAndBuildServerSpec({ ...formObj, existingSpec });
     if (!built.ok) {
       bannerFn('error', built.error);
       return { ok: false, error: built.error };

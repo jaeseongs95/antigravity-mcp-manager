@@ -10,7 +10,7 @@ const {
   createModalController,
 } = require('./modal-ui');
 
-const MCP_MANAGER_VERSION = 'v1.4.11';
+const MCP_MANAGER_VERSION = 'v1.4.12';
 const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
 function getOrCreateTrustedTypesPolicy(win) {
@@ -737,6 +737,7 @@ function mountMcpManager(env = {}) {
         }
         pane.style.display = 'block';
         modal.renderSettingsPageContent(pane);
+        void modal.reloadData();
 
         // Exclusively highlight "MCP Servers" and clear highlight on all other nav tabs (e.g., "Models", "KoTranslator")
         syncExclusiveNavHighlight('settings-nav-item-McpManager');

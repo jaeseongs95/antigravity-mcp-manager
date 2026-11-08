@@ -289,6 +289,16 @@ function extractAuthFromSpec(spec) {
     }
   }
 
+  if (!matchedKey && (spec.authMode === 'apiKey' || (entries.length === 1 && !spec.authMode && !spec.oauth))) {
+    const [k, v] = entries[0] || [];
+    if (k && typeof v === 'string') {
+      result.authMode = 'apiKey';
+      result.apiKeyHeader = k;
+      result.apiKeyValue = v.trim();
+      matchedKey = k;
+    }
+  }
+
   for (const [k, v] of entries) {
     if (k !== matchedKey) {
       result.extraHeaders[k] = String(v);
@@ -809,9 +819,13 @@ function validateAndBuildServerSpec({
     }
     const { cleanUrl, extractedHeaders } = extractUrlAuthAndCleanUrl(rawTrimmedUrl);
     const manualHeaders = parseKeyValueInput(headers !== undefined ? headers : headersText);
+    const effectiveAuthMode =
+      extractedHeaders.Authorization && (!authMode || authMode === 'oauth' || authMode === 'oauth_or_none')
+        ? ''
+        : authMode;
     const combinedBaseHeaders = { ...extractedHeaders, ...manualHeaders };
     const finalHeaders = buildAuthHeaders({
-      authMode,
+      authMode: effectiveAuthMode,
       bearerToken,
       apiKeyHeader,
       apiKeyValue,
@@ -829,13 +843,23 @@ function validateAndBuildServerSpec({
     if (Object.keys(finalHeaders).length > 0) {
       spec.headers = finalHeaders;
     }
+    if (
+      (authMode === 'none' || authMode === 'oauth_or_none') &&
+      !extractedHeaders.Authorization
+    ) {
+      spec.authMode = authMode;
+    }
     const cId = typeof oauthClientId === 'string' ? oauthClientId.trim() : (typeof oauth?.clientId === 'string' ? oauth.clientId.trim() : '');
     const cSec = typeof oauthClientSecret === 'string' ? oauthClientSecret.trim() : (typeof oauth?.clientSecret === 'string' ? oauth.clientSecret.trim() : '');
-    const cScopes = typeof oauthScopes === 'string' ? oauthScopes.trim() : '';
-    if ((authMode === 'oauth' || authMode === 'oauth_or_none' || !authMode) && (oauthClientMode === 'custom' || cId || cSec)) {
+    const cScopes = typeof oauthScopes === 'string'
+      ? oauthScopes.trim()
+      : (Array.isArray(oauth?.scopes) ? oauth.scopes.join(' ').trim() : (typeof oauth?.scopes === 'string' ? oauth.scopes.trim() : ''));
+    if ((authMode === 'oauth' || authMode === 'oauth_or_none' || !authMode) && (oauthClientMode === 'custom' || cId || cSec || cScopes)) {
       const oauthObj = {};
-      if (cId) oauthObj.clientId = cId;
-      if (cSec) oauthObj.clientSecret = cSec;
+      if (oauthClientMode !== 'auto') {
+        if (cId) oauthObj.clientId = cId;
+        if (cSec) oauthObj.clientSecret = cSec;
+      }
       if (cScopes) oauthObj.scopes = cScopes.split(/[\s,]+/).filter(Boolean);
       if (Object.keys(oauthObj).length > 0) {
         spec.oauth = oauthObj;
