@@ -300,6 +300,7 @@ function extractAuthFromSpec(spec) {
 
 function buildAuthHeaders({
   authMode,
+  mode: legacyMode,
   bearerToken,
   apiKeyHeader,
   apiKeyValue,
@@ -308,7 +309,8 @@ function buildAuthHeaders({
   baseHeaders,
 }) {
   const headers = baseHeaders && typeof baseHeaders === 'object' ? { ...baseHeaders } : {};
-  const mode = typeof authMode === 'string' ? authMode.trim() : '';
+  const rawMode = typeof authMode === 'string' && authMode ? authMode : legacyMode;
+  const mode = typeof rawMode === 'string' ? rawMode.trim() : '';
 
   if (!mode) {
     return headers;
@@ -337,6 +339,13 @@ function buildAuthHeaders({
 
   if (mode === 'apiKey') {
     const hdrName = (typeof apiKeyHeader === 'string' && apiKeyHeader.trim()) ? apiKeyHeader.trim() : 'X-API-Key';
+    const hdrLower = hdrName.toLowerCase();
+    for (const k of Object.keys(headers)) {
+      const kl = k.toLowerCase();
+      if (kl === hdrLower || (hdrLower !== 'authorization' && kl === 'authorization')) {
+        delete headers[k];
+      }
+    }
     const hdrVal = typeof apiKeyValue === 'string' ? apiKeyValue.trim() : '';
     if (hdrVal) {
       headers[hdrName] = hdrVal;

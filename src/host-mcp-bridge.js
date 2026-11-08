@@ -103,7 +103,14 @@ function bytesIsUint8(v) {
 function createHostMcpBridge(opts = {}) {
   const win = opts.window || opts.win || (typeof window !== 'undefined' ? window : null);
   const doc = opts.document || opts.doc || (win && win.document ? win.document : null);
-  const ls = opts.localStorage || (win && win.localStorage ? win.localStorage : null);
+  let ls = opts.localStorage || null;
+  if (!ls && win) {
+    try {
+      ls = win.localStorage || null;
+    } catch {
+      ls = null;
+    }
+  }
   let cachedService = opts.hostService || null;
   let cachedConfigDirUri = null;
   let cachedElectronNative = null;
@@ -1052,11 +1059,12 @@ function createHostMcpBridge(opts = {}) {
         [serverName]: currentServer,
       },
     };
+    const serialized = JSON.stringify(nextConfig, null, 2) + '\n';
     const svc = scanFiberTree();
     const uri = await resolveMcpConfigUri();
     let persisted = false;
     if (svc && typeof svc.writeFile === 'function' && uri) {
-      const bytes = new TextEncoder().encode(JSON.stringify(nextConfig, null, 2) + '\n');
+      const bytes = encodeUtf8(serialized);
       const writeRes = await writeFileToHost(svc, uri, bytes);
       if (!writeRes.ok) {
         return { ok: false, persisted: false, error: writeRes.error };
@@ -1072,7 +1080,8 @@ function createHostMcpBridge(opts = {}) {
       };
     }
     try {
-      ls?.setItem?.(STORAGE_FALLBACK_KEY, JSON.stringify(nextConfig, null, 2));
+      ls?.setItem?.(STORAGE_FALLBACK_KEY, serialized);
+      if (!svc) persisted = true;
     } catch {}
     if (svc && typeof svc.refreshMcpServers === 'function') {
       try {

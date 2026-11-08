@@ -649,7 +649,8 @@ function createDefaultFormState() {
   };
 }
 
-function createModalController({ doc, bridge, onStateChanged }) {
+function createModalController({ doc: docArg, document: documentArg, bridge, onStateChanged }) {
+  const doc = docArg || documentArg || (typeof document !== 'undefined' ? document : null);
   let activeTab = 'servers'; // 'servers' | 'editor' | 'raw'
   let editingForm = createDefaultFormState();
   let popupForm = createDefaultFormState();
@@ -2346,6 +2347,12 @@ function createModalController({ doc, bridge, onStateChanged }) {
   function renderEditPopupBody() {
     const backdrop = doc.getElementById(EDIT_POPUP_ID);
     if (!backdrop) return;
+    const titleEl = backdrop.querySelector('.agy-mcp-title');
+    if (titleEl) {
+      titleEl.textContent = popupForm && popupForm.originalName
+        ? '⚙️ Edit Custom MCP Server Settings'
+        : 'Add Custom MCP Server';
+    }
     const body = backdrop.querySelector('.agy-mcp-body');
     if (!body) return;
     const prevScrollTop = typeof body.scrollTop === 'number' ? body.scrollTop : 0;

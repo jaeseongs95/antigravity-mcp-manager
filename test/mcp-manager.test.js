@@ -1418,4 +1418,125 @@ test('covers MCP-BUG-01..06 regressions: line-anchored marker extraction, 2-plug
     true,
     'adding settings-modal-container must trigger MCP Manager injection'
   );
+
+  // 5. ANTIGRAVITY_MCP_MANAGER-D-0015 regressions:
+  //    a) buildAuthHeaders in apiKey mode removes stale Authorization and case-insensitive duplicate headers
+  const { buildAuthHeaders } = require('../src/mcp-config-schema');
+  const cleanedHeaders = buildAuthHeaders({
+    mode: 'apiKey',
+    apiKeyHeader: 'X-API-Key',
+    apiKeyValue: 'secret-key-123',
+    baseHeaders: {
+      Authorization: 'Bearer old-token',
+      'x-api-key': 'old-key',
+      'X-Custom-Extra': 'keep-me',
+    },
+  });
+  assert.equal(cleanedHeaders.Authorization, undefined, 'apiKey mode must remove stale Authorization header');
+  assert.equal(cleanedHeaders['x-api-key'], undefined, 'apiKey mode must remove case-insensitive duplicate header');
+  assert.equal(cleanedHeaders['X-API-Key'], 'secret-key-123', 'apiKey mode must set canonical header key');
+  assert.equal(cleanedHeaders['X-Custom-Extra'], 'keep-me', 'apiKey mode must preserve unrelated headers');
+
+  //    b) toggleServerTool works with fallback localStorage and trailing newline even without hostService
+  const localLsMap = new Map([
+    ['agy-custom-mcp-config-backup-v1', JSON.stringify({ mcpServers: { srvA: { command: 'node' } } })],
+  ]);
+  const localOnlyBridge = createHostMcpBridge({
+    localStorage: {
+      getItem: (k) => localLsMap.get(k) || null,
+      setItem: (k, v) => localLsMap.set(k, String(v)),
+    },
+  });
+  const toolToggleRes = await localOnlyBridge.toggleServerTool('srvA', 'tool1', false);
+  assert.equal(toolToggleRes.ok, true);
+  assert.equal(toolToggleRes.persisted, true);
+  assert.ok(
+    localLsMap.get('agy-custom-mcp-config-backup-v1').endsWith('\n'),
+    'toggleServerTool localStorage fallback must include trailing newline'
+  );
+
+  //    c) openEditPopup dynamically updates header title (.agy-mcp-title) when switching between Add and Edit modes
+  const { createModalController } = require('../src/modal-ui');
+  const popupEls = new Map();
+  function makeSimpleNode(tag) {
+    return {
+      tagName: String(tag).toUpperCase(),
+      id: '',
+      className: '',
+      textContent: '',
+      value: '',
+      type: '',
+      checked: false,
+      style: {},
+      children: [],
+      attrs: new Map(),
+      listeners: new Map(),
+      setAttribute(k, v) {
+        this.attrs.set(k, String(v));
+        if (k === 'id') this.id = String(v);
+      },
+      getAttribute(k) { return this.attrs.get(k) || null; },
+      appendChild(c) {
+        c.parentNode = this;
+        this.children.push(c);
+        if (c.id) popupEls.set(c.id, c);
+        return c;
+      },
+      removeChild(c) {
+        const i = this.children.indexOf(c);
+        if (i !== -1) this.children.splice(i, 1);
+      },
+      replaceChildren(...nodes) {
+        this.children = [...nodes];
+      },
+      addEventListener(ev, fn) {
+        this.listeners.set(ev, fn);
+      },
+      querySelector(sel) {
+        const walk = (n) => {
+          for (const ch of n.children || []) {
+            if (sel.startsWith('.') && (ch.className || '').split(/\s+/).includes(sel.slice(1))) return ch;
+            if (sel.startsWith('[data-testid="')) {
+              const tid = sel.slice(14, -2);
+              if (ch.getAttribute && ch.getAttribute('data-testid') === tid) return ch;
+            }
+            const found = walk(ch);
+            if (found) return found;
+          }
+          return null;
+        };
+        return walk(this);
+      },
+    };
+  }
+  const popupDoc = {
+    head: makeSimpleNode('head'),
+    body: makeSimpleNode('body'),
+    createElement: (t) => makeSimpleNode(t),
+    createDocumentFragment: () => makeSimpleNode('frag'),
+    getElementById: (id) => popupEls.get(id) || null,
+  };
+  const popupCtrl = createModalController({
+    document: popupDoc,
+    bridge: {
+      async readMcpConfig() {
+        return {
+          uri: 'file:///mcp_config.json',
+          rawText: JSON.stringify({ mcpServers: { existingSrv: { command: 'npx', args: ['-y', 'srv'] } } }),
+          config: { mcpServers: { existingSrv: { command: 'npx', args: ['-y', 'srv'] } } },
+        };
+      },
+      async fetchServerStates() { return []; },
+    },
+  });
+  await popupCtrl.openEditPopup('', { createNew: true });
+  const backdropEl = popupEls.get('agy-mcp-edit-popup-backdrop');
+  assert.ok(backdropEl);
+  assert.equal(backdropEl.querySelector('.agy-mcp-title').textContent, 'Add Custom MCP Server');
+  await popupCtrl.openEditPopup('existingSrv');
+  assert.equal(
+    backdropEl.querySelector('.agy-mcp-title').textContent,
+    '⚙️ Edit Custom MCP Server Settings',
+    're-calling openEditPopup with an existing server while popup is open must update header title'
+  );
 });

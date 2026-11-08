@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Antigravity Custom MCP Server Manager
 // @namespace    https://github.com/jaeseongs95/antigravity-mcp-manager
-// @version      1.4.10
+// @version      1.4.11
 // @description  Add, edit, toggle, and manage custom Stdio & HTTP MCP servers (mcp_config.json) directly inside the Antigravity 2.0 native app and Remote Control web.
 // @match        https://antigravity.google.com/*
 // @match        https://*.antigravity.google.com/*
@@ -298,6 +298,7 @@
     }
     function buildAuthHeaders({
       authMode,
+      mode: legacyMode,
       bearerToken,
       apiKeyHeader,
       apiKeyValue,
@@ -306,7 +307,8 @@
       baseHeaders,
     }) {
       const headers = baseHeaders && typeof baseHeaders === 'object' ? { ...baseHeaders } : {};
-      const mode = typeof authMode === 'string' ? authMode.trim() : '';
+      const rawMode = typeof authMode === 'string' && authMode ? authMode : legacyMode;
+      const mode = typeof rawMode === 'string' ? rawMode.trim() : '';
       if (!mode) {
         return headers;
       }
@@ -331,6 +333,13 @@
       }
       if (mode === 'apiKey') {
         const hdrName = (typeof apiKeyHeader === 'string' && apiKeyHeader.trim()) ? apiKeyHeader.trim() : 'X-API-Key';
+        const hdrLower = hdrName.toLowerCase();
+        for (const k of Object.keys(headers)) {
+          const kl = k.toLowerCase();
+          if (kl === hdrLower || (hdrLower !== 'authorization' && kl === 'authorization')) {
+            delete headers[k];
+          }
+        }
         const hdrVal = typeof apiKeyValue === 'string' ? apiKeyValue.trim() : '';
         if (hdrVal) {
           headers[hdrName] = hdrVal;
@@ -1004,7 +1013,14 @@
     function createHostMcpBridge(opts = {}) {
       const win = opts.window || opts.win || (typeof window !== 'undefined' ? window : null);
       const doc = opts.document || opts.doc || (win && win.document ? win.document : null);
-      const ls = opts.localStorage || (win && win.localStorage ? win.localStorage : null);
+      let ls = opts.localStorage || null;
+      if (!ls && win) {
+        try {
+          ls = win.localStorage || null;
+        } catch {
+          ls = null;
+        }
+      }
       let cachedService = opts.hostService || null;
       let cachedConfigDirUri = null;
       let cachedElectronNative = null;
@@ -1882,11 +1898,12 @@
             [serverName]: currentServer,
           },
         };
+        const serialized = JSON.stringify(nextConfig, null, 2) + '\n';
         const svc = scanFiberTree();
         const uri = await resolveMcpConfigUri();
         let persisted = false;
         if (svc && typeof svc.writeFile === 'function' && uri) {
-          const bytes = new TextEncoder().encode(JSON.stringify(nextConfig, null, 2) + '\n');
+          const bytes = encodeUtf8(serialized);
           const writeRes = await writeFileToHost(svc, uri, bytes);
           if (!writeRes.ok) {
             return { ok: false, persisted: false, error: writeRes.error };
@@ -1902,7 +1919,8 @@
           };
         }
         try {
-          ls?.setItem?.(STORAGE_FALLBACK_KEY, JSON.stringify(nextConfig, null, 2));
+          ls?.setItem?.(STORAGE_FALLBACK_KEY, serialized);
+          if (!svc) persisted = true;
         } catch {}
         if (svc && typeof svc.refreshMcpServers === 'function') {
           try {
@@ -2777,7 +2795,8 @@
         disabled: false,
       };
     }
-    function createModalController({ doc, bridge, onStateChanged }) {
+    function createModalController({ doc: docArg, document: documentArg, bridge, onStateChanged }) {
+      const doc = docArg || documentArg || (typeof document !== 'undefined' ? document : null);
       let activeTab = 'servers'; // 'servers' | 'editor' | 'raw'
       let editingForm = createDefaultFormState();
       let popupForm = createDefaultFormState();
@@ -4297,6 +4316,12 @@
       function renderEditPopupBody() {
         const backdrop = doc.getElementById(EDIT_POPUP_ID);
         if (!backdrop) return;
+        const titleEl = backdrop.querySelector('.agy-mcp-title');
+        if (titleEl) {
+          titleEl.textContent = popupForm && popupForm.originalName
+            ? '⚙️ Edit Custom MCP Server Settings'
+            : 'Add Custom MCP Server';
+        }
         const body = backdrop.querySelector('.agy-mcp-body');
         if (!body) return;
         const prevScrollTop = typeof body.scrollTop === 'number' ? body.scrollTop : 0;
@@ -4767,7 +4792,7 @@
       ensureModalStyles,
       createModalController,
     } = require('./modal-ui');
-    const MCP_MANAGER_VERSION = 'v1.4.10';
+    const MCP_MANAGER_VERSION = 'v1.4.11';
     const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
     function getOrCreateTrustedTypesPolicy(win) {
       if (!win) return null;
