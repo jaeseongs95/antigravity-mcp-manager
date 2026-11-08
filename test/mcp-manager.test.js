@@ -1092,43 +1092,39 @@ test('covers D-0005~D-0011 regressions: writeMcpConfig/toggleServerTool persiste
   const toggleToolAttempt = await roBridge.toggleServerTool('my-srv', 'tool_a', false);
   assert.equal(toggleToolAttempt.ok, false, 'toggleServerTool must return ok:false when host service lacks writeFile');
 
-  // 3. D-0013: getRemoteControlProxyAdapter captures RemoteControlComponent via Angular 19 numeric __ngContext__ + ɵgetLContext OR visibilitychange/method hooks when handleIframeMessage was bound BEFORE bookmarklet
+  // 3. D-0013 / MCP-BUG-02: resolveRemoteControlInstance captures pre-existing component on Angular 19 numeric __ngContext__ WITHOUT ɵgetLContext via URL_CHANGED prototype hook
+  let urlChangedMutated = false;
   class FakeRemoteControlComponent {
-    constructor(winRef, docRef) {
-      this._boundMsg = this.handleIframeMessage.bind(this);
-      if (winRef && typeof winRef.addEventListener === 'function') {
-        winRef.addEventListener('message', this._boundMsg);
-      }
-      if (docRef && typeof docRef.addEventListener === 'function') {
-        docRef.addEventListener('visibilitychange', () => this.isTabHidden());
+    constructor(w) {
+      this.destroyed = false;
+      this._boundHandler = this.handleIframeMessage.bind(this);
+      w.addEventListener('message', this._boundHandler);
+    }
+    handleIframeMessage(ev) {
+      if (!ev || ev.data === '__agy_probe__') return;
+      if (ev.data && ev.data.type === 'URL_CHANGED') {
+        this.handleUrlChanged(ev.data.path || '');
       }
     }
-    handleIframeMessage(_ev) {}
-    isTabHidden() {
-      return false;
+    handleUrlChanged(_p) {
+      urlChangedMutated = true;
     }
-    async proxyCommand(rpcPath, _bytes) {
+    async proxyCommand(rpcPath) {
       if (rpcPath.endsWith('/GetMcpServerStates')) {
         return {
-          payload: new TextEncoder().encode(JSON.stringify({ states: [{ serverName: 'rc-srv', status: 2 }] })),
+          payload: new TextEncoder().encode(
+            JSON.stringify({ states: [{ serverName: 'rc-srv', status: 2 }] })
+          ),
         };
       }
       return { payload: new TextEncoder().encode('{}') };
     }
   }
   const winListeners = [];
-  const docListeners = [];
-  const rcElNumeric = { __ngContext__: 42 };
-  let rcCompInstance = null;
+  const rcElNumeric = { __ngContext__: 42, querySelector: () => null };
   const rcDoc = {
-    addEventListener(type, fn) {
-      if (type === 'visibilitychange') docListeners.push(fn);
-    },
-    dispatchEvent(ev) {
-      if (ev?.type === 'visibilitychange') {
-        for (const fn of docListeners) fn(ev);
-      }
-    },
+    addEventListener() {},
+    dispatchEvent() {},
     querySelector(sel) {
       if (sel === 'ga-remote-control') return rcElNumeric;
       return null;
@@ -1136,6 +1132,7 @@ test('covers D-0005~D-0011 regressions: writeMcpConfig/toggleServerTool persiste
   };
   const rcWin = {
     document: rcDoc,
+    location: { href: 'https://antigravity.google.com/r/123', origin: 'https://antigravity.google.com' },
     addEventListener(type, fn) {
       if (type === 'message') winListeners.push(fn);
     },
@@ -1147,12 +1144,6 @@ test('covers D-0005~D-0011 regressions: writeMcpConfig/toggleServerTool persiste
     default_GoogleAntigravity: {
       rcMod: {
         RemoteControlComponent: FakeRemoteControlComponent,
-        '\u0275getLContext'(el) {
-          if (el === rcElNumeric) {
-            return { lView: [null, null, rcCompInstance] };
-          }
-          return null;
-        },
       },
     },
     Event: class {
@@ -1164,16 +1155,19 @@ test('covers D-0005~D-0011 regressions: writeMcpConfig/toggleServerTool persiste
       constructor(type, init) {
         this.type = type;
         this.data = init?.data;
+        this.origin = init?.origin;
+        this.source = init?.source;
       }
     },
   };
   // Instantiate component and bind listener BEFORE createHostMcpBridge runs (real bookmarklet order!)
-  rcCompInstance = new FakeRemoteControlComponent(rcWin, rcDoc);
+  new FakeRemoteControlComponent(rcWin);
   const rcBridge = createHostMcpBridge({ window: rcWin, document: rcDoc });
   const rcStatesRes = await rcBridge.fetchServerStates();
   assert.equal(rcStatesRes.ok, true);
   assert.equal(rcStatesRes.states.length, 1);
   assert.equal(rcStatesRes.states[0].serverName, 'rc-srv');
+  assert.equal(urlChangedMutated, false, 'probing via URL_CHANGED must not execute original handleUrlChanged body');
 
   // 4. D-0013: ensureRemoteCompanionScripts retries when fetchHostInstalledPluginInfo initially returns null
   let fetchInfoCalls = 0;
@@ -1282,6 +1276,54 @@ test('covers MCP-BUG-01..06 regressions: line-anchored marker extraction, 2-plug
   assert.equal(info2.statusbarBlock, '');
   assert.equal(info2.hasMcpManager, true);
   assert.equal(info2.hasKoTranslator, true);
+
+  // 2b. MCP-BUG-01c: All 7 install combinations using real buildBundle({ write: false }).bundle without any false positives
+  const { buildBundle } = require('../scripts/build');
+  const realMcpBundle = buildBundle({ write: false }).bundle;
+  const mcpBeginMark = '// === ' + ['BEGIN_AGY_MCP', 'MANAGER_V1'].join('_') + ' ===';
+  const mcpEndMark = '// === ' + ['END_AGY_MCP', 'MANAGER_V1'].join('_') + ' ===';
+  const koBeginMark = '// === ' + ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' ===';
+  const koEndMark = '// === ' + ['END_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' ===';
+  const realMcpMarked = `${mcpBeginMark}\n${realMcpBundle}\n${mcpEndMark}`;
+  const fakeSbBundle = [
+    '// Antigravity Statusbar',
+    'function mountStatusBar() { const l = "function mountMcpManager( __agyKoThoughtCleanup"; }',
+  ].join('\n');
+  const fakeKoMarked = [
+    koBeginMark,
+    'const literals = ["function mountStatusBar(", "function mountMcpManager(", "agy-ctx-statusbar"];',
+    'window.__agyKoThoughtCleanup = () => {};',
+    koEndMark,
+  ].join('\n');
+
+  const combos = [
+    { name: '1: sb only', text: fakeSbBundle, exp: [true, false, false] },
+    { name: '2: mcp only (marked)', text: realMcpMarked, exp: [false, true, false] },
+    { name: '2b: mcp only (raw unmarked)', text: realMcpBundle, exp: [false, true, false] },
+    { name: '3: ko only', text: fakeKoMarked, exp: [false, false, true] },
+    { name: '4: sb + mcp', text: `${fakeSbBundle}\n${realMcpMarked}`, exp: [true, true, false] },
+    { name: '5: sb + ko', text: `${fakeSbBundle}\n${fakeKoMarked}`, exp: [true, false, true] },
+    { name: '6: mcp + ko', text: `${realMcpMarked}\n${fakeKoMarked}`, exp: [false, true, true] },
+    { name: '7: sb + mcp + ko', text: `${fakeSbBundle}\n${realMcpMarked}\n${fakeKoMarked}`, exp: [true, true, true] },
+  ];
+  for (const c of combos) {
+    const comboBridge = createHostMcpBridge({
+      hostService: {
+        async getCustomizationStates() {
+          return { states: [{ path: 'C:/Users/Lenovo/.gemini/config/plugins/test/SKILL.md' }] };
+        },
+        async readFile() {
+          return { content: new TextEncoder().encode(c.text) };
+        },
+      },
+    });
+    const res = await comboBridge.fetchHostInstalledPluginInfo(true);
+    assert.deepEqual(
+      [res.hasStatusbar, res.hasMcpManager, res.hasKoTranslator],
+      c.exp,
+      `combo ${c.name} failed detection`
+    );
+  }
 
   // 3. MCP-BUG-04: toggleServerEnabled returns ok:false when writeMcpConfig fails
   const roToggleBridge = createHostMcpBridge({

@@ -458,6 +458,7 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady) {
         ttPolicy && typeof ttPolicy.createScriptURL === 'function' ? ttPolicy.createScriptURL(mainUrl) : mainUrl;
 
       mainScript.onload = () => {
+        rcInst.__agySuppressAutoIframeLoad = false;
         cw.__agyMainBooted = true;
         if (savedChildPath) rcInst.initialChildPath = savedChildPath;
         const origLoad =
@@ -481,6 +482,7 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady) {
         if (typeof onReady === 'function') onReady();
       };
       mainScript.onerror = () => {
+        rcInst.__agySuppressAutoIframeLoad = false;
         delete iframe.__agyMcpPromoted;
       };
 
@@ -488,8 +490,10 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady) {
         cd.head.appendChild(prismScript);
         cd.head.appendChild(mainScript);
       }
+      rcInst.__agySuppressAutoIframeLoad = false;
       if (typeof onReady === 'function') onReady();
     } catch (_e) {
+      rcInst.__agySuppressAutoIframeLoad = false;
       delete iframe.__agyMcpPromoted;
     }
   };
@@ -513,11 +517,15 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady) {
   if (typeof iframe.addEventListener === 'function') {
     iframe.addEventListener('load', triggerBlankLoadOnce, { once: true });
   }
-  if (origSrcDesc && typeof origSrcDesc.set === 'function') {
-    origSrcDesc.set.call(iframe, 'about:blank');
-  } else {
-    iframe.setAttribute?.('src', 'about:blank');
-    iframe.src = 'about:blank';
+  try {
+    if (origSrcDesc && typeof origSrcDesc.set === 'function') {
+      origSrcDesc.set.call(iframe, 'about:blank');
+    } else {
+      iframe.setAttribute?.('src', 'about:blank');
+      iframe.src = 'about:blank';
+    }
+  } finally {
+    rcInst.__agySuppressAutoIframeLoad = false;
   }
   try {
     Object.defineProperty(iframe, 'src', {
@@ -814,6 +822,19 @@ function mountMcpManager(env = {}) {
     return wrap;
   }
 
+  let isChildFrame = false;
+  try {
+    isChildFrame = Boolean(win && win.parent && win.parent !== win);
+  } catch (_e) {}
+
+  const isRemoteHostPage =
+    !isChildFrame &&
+    (Boolean(win?.location?.hostname && String(win.location.hostname).includes('antigravity.google.com')) ||
+      Boolean(doc?.querySelector?.('ga-remote-control'))) &&
+    Boolean(doc?.head);
+  let companionCheckDone = !(isRemoteHostPage && bridge && typeof bridge.fetchHostInstalledPluginInfo === 'function');
+  let hostHasKoTranslator = false;
+
   function ensureRemoteIframeMounted() {
     const iframe = doc.querySelector?.('ga-remote-control iframe');
     if (!iframe) return false;
@@ -839,14 +860,38 @@ function mountMcpManager(env = {}) {
         return true;
       }
     } catch (_e) {
-      // Cross-origin iframe: if ko-thought-translator is not active/loading, promote it to same-origin about:blank
-      if (!win.__agyKoLocalizerActive && !win.__agyLoadingKoThoughtCompanion && !win.__agyKoThoughtCleanup) {
+      // Cross-origin iframe: wait until companion check finishes so we never race with ko-thought-translator
+      if (
+        companionCheckDone &&
+        !hostHasKoTranslator &&
+        !win.__agyKoLocalizerActive &&
+        !win.__agyLoadingKoThoughtCompanion &&
+        !win.__agyKoThoughtCleanup
+      ) {
         promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, () => {
           ensureRemoteIframeMounted();
         });
       }
     }
     return false;
+  }
+
+  if (!isChildFrame) {
+    ensureRemoteCompanionScripts(win, doc, bridge)
+      .then((res) => {
+        if (
+          res?.hostInfo?.hasKoTranslator ||
+          (Array.isArray(res?.loaded) && res.loaded.includes('ko-thought-translator'))
+        ) {
+          hostHasKoTranslator = true;
+        }
+        companionCheckDone = true;
+        ensureRemoteIframeMounted();
+      })
+      .catch(() => {
+        companionCheckDone = true;
+        ensureRemoteIframeMounted();
+      });
   }
 
   let remoteIframePollTimer = null;
@@ -869,14 +914,6 @@ function mountMcpManager(env = {}) {
         remoteIframePollTimer.unref();
       }
     }
-  }
-
-  let isChildFrame = false;
-  try {
-    isChildFrame = Boolean(win && win.parent && win.parent !== win);
-  } catch (_e) {}
-  if (!isChildFrame) {
-    ensureRemoteCompanionScripts(win, doc, bridge);
   }
 
   function injectIntoNativeMcpScreens() {

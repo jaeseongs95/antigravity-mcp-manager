@@ -1107,10 +1107,13 @@
       }
 
       function hookRemoteControlPrototype(w, proto) {
-        if (!proto || proto.__agyMcpRcHooked) return;
+        if (!proto || proto === Object.prototype) return;
+        proto.__agyTargetWin = w;
+        if (Object.prototype.hasOwnProperty.call(proto, '__agyMcpRcHooked')) return;
         proto.__agyMcpRcHooked = true;
         const methodNames = [
           'handleIframeMessage',
+          'handleUrlChanged',
           'proxyCommand',
           'streamProxyCommand',
           'handlePortRequest',
@@ -1137,10 +1140,17 @@
               proto.__agyOrigHandleIframeMessage = origFn;
             }
             proto[mName] = function (ev) {
-              if (w && this && !this.destroyed) {
-                w.__agyRemoteControlInstance = this;
+              const targetWin = proto.__agyTargetWin || w;
+              if (targetWin && this && !this.destroyed) {
+                targetWin.__agyRemoteControlInstance = this;
               }
               if (mName === 'handleIframeMessage' && ev && ev.data === '__agy_probe__') return;
+              if (
+                targetWin?.__agyProbingRcInstance &&
+                (mName === 'handleUrlChanged' || mName === 'onIframeLoad' || mName === 'onWindowOnline' || mName === 'loadInstances')
+              ) {
+                return;
+              }
               return origFn.apply(this, arguments);
             };
           }
@@ -1326,20 +1336,51 @@
           }
         }
 
+        w.__agyProbingRcInstance = true;
         try {
-          if (!w.__agyRemoteControlInstance && typeof wDoc?.dispatchEvent === 'function') {
-            const BaseEvt = w.Event || (typeof Event !== 'undefined' ? Event : null);
-            if (BaseEvt) {
-              wDoc.dispatchEvent(new BaseEvt('visibilitychange'));
-            }
+          const BaseEvt = w.Event || (typeof Event !== 'undefined' ? Event : null);
+          if (!w.__agyRemoteControlInstance && BaseEvt && typeof wDoc?.dispatchEvent === 'function') {
+            wDoc.dispatchEvent(new BaseEvt('visibilitychange'));
+          }
+          if (!w.__agyRemoteControlInstance && BaseEvt && typeof w.dispatchEvent === 'function') {
+            w.dispatchEvent(new BaseEvt('online'));
           }
           if (!w.__agyRemoteControlInstance && typeof w.dispatchEvent === 'function') {
             const Evt = w.MessageEvent || (typeof MessageEvent !== 'undefined' ? MessageEvent : null);
             if (Evt) {
-              w.dispatchEvent(new Evt('message', { data: '__agy_probe__' }));
+              const iframeEl = rcEl?.querySelector?.('iframe') || wDoc?.querySelector?.('ga-remote-control iframe') || null;
+              const iframeWin = iframeEl?.contentWindow || null;
+              const rawIframeSrc = iframeEl?.getAttribute?.('src') || iframeEl?.src || '';
+              const candidateOrigins = [];
+              try {
+                if (rawIframeSrc) {
+                  candidateOrigins.push(new URL(rawIframeSrc, w.location?.href || 'https://antigravity.google.com').origin);
+                }
+              } catch {}
+              if (w.location?.origin && !candidateOrigins.includes(w.location.origin)) {
+                candidateOrigins.push(w.location.origin);
+              }
+              if (!candidateOrigins.includes('https://antigravity.static.usercontent.goog')) {
+                candidateOrigins.push('https://antigravity.static.usercontent.goog');
+              }
+              for (const orig of candidateOrigins) {
+                if (w.__agyRemoteControlInstance) break;
+                w.dispatchEvent(
+                  new Evt('message', {
+                    data: { type: 'URL_CHANGED', path: '' },
+                    origin: orig,
+                    source: iframeWin,
+                  })
+                );
+              }
+              if (!w.__agyRemoteControlInstance) {
+                w.dispatchEvent(new Evt('message', { data: '__agy_probe__' }));
+              }
             }
           }
-        } catch {}
+        } catch {} finally {
+          w.__agyProbingRcInstance = false;
+        }
 
         return w.__agyRemoteControlInstance && !w.__agyRemoteControlInstance.destroyed
           ? w.__agyRemoteControlInstance
@@ -2182,22 +2223,16 @@
         const firstMarkerIdx = [mcpB, koB].filter((i) => i !== -1).sort((a, b) => a - b)[0] ?? text.length;
         const baseSegment = text.slice(0, firstMarkerIdx).trim();
 
-        const isBaseStatusbar =
-          baseSegment.length > 0 &&
-          !baseSegment.includes('Antigravity Custom MCP Server Manager') &&
-          (baseSegment.includes('function mountStatusBar(') ||
-            baseSegment.includes('agy-ctx-statusbar') ||
-            baseSegment.includes('STATUSBAR_VERSION'));
+        const sbFuncRe = new RegExp(`^[ \\t]*function ${['mount', 'StatusBar'].join('')}\\s*\\(`, 'm');
+        const mcpFuncRe = new RegExp(`^[ \\t]*function ${['mount', 'McpManager'].join('')}\\s*\\(`, 'm');
+
+        const isBaseStatusbar = sbFuncRe.test(baseSegment);
+        const hasMcpMarker = (mcpB !== -1 && mcpE > mcpB) || (!isBaseStatusbar && mcpFuncRe.test(baseSegment));
+        const hasKoMarker = koB !== -1 && koE > koB;
 
         const hasStatusbar = isBaseStatusbar || pluginNames.has('antigravity-statusbar');
-        const hasMcpManager =
-          (mcpB !== -1 && mcpE > mcpB) ||
-          text.includes('function mountMcpManager(') ||
-          pluginNames.has('antigravity-mcp-manager');
-        const hasKoTranslator =
-          (koB !== -1 && koE > koB) ||
-          text.includes('__agyKoThoughtCleanup') ||
-          pluginNames.has('ko-thought-translator');
+        const hasMcpManager = hasMcpMarker || pluginNames.has('antigravity-mcp-manager');
+        const hasKoTranslator = hasKoMarker || pluginNames.has('ko-thought-translator');
 
         cachedHostPluginInfo = {
           resolved: true,
@@ -5592,6 +5627,7 @@
             ttPolicy && typeof ttPolicy.createScriptURL === 'function' ? ttPolicy.createScriptURL(mainUrl) : mainUrl;
 
           mainScript.onload = () => {
+            rcInst.__agySuppressAutoIframeLoad = false;
             cw.__agyMainBooted = true;
             if (savedChildPath) rcInst.initialChildPath = savedChildPath;
             const origLoad =
@@ -5615,6 +5651,7 @@
             if (typeof onReady === 'function') onReady();
           };
           mainScript.onerror = () => {
+            rcInst.__agySuppressAutoIframeLoad = false;
             delete iframe.__agyMcpPromoted;
           };
 
@@ -5622,8 +5659,10 @@
             cd.head.appendChild(prismScript);
             cd.head.appendChild(mainScript);
           }
+          rcInst.__agySuppressAutoIframeLoad = false;
           if (typeof onReady === 'function') onReady();
         } catch (_e) {
+          rcInst.__agySuppressAutoIframeLoad = false;
           delete iframe.__agyMcpPromoted;
         }
       };
@@ -5647,11 +5686,15 @@
       if (typeof iframe.addEventListener === 'function') {
         iframe.addEventListener('load', triggerBlankLoadOnce, { once: true });
       }
-      if (origSrcDesc && typeof origSrcDesc.set === 'function') {
-        origSrcDesc.set.call(iframe, 'about:blank');
-      } else {
-        iframe.setAttribute?.('src', 'about:blank');
-        iframe.src = 'about:blank';
+      try {
+        if (origSrcDesc && typeof origSrcDesc.set === 'function') {
+          origSrcDesc.set.call(iframe, 'about:blank');
+        } else {
+          iframe.setAttribute?.('src', 'about:blank');
+          iframe.src = 'about:blank';
+        }
+      } finally {
+        rcInst.__agySuppressAutoIframeLoad = false;
       }
       try {
         Object.defineProperty(iframe, 'src', {
@@ -5948,6 +5991,19 @@
         return wrap;
       }
 
+      let isChildFrame = false;
+      try {
+        isChildFrame = Boolean(win && win.parent && win.parent !== win);
+      } catch (_e) {}
+
+      const isRemoteHostPage =
+        !isChildFrame &&
+        (Boolean(win?.location?.hostname && String(win.location.hostname).includes('antigravity.google.com')) ||
+          Boolean(doc?.querySelector?.('ga-remote-control'))) &&
+        Boolean(doc?.head);
+      let companionCheckDone = !(isRemoteHostPage && bridge && typeof bridge.fetchHostInstalledPluginInfo === 'function');
+      let hostHasKoTranslator = false;
+
       function ensureRemoteIframeMounted() {
         const iframe = doc.querySelector?.('ga-remote-control iframe');
         if (!iframe) return false;
@@ -5973,14 +6029,38 @@
             return true;
           }
         } catch (_e) {
-          // Cross-origin iframe: if ko-thought-translator is not active/loading, promote it to same-origin about:blank
-          if (!win.__agyKoLocalizerActive && !win.__agyLoadingKoThoughtCompanion && !win.__agyKoThoughtCleanup) {
+          // Cross-origin iframe: wait until companion check finishes so we never race with ko-thought-translator
+          if (
+            companionCheckDone &&
+            !hostHasKoTranslator &&
+            !win.__agyKoLocalizerActive &&
+            !win.__agyLoadingKoThoughtCompanion &&
+            !win.__agyKoThoughtCleanup
+          ) {
             promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, () => {
               ensureRemoteIframeMounted();
             });
           }
         }
         return false;
+      }
+
+      if (!isChildFrame) {
+        ensureRemoteCompanionScripts(win, doc, bridge)
+          .then((res) => {
+            if (
+              res?.hostInfo?.hasKoTranslator ||
+              (Array.isArray(res?.loaded) && res.loaded.includes('ko-thought-translator'))
+            ) {
+              hostHasKoTranslator = true;
+            }
+            companionCheckDone = true;
+            ensureRemoteIframeMounted();
+          })
+          .catch(() => {
+            companionCheckDone = true;
+            ensureRemoteIframeMounted();
+          });
       }
 
       let remoteIframePollTimer = null;
@@ -6003,14 +6083,6 @@
             remoteIframePollTimer.unref();
           }
         }
-      }
-
-      let isChildFrame = false;
-      try {
-        isChildFrame = Boolean(win && win.parent && win.parent !== win);
-      } catch (_e) {}
-      if (!isChildFrame) {
-        ensureRemoteCompanionScripts(win, doc, bridge);
       }
 
       function injectIntoNativeMcpScreens() {
