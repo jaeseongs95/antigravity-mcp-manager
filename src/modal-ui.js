@@ -738,7 +738,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
     const authMode = extractedAuth.authMode || (isHttp ? 'oauth' : 'none');
 
     return {
-      originalName: serverName || '',
+      originalName: options.isPrefill ? '' : (serverName || ''),
       serverName: serverName || '',
       description: (effectiveSpec && typeof effectiveSpec.description === 'string') ? effectiveSpec.description : '',
       transport: isHttp ? 'http' : 'stdio',
@@ -1069,13 +1069,13 @@ function createModalController({ doc, bridge, onStateChanged }) {
         setBanner('error', parsed.error);
         return;
       }
-      populateFormFromSpec(parsed.serverName, parsed.spec);
+      populateFormFromSpec(parsed.serverName, parsed.spec, { isPrefill: true });
       activeTab = 'editor';
       setBanner('info', `Auto-filled form for "${parsed.serverName}". Review OAuth / connection settings below.`);
       if (isOpen()) {
         renderModalContent();
       } else {
-        openEditPopup(parsed.serverName, { prefillSpec: parsed.spec });
+        openEditPopup(parsed.serverName, { prefillSpec: parsed.spec, isPrefill: true });
         setPopupBanner('info', `Auto-filled form for "${parsed.serverName}". Review OAuth / connection settings below.`);
       }
     });
@@ -1887,7 +1887,11 @@ function createModalController({ doc, bridge, onStateChanged }) {
       toggleBtn.textContent = isDisabled ? 'Enable' : 'Disable';
       toggleBtn.addEventListener('click', async () => {
         try {
-          await bridge.toggleServerEnabled(name, isDisabled);
+          const res = await bridge.toggleServerEnabled(name, isDisabled);
+          if (res && res.ok === false) {
+            customBannerFn('error', res.error || `Failed to toggle "${name}".`);
+            return;
+          }
           await reloadData();
           customBannerFn('success', `Server "${name}" ${isDisabled ? 'enabled' : 'disabled'}.`);
           if (isOpen()) renderBody();
@@ -1901,11 +1905,19 @@ function createModalController({ doc, bridge, onStateChanged }) {
       restartBtn.className = 'agy-mcp-btn';
       restartBtn.textContent = '↻ Restart';
       restartBtn.addEventListener('click', async () => {
-        customBannerFn('info', `Restarting "${name}"...`);
-        await bridge.refreshServers(name);
-        await reloadData();
-        customBannerFn('success', `Restarted "${name}".`);
-        if (isOpen()) renderBody();
+        try {
+          customBannerFn('info', `Restarting "${name}"...`);
+          const res = await bridge.refreshServers(name);
+          if (res && res.ok === false) {
+            customBannerFn('error', res.error || `Failed to restart "${name}".`);
+            return;
+          }
+          await reloadData();
+          customBannerFn('success', `Restarted "${name}".`);
+          if (isOpen()) renderBody();
+        } catch (err) {
+          customBannerFn('error', `Failed to restart "${name}": ${err.message || err}`);
+        }
       });
       actionsRow.appendChild(restartBtn);
 
@@ -1924,7 +1936,11 @@ function createModalController({ doc, bridge, onStateChanged }) {
         delBtn.textContent = 'Delete';
         delBtn.addEventListener('click', async () => {
           try {
-            await bridge.deleteCustomServer(name);
+            const res = await bridge.deleteCustomServer(name);
+            if (res && res.ok === false) {
+              customBannerFn('error', res.error || `Failed to delete "${name}".`);
+              return;
+            }
             await reloadData();
             customBannerFn('success', `Removed custom server "${name}".`);
             if (isOpen()) renderBody();
@@ -2001,7 +2017,11 @@ function createModalController({ doc, bridge, onStateChanged }) {
           if (isCustom) {
             chip.addEventListener('click', async () => {
               try {
-                await bridge.toggleServerTool(name, toolName, isToolDisabled);
+                const res = await bridge.toggleServerTool(name, toolName, isToolDisabled);
+                if (res && res.ok === false) {
+                  customBannerFn('error', res.error || `Failed to toggle tool "${toolName}".`);
+                  return;
+                }
                 await reloadData();
                 customBannerFn('success', `Tool "${toolName}" on "${name}" ${isToolDisabled ? 'enabled' : 'disabled'}.`);
                 if (isOpen()) renderBody();
@@ -2101,7 +2121,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
       btn.addEventListener('click', () => {
         editingForm = {
           ...createDefaultFormState(),
-          originalName: editingForm.originalName,
+          originalName: '',
           serverName: tpl.serverName,
           description: tpl.description || '',
           transport: tpl.transport,
@@ -2443,7 +2463,11 @@ function createModalController({ doc, bridge, onStateChanged }) {
       delBtn.textContent = 'Delete Server';
       delBtn.addEventListener('click', async () => {
         try {
-          await bridge.deleteCustomServer(popupForm.originalName);
+          const res = await bridge.deleteCustomServer(popupForm.originalName);
+          if (res && res.ok === false) {
+            setPopupBanner('error', res.error || `Failed to delete "${popupForm.originalName}".`);
+            return;
+          }
           await reloadData();
           if (isOpen()) renderModalContent();
           const remaining = Object.keys((cachedConfig.config && cachedConfig.config.mcpServers) || {});

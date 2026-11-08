@@ -10,8 +10,29 @@ const {
   createModalController,
 } = require('./modal-ui');
 
-const MCP_MANAGER_VERSION = 'v1.4.7';
+const MCP_MANAGER_VERSION = 'v1.4.8';
 const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
+
+function getOrCreateTrustedTypesPolicy(win) {
+  if (!win) return null;
+  if (win.__agyTrustedTypesPolicy) return win.__agyTrustedTypesPolicy;
+  if (win.trustedTypes && typeof win.trustedTypes.createPolicy === 'function') {
+    for (const pName of ['agy-mcp-manager', 'agy-companion-' + Date.now(), 'angular#unsafe-bypass', 'default', 'dompurify']) {
+      try {
+        const policy = win.trustedTypes.createPolicy(pName, {
+          createHTML: (x) => x,
+          createScript: (x) => x,
+          createScriptURL: (x) => x,
+        });
+        if (policy) {
+          win.__agyTrustedTypesPolicy = policy;
+          return policy;
+        }
+      } catch (_e) {}
+    }
+  }
+  return null;
+}
 
 function extractServerNameFromRow(row) {
   if (!row || typeof row.querySelector !== 'function') return '';
@@ -106,6 +127,12 @@ function isRelevantMutationList(mutations) {
 
 function ensureRemoteCompanionScripts(win, doc, bridge) {
   try {
+    let isChildFrame = false;
+    try {
+      isChildFrame = Boolean(win && win.parent && win.parent !== win);
+    } catch (_e) {}
+    if (isChildFrame) return Promise.resolve({ loaded: [] });
+
     const isRemoteWeb =
       Boolean(win?.location?.hostname && String(win.location.hostname).includes('antigravity.google.com')) ||
       Boolean(doc?.querySelector?.('ga-remote-control'));
@@ -117,20 +144,7 @@ function ensureRemoteCompanionScripts(win, doc, bridge) {
       const nonceEl = doc.querySelector?.('script[nonce]');
       const nonce = nonceEl ? nonceEl.nonce || nonceEl.getAttribute?.('nonce') : '';
       if (nonce) s.nonce = nonce;
-      let policy = win.__agyTrustedTypesPolicy || null;
-      if (!policy && win.trustedTypes && typeof win.trustedTypes.createPolicy === 'function') {
-        for (const pName of ['agy-companion-' + Date.now(), 'default', 'dompurify']) {
-          try {
-            policy = win.trustedTypes.createPolicy(pName, {
-              createScript: (x) => x,
-            });
-            if (policy) {
-              win.__agyTrustedTypesPolicy = policy;
-              break;
-            }
-          } catch (_e) {}
-        }
-      }
+      const policy = getOrCreateTrustedTypesPolicy(win);
       try {
         s.text = policy && typeof policy.createScript === 'function' ? policy.createScript(code) : code;
         doc.head.appendChild(s);
@@ -138,9 +152,25 @@ function ensureRemoteCompanionScripts(win, doc, bridge) {
       } catch (_e) {
         try {
           if (typeof Blob === 'function' && win.URL && typeof win.URL.createObjectURL === 'function') {
+            const s2 = doc.createElement('script');
+            if (nonce) s2.nonce = nonce;
             const blobUrl = win.URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
-            s.src = blobUrl;
-            doc.head.appendChild(s);
+            const cleanupBlob = () => {
+              try {
+                if (typeof win.URL.revokeObjectURL === 'function') {
+                  win.URL.revokeObjectURL(blobUrl);
+                }
+              } catch (_e3) {}
+            };
+            if (typeof s2.addEventListener === 'function') {
+              s2.addEventListener('load', cleanupBlob, { once: true });
+              s2.addEventListener('error', cleanupBlob, { once: true });
+            } else {
+              s2.onload = cleanupBlob;
+              s2.onerror = cleanupBlob;
+            }
+            s2.src = policy && typeof policy.createScriptURL === 'function' ? policy.createScriptURL(blobUrl) : blobUrl;
+            doc.head.appendChild(s2);
             return true;
           }
         } catch (_e2) {}
@@ -173,15 +203,16 @@ function ensureRemoteCompanionScripts(win, doc, bridge) {
           ? await bridge.fetchHostInstalledPluginInfo()
           : null;
       const loaded = [];
-      if (!info) {
+      if (!info || info.resolved === false) {
         if (attempts < 5) {
           const setTimeoutFn = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : (typeof setTimeout === 'function' ? setTimeout : null);
           if (setTimeoutFn) {
             const t = setTimeoutFn(tryLoadCompanions, 1500);
             if (t && typeof t.unref === 'function') t.unref();
           }
+          return { loaded };
         }
-        return { loaded };
+        if (!info) return { loaded };
       }
 
       if (info.hasStatusbar && !win.agyStatusBar) {
@@ -209,6 +240,296 @@ function ensureRemoteCompanionScripts(win, doc, bridge) {
   }
 }
 
+function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady) {
+  if (!win || !doc || !iframe) return false;
+  if (iframe.__agyMcpPromoted === MCP_MANAGER_VERSION || iframe.__agyKoPromoted) return false;
+
+  const rcInst =
+    (bridge && typeof bridge.resolveRemoteControlInstance === 'function'
+      ? bridge.resolveRemoteControlInstance(win)
+      : null) ||
+    win.__agyRemoteControlInstance ||
+    null;
+  if (!rcInst) return false;
+
+  const rawCandidate =
+    iframe.getAttribute?.('src') ||
+    iframe.src ||
+    (typeof rcInst.iframeSrc === 'function' ? String(rcInst.iframeSrc() || '') : '') ||
+    '';
+  const rawSrc = String(rawCandidate).match(/https?:\/\/[^\s"'<>)+]+/)?.[0] || String(rawCandidate);
+  if (!rawSrc || !rawSrc.includes('?iframe=true')) return false;
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(rawSrc, win.location?.href || 'https://antigravity.google.com');
+  } catch (_e) {
+    return false;
+  }
+
+  const basePath = parsedUrl.pathname.replace(/^\/antigravity/, '').replace(/\/+$/, '');
+  const verMatch = basePath.match(/\/web\/([^/]+)/);
+  const appVersion = verMatch ? verMatch[1] : '2.29.0';
+  const cdnOrigin =
+    parsedUrl.hostname === 'antigravity.static.usercontent.goog' || parsedUrl.origin === win.location?.origin
+      ? 'https://www.gstatic.com/antigravity'
+      : parsedUrl.origin;
+  const cdnBaseUrl = `${cdnOrigin}${basePath}`;
+
+  iframe.__agyMcpPromoted = MCP_MANAGER_VERSION;
+  const savedChildPath = String(
+    new URLSearchParams(win.location?.search || '').get('p') ||
+      rcInst.lastSyncedChildPath ||
+      rcInst.initialChildPath ||
+      ''
+  ).replace(/^\/+/, '');
+  if (savedChildPath) {
+    rcInst.initialChildPath = savedChildPath;
+  }
+
+  const buildInitialIframeHistoryUrl = () => {
+    if (!savedChildPath) return `${basePath}/?iframe=true`;
+    const qIdx = savedChildPath.indexOf('?');
+    const subPath = qIdx >= 0 ? savedChildPath.slice(0, qIdx) : savedChildPath;
+    const subQuery = qIdx >= 0 ? savedChildPath.slice(qIdx + 1) : '';
+    const cleanSubPath = subPath.replace(/^\/+/, '');
+    const fullPath = cleanSubPath ? `${basePath}/${cleanSubPath}` : `${basePath}/`;
+    return subQuery ? `${fullPath}?${subQuery}&iframe=true` : `${fullPath}?iframe=true`;
+  };
+
+  const origSrcDesc =
+    typeof HTMLIFrameElement !== 'undefined'
+      ? Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src')
+      : null;
+  const spoofedSrc = `${win.location?.origin || 'https://antigravity.google.com'}${basePath}/?iframe=true`;
+
+  const rcProto = Object.getPrototypeOf(rcInst);
+  if (rcProto && typeof rcProto.onIframeLoad === 'function' && !rcProto.__agyOrigOnIframeLoad) {
+    rcProto.__agyOrigOnIframeLoad = rcProto.onIframeLoad;
+    rcProto.onIframeLoad = function (...args) {
+      if (this.__agySuppressAutoIframeLoad) return Promise.resolve();
+      return rcProto.__agyOrigOnIframeLoad.apply(this, args);
+    };
+  }
+  if (typeof rcInst.onIframeLoad === 'function' && !rcInst.__agyOrigOnIframeLoad) {
+    rcInst.__agyOrigOnIframeLoad = rcInst.onIframeLoad;
+    rcInst.onIframeLoad = function (...args) {
+      if (this.__agySuppressAutoIframeLoad) return Promise.resolve();
+      return this.__agyOrigOnIframeLoad.apply(this, args);
+    };
+  }
+  rcInst.__agySuppressAutoIframeLoad = true;
+
+  const onBlankLoad = () => {
+    try {
+      const cw = iframe.contentWindow;
+      const cd = iframe.contentDocument || cw?.document;
+      if (!cw || !cd) return;
+
+      const nonce = doc.querySelector?.('script[nonce]')?.nonce || '';
+      const nonceAttr = nonce ? ` nonce="${nonce}"` : '';
+      const ttPolicy = getOrCreateTrustedTypesPolicy(win);
+      const shellHtml =
+        `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">` +
+        `<link rel="stylesheet" href="${cdnBaseUrl}/jetbox.css"${nonceAttr}>` +
+        `<link rel="stylesheet" href="${cdnBaseUrl}/compiled_tailwind.css"${nonceAttr}>` +
+        `<style>html,body,#root{height:100%;height:100dvh;max-height:100dvh;margin:0;overflow:hidden;background-color:transparent;overscroll-behavior:none;-webkit-text-size-adjust:100%;}</style>` +
+        `</head><body><div id="root"></div></body></html>`;
+
+      cd.open();
+      cd.write(ttPolicy && typeof ttPolicy.createHTML === 'function' ? ttPolicy.createHTML(shellHtml) : shellHtml);
+      cd.close();
+
+      try {
+        const prevDec = cw.__JETSKI_LS_CLIENT_DECORATOR__;
+        cw.__JETSKI_LS_CLIENT_DECORATOR__ = function (client) {
+          const decorated = typeof prevDec === 'function' ? prevDec(client) || client : client;
+          if (decorated && typeof decorated === 'object') {
+            cw.__agyCapturedLsClient = decorated;
+            win.__agyCapturedLsClient = decorated;
+          }
+          return decorated;
+        };
+      } catch (_e) {}
+
+      try {
+        cw.history?.replaceState?.(null, '', buildInitialIframeHistoryUrl());
+      } catch (_e) {}
+      try {
+        Object.defineProperty(cd, 'referrer', {
+          configurable: true,
+          get: () => win.location?.href || '',
+        });
+      } catch (_e) {}
+
+      cw.__APP_CONFIG__ = {
+        productName: 'antigravity',
+        csrfToken: 'csrf_token',
+        appVersion,
+        isRemoteControl: true,
+      };
+      const ua = cw.navigator?.userAgent || '';
+      const platform =
+        ua.indexOf('Windows') >= 0
+          ? 'win32'
+          : ua.indexOf('Macintosh') >= 0 || ua.indexOf('Mac OS') >= 0
+          ? 'darwin'
+          : 'linux';
+      cw.process = cw.process || {
+        env: { NODE_ENV: 'production' },
+        platform,
+        nextTick: (cb) => Promise.resolve().then(cb),
+      };
+      if (cw.AudioWorklet && cw.AudioWorklet.prototype) {
+        cw.AudioWorklet.prototype.addModule = () => Promise.resolve();
+      }
+      if (cw.customElements && !cw.customElements.__agyGuarded) {
+        const origDef = cw.customElements.define.bind(cw.customElements);
+        cw.customElements.define = (name, ctor, opts) => {
+          if (!cw.customElements.get(name)) origDef(name, ctor, opts);
+        };
+        cw.customElements.__agyGuarded = true;
+      }
+
+      const msgListeners = new Set();
+      try {
+        if (typeof cw.addEventListener === 'function' && !cw.__agyMsgBufferInstalled) {
+          cw.__agyMsgBufferInstalled = true;
+          const origAddEv = cw.addEventListener.bind(cw);
+          const origRemoveEv = typeof cw.removeEventListener === 'function' ? cw.removeEventListener.bind(cw) : null;
+          origAddEv('message', (ev) => {
+            if (ev && ev.data && ev.data.type === 'INITIAL_CONFIG') {
+              cw.__agyBufferedInitialConfigEvent = ev;
+              if (msgListeners.size > 0) {
+                cw.__initialConfigReceived = true;
+              }
+            }
+          });
+          cw.addEventListener = function (type, listener, options) {
+            if (type === 'message' && typeof listener === 'function') {
+              msgListeners.add(listener);
+              const res = origAddEv(type, listener, options);
+              if (cw.__agyBufferedInitialConfigEvent && !cw.__initialConfigReceived) {
+                const bufferedEv = cw.__agyBufferedInitialConfigEvent;
+                cw.__initialConfigReceived = true;
+                Promise.resolve().then(() => {
+                  try {
+                    listener.call(cw, bufferedEv);
+                  } catch (_e) {}
+                });
+              }
+              return res;
+            }
+            return origAddEv(type, listener, options);
+          };
+          if (origRemoveEv) {
+            cw.removeEventListener = function (type, listener, options) {
+              if (type === 'message' && typeof listener === 'function') {
+                msgListeners.delete(listener);
+              }
+              return origRemoveEv(type, listener, options);
+            };
+          }
+        }
+      } catch (_e) {}
+
+      const prismScript = cd.createElement('script');
+      if (nonce) prismScript.nonce = nonce;
+      prismScript.async = false;
+      const prismUrl = `${cdnBaseUrl}/prism_bundle.js`;
+      prismScript.src =
+        ttPolicy && typeof ttPolicy.createScriptURL === 'function' ? ttPolicy.createScriptURL(prismUrl) : prismUrl;
+
+      const mainScript = cd.createElement('script');
+      if (nonce) mainScript.nonce = nonce;
+      mainScript.async = false;
+      const mainUrl = `${cdnBaseUrl}/main.js`;
+      mainScript.src =
+        ttPolicy && typeof ttPolicy.createScriptURL === 'function' ? ttPolicy.createScriptURL(mainUrl) : mainUrl;
+
+      mainScript.onload = () => {
+        cw.__agyMainBooted = true;
+        if (savedChildPath) rcInst.initialChildPath = savedChildPath;
+        const origLoad =
+          rcInst.__agyOrigOnIframeLoad ||
+          rcProto?.__agyOrigOnIframeLoad ||
+          rcInst.onIframeLoad;
+        if (typeof origLoad === 'function' && !cw.__initialConfigReceived && !cw.__agyOnIframeLoadCalled) {
+          cw.__agyOnIframeLoadCalled = true;
+          try {
+            origLoad.call(rcInst);
+          } catch (_e) {}
+        }
+        try {
+          if (typeof rcInst.markIframeReady === 'function') {
+            rcInst.markIframeReady();
+          } else {
+            rcInst.iframeLoading?.set?.(false);
+            rcInst.iframeUiReady?.set?.(true);
+          }
+        } catch (_e) {}
+        if (typeof onReady === 'function') onReady();
+      };
+      mainScript.onerror = () => {
+        delete iframe.__agyMcpPromoted;
+      };
+
+      if (cd.head) {
+        cd.head.appendChild(prismScript);
+        cd.head.appendChild(mainScript);
+      }
+      if (typeof onReady === 'function') onReady();
+    } catch (_e) {
+      delete iframe.__agyMcpPromoted;
+    }
+  };
+
+  try {
+    delete iframe.src;
+  } catch (_e) {}
+  let blankLoadHandled = false;
+  const triggerBlankLoadOnce = () => {
+    if (blankLoadHandled) return;
+    try {
+      const cd = iframe.contentDocument || iframe.contentWindow?.document;
+      const cw = iframe.contentWindow;
+      if (!cd || !cw) return;
+      blankLoadHandled = true;
+    } catch (_e) {
+      return;
+    }
+    onBlankLoad();
+  };
+  if (typeof iframe.addEventListener === 'function') {
+    iframe.addEventListener('load', triggerBlankLoadOnce, { once: true });
+  }
+  if (origSrcDesc && typeof origSrcDesc.set === 'function') {
+    origSrcDesc.set.call(iframe, 'about:blank');
+  } else {
+    iframe.setAttribute?.('src', 'about:blank');
+    iframe.src = 'about:blank';
+  }
+  try {
+    Object.defineProperty(iframe, 'src', {
+      configurable: true,
+      enumerable: true,
+      get: () => spoofedSrc,
+      set: (v) => {
+        if (origSrcDesc && typeof origSrcDesc.set === 'function') {
+          origSrcDesc.set.call(iframe, v);
+        }
+      },
+    });
+  } catch (_e) {}
+  const setTimer = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : (typeof setTimeout === 'function' ? setTimeout : null);
+  if (setTimer) {
+    setTimer(triggerBlankLoadOnce, 25);
+  } else {
+    triggerBlankLoadOnce();
+  }
+  return true;
+}
+
 function mountMcpManager(env = {}) {
   const win = env.window || (typeof window !== 'undefined' ? window : null);
   const doc = env.document || (win && win.document ? win.document : null);
@@ -218,6 +539,9 @@ function mountMcpManager(env = {}) {
   cleanupLegacyStatusBarArtifacts(win, doc);
 
   if (win.agyMcpManager && win.agyMcpManager.version === MCP_MANAGER_VERSION) {
+    if (typeof win.agyMcpManager.__rebindIfBodyReplaced === 'function') {
+      win.agyMcpManager.__rebindIfBodyReplaced();
+    }
     return win.agyMcpManager;
   }
   if (win.agyMcpManager && typeof win.agyMcpManager.destroy === 'function') {
@@ -479,15 +803,15 @@ function mountMcpManager(env = {}) {
   }
 
   function ensureRemoteIframeMounted() {
+    const iframe = doc.querySelector?.('ga-remote-control iframe');
+    if (!iframe) return false;
+    if (!iframe.__agyMcpLoadBound && typeof iframe.addEventListener === 'function') {
+      iframe.__agyMcpLoadBound = true;
+      iframe.addEventListener('load', () => {
+        ensureRemoteIframeMounted();
+      });
+    }
     try {
-      const iframe = doc.querySelector?.('ga-remote-control iframe');
-      if (!iframe) return false;
-      if (!iframe.__agyMcpLoadBound && typeof iframe.addEventListener === 'function') {
-        iframe.__agyMcpLoadBound = true;
-        iframe.addEventListener('load', () => {
-          ensureRemoteIframeMounted();
-        });
-      }
       const iframeWin = iframe.contentWindow;
       const iframeDoc = iframe.contentDocument || iframeWin?.document;
       if (iframeWin && iframeDoc && iframeDoc.body) {
@@ -497,13 +821,23 @@ function mountMcpManager(env = {}) {
             document: iframeDoc,
             bridge,
           });
-        } else if (typeof iframeWin.agyMcpManager.injectIntoNativeMcpScreens === 'function') {
-          iframeWin.agyMcpManager.injectIntoNativeMcpScreens();
+        } else {
+          if (typeof iframeWin.agyMcpManager.__rebindIfBodyReplaced === 'function') {
+            iframeWin.agyMcpManager.__rebindIfBodyReplaced();
+          }
+          if (typeof iframeWin.agyMcpManager.injectIntoNativeMcpScreens === 'function') {
+            iframeWin.agyMcpManager.injectIntoNativeMcpScreens();
+          }
         }
         return true;
       }
     } catch (_e) {
-      // Cross-origin or not yet ready
+      // Cross-origin iframe: if ko-thought-translator is not active/loading, promote it to same-origin about:blank
+      if (!win.__agyKoLocalizerActive && !win.__agyLoadingKoThoughtCompanion && !win.__agyKoThoughtCleanup) {
+        promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, () => {
+          ensureRemoteIframeMounted();
+        });
+      }
     }
     return false;
   }
@@ -515,7 +849,8 @@ function mountMcpManager(env = {}) {
     const pollIframe = () => {
       remoteIframePollTimer = null;
       pollCount += 1;
-      if (ensureRemoteIframeMounted() || pollCount >= 12 || ! setTimer) return;
+      ensureRemoteIframeMounted();
+      if (pollCount >= 12 || !setTimer) return;
       remoteIframePollTimer = setTimer(pollIframe, 1000);
       if (remoteIframePollTimer && typeof remoteIframePollTimer.unref === 'function') {
         remoteIframePollTimer.unref();
@@ -529,7 +864,13 @@ function mountMcpManager(env = {}) {
     }
   }
 
-  ensureRemoteCompanionScripts(win, doc, bridge);
+  let isChildFrame = false;
+  try {
+    isChildFrame = Boolean(win && win.parent && win.parent !== win);
+  } catch (_e) {}
+  if (!isChildFrame) {
+    ensureRemoteCompanionScripts(win, doc, bridge);
+  }
 
   function injectIntoNativeMcpScreens() {
     if (!doc.body) return;
@@ -760,8 +1101,16 @@ function mountMcpManager(env = {}) {
   injectIntoNativeMcpScreens();
 
   let observer = null;
+  let observedBody = null;
   let injectTimer = null;
-  if (typeof win.MutationObserver === 'function') {
+  function attachBodyObserver() {
+    if (!doc.body || typeof win.MutationObserver !== 'function') return;
+    if (observer && observedBody === doc.body) return;
+    if (observer) {
+      try {
+        observer.disconnect();
+      } catch (_e) {}
+    }
     observer = new win.MutationObserver((mutations) => {
       if (!isRelevantMutationList(mutations)) return;
       if (injectTimer) return;
@@ -771,7 +1120,15 @@ function mountMcpManager(env = {}) {
         injectIntoNativeMcpScreens();
       }, 25);
     });
+    observedBody = doc.body;
     observer.observe(doc.body, { childList: true, subtree: true });
+  }
+  attachBodyObserver();
+
+  function rebindIfBodyReplaced() {
+    ensureModalStyles(doc);
+    attachBodyObserver();
+    injectIntoNativeMcpScreens();
   }
 
   // Keyboard shortcut: Ctrl+Shift+M to open/toggle modal, Escape to close
@@ -815,6 +1172,7 @@ function mountMcpManager(env = {}) {
     isOAuthConnectModalOpen: () => modal.isOAuthConnectModalOpen(),
     renderSettingsPageContent: (container) => modal.renderSettingsPageContent(container),
     injectIntoNativeMcpScreens,
+    __rebindIfBodyReplaced: rebindIfBodyReplaced,
     reload: () => modal.reloadData(),
     bridge,
     schema,

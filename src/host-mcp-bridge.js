@@ -131,82 +131,262 @@ function createHostMcpBridge(opts = {}) {
   function hookRemoteControlPrototype(w, proto) {
     if (!proto || proto.__agyMcpRcHooked) return;
     proto.__agyMcpRcHooked = true;
-    if (typeof proto.handleIframeMessage === 'function') {
-      const origMsg = proto.__agyOrigHandleIframeMessage || proto.handleIframeMessage;
-      proto.__agyOrigHandleIframeMessage = origMsg;
-      proto.handleIframeMessage = function (ev) {
-        if (w) w.__agyRemoteControlInstance = this;
-        if (ev && ev.data === '__agy_probe__') return;
-        return origMsg.apply(this, arguments);
-      };
-    }
-    for (const mName of ['proxyCommand', 'streamProxyCommand']) {
+    const methodNames = [
+      'handleIframeMessage',
+      'proxyCommand',
+      'streamProxyCommand',
+      'handlePortRequest',
+      'managePolling',
+      'shouldPoll',
+      'loadInstances',
+      'isDisconnected',
+      'onIframeLoad',
+      'onWindowOnline',
+      'onWindowOffline',
+      'isOffline',
+      'isDirectIngressMode',
+      'isTabHidden',
+      'getSelectedInstance',
+      'instanceInfos',
+      'remoteConversationsInfos',
+    ];
+    for (const mName of methodNames) {
       if (typeof proto[mName] === 'function') {
         const origKey = `__agyOrig_${mName}`;
         const origFn = proto[origKey] || proto[mName];
         proto[origKey] = origFn;
-        proto[mName] = function () {
-          if (w) w.__agyRemoteControlInstance = this;
+        if (mName === 'handleIframeMessage') {
+          proto.__agyOrigHandleIframeMessage = origFn;
+        }
+        proto[mName] = function (ev) {
+          if (w && this && !this.destroyed) {
+            w.__agyRemoteControlInstance = this;
+          }
+          if (mName === 'handleIframeMessage' && ev && ev.data === '__agy_probe__') return;
           return origFn.apply(this, arguments);
         };
       }
     }
   }
 
-  function getRemoteControlProxyAdapter() {
-    try {
-      const candidateWins = [win, win?.parent !== win ? win?.parent : null].filter(Boolean);
-      for (const w of candidateWins) {
-        let rcInst = w.__agyRemoteControlInstance && !w.__agyRemoteControlInstance.destroyed
-          ? w.__agyRemoteControlInstance
-          : null;
-        if (!rcInst && w.default_GoogleAntigravity && typeof w.default_GoogleAntigravity === 'object') {
-          for (const k of Object.keys(w.default_GoogleAntigravity)) {
-            const mod = w.default_GoogleAntigravity[k];
-            if (!mod || (typeof mod !== 'object' && typeof mod !== 'function')) continue;
-            const RC = mod.RemoteControlComponent || (typeof mod.prototype?.proxyCommand === 'function' ? mod : null);
-            if (RC && RC.prototype && typeof RC.prototype.proxyCommand === 'function') {
-              hookRemoteControlPrototype(w, RC.prototype);
-              break;
+  function resolveRemoteControlInstance(w) {
+    if (!w) return null;
+    if (w.__agyRemoteControlInstance && !w.__agyRemoteControlInstance.destroyed) {
+      hookRemoteControlPrototype(w, Object.getPrototypeOf(w.__agyRemoteControlInstance));
+      return w.__agyRemoteControlInstance;
+    }
+
+    const isRcInstance = (obj) =>
+      Boolean(
+        obj &&
+          typeof obj === 'object' &&
+          !obj.destroyed &&
+          (typeof obj.proxyCommand === 'function' ||
+            typeof obj.onIframeLoad === 'function' ||
+            typeof obj.handleIframeMessage === 'function')
+      );
+
+    const extractFromLContext = (lCtx) => {
+      if (!lCtx || typeof lCtx !== 'object') return null;
+      if (isRcInstance(lCtx)) return lCtx;
+      if (isRcInstance(lCtx.component)) return lCtx.component;
+      const lView = lCtx.lView;
+      if (Array.isArray(lView)) {
+        try {
+          const tView = lView[1];
+          const nodeIndex = typeof lCtx.nodeIndex === 'number' ? lCtx.nodeIndex : -1;
+          const tNode = nodeIndex >= 0 && Array.isArray(tView?.data) ? tView.data[nodeIndex] : null;
+          if (
+            tNode &&
+            typeof tNode.directiveStart === 'number' &&
+            typeof tNode.componentOffset === 'number' &&
+            tNode.componentOffset > -1
+          ) {
+            const comp = lView[tNode.directiveStart + tNode.componentOffset];
+            if (isRcInstance(comp)) return comp;
+          }
+        } catch {}
+        for (let i = 0; i < Math.min(lView.length, 300); i++) {
+          if (isRcInstance(lView[i])) return lView[i];
+        }
+      }
+      return null;
+    };
+
+    const searchNgContext = (ctx) => {
+      if (!ctx || typeof ctx !== 'object') return null;
+      const direct = extractFromLContext(ctx);
+      if (direct) return direct;
+      const visited = new Set();
+      const queue = [ctx];
+      let steps = 0;
+      while (queue.length > 0 && steps < 400) {
+        const cur = queue.shift();
+        if (!cur || typeof cur !== 'object' || visited.has(cur)) continue;
+        visited.add(cur);
+        steps++;
+        const extracted = extractFromLContext(cur);
+        if (extracted) return extracted;
+        if (Array.isArray(cur)) {
+          const scanLen = Math.min(cur.length, 300);
+          for (let i = 0; i < scanLen; i++) {
+            if (isRcInstance(cur[i])) return cur[i];
+          }
+          for (let i = 0; i < scanLen; i++) {
+            const item = cur[i];
+            if (item && typeof item === 'object' && (Array.isArray(item) || isRcInstance(item.component))) {
+              queue.push(item);
             }
           }
+        } else {
+          for (const k of ['component', 'lView', 'data', 'context', '_lView']) {
+            if (cur[k] && typeof cur[k] === 'object') queue.push(cur[k]);
+          }
         }
-        if (!rcInst && w.document) {
-          const rcEl = w.document.querySelector?.('ga-remote-control');
-          const ctx = rcEl?.__ngContext__;
-          if (ctx && typeof ctx === 'object') {
-            const list = Array.isArray(ctx) ? ctx : (Array.isArray(ctx.lView) ? ctx.lView : [ctx.component, ctx]);
-            for (const item of list) {
-              if (item && typeof item === 'object' && typeof item.proxyCommand === 'function') {
-                rcInst = item;
-                w.__agyRemoteControlInstance = item;
-                hookRemoteControlPrototype(w, Object.getPrototypeOf(item));
-                break;
+      }
+      return null;
+    };
+
+    const wDoc = w.document;
+    const rcEl = wDoc?.querySelector?.('ga-remote-control') || null;
+    const gaRootEl = wDoc?.querySelector?.('ga-root') || null;
+
+    if (rcEl) {
+      const ngFn = w.ng && typeof w.ng.getComponent === 'function' ? w.ng.getComponent : null;
+      if (ngFn) {
+        try {
+          const comp = ngFn(rcEl);
+          if (isRcInstance(comp)) {
+            w.__agyRemoteControlInstance = comp;
+            hookRemoteControlPrototype(w, Object.getPrototypeOf(comp));
+            return comp;
+          }
+        } catch {}
+      }
+      const ctxKey = Object.keys(rcEl).find((k) => k.startsWith('__ngContext'));
+      const found = searchNgContext(rcEl.__ngContext__ || (ctxKey ? rcEl[ctxKey] : null));
+      if (found) {
+        w.__agyRemoteControlInstance = found;
+        hookRemoteControlPrototype(w, Object.getPrototypeOf(found));
+        return found;
+      }
+    }
+
+    if (gaRootEl) {
+      const rootCtxKey = Object.keys(gaRootEl).find((k) => k.startsWith('__ngContext'));
+      const foundFromRoot = searchNgContext(gaRootEl.__ngContext__ || (rootCtxKey ? gaRootEl[rootCtxKey] : null));
+      if (foundFromRoot) {
+        w.__agyRemoteControlInstance = foundFromRoot;
+        hookRemoteControlPrototype(w, Object.getPrototypeOf(foundFromRoot));
+        return foundFromRoot;
+      }
+    }
+
+    const nsRoot = w.default_GoogleAntigravity;
+    if (nsRoot && typeof nsRoot === 'object') {
+      const targetCandidates = [];
+      if (rcEl) {
+        targetCandidates.push(rcEl);
+        if (rcEl.firstElementChild) targetCandidates.push(rcEl.firstElementChild);
+        if (typeof rcEl.querySelector === 'function') {
+          const innerContainer = rcEl.querySelector('.app-container, .iframe-panel, iframe');
+          if (innerContainer && !targetCandidates.includes(innerContainer)) {
+            targetCandidates.push(innerContainer);
+          }
+        }
+      }
+      if (gaRootEl) {
+        targetCandidates.push(gaRootEl);
+        if (gaRootEl.firstElementChild) targetCandidates.push(gaRootEl.firstElementChild);
+      }
+
+      for (const k of Object.keys(nsRoot)) {
+        const mod = nsRoot[k];
+        if (!mod || (typeof mod !== 'object' && typeof mod !== 'function')) continue;
+        for (const targetEl of targetCandidates) {
+          if (!targetEl) continue;
+          try {
+            if (typeof mod.getDebugNode === 'function') {
+              const dbgNode = mod.getDebugNode(targetEl);
+              const dbgComp = dbgNode?.componentInstance || dbgNode?.context;
+              if (isRcInstance(dbgComp)) {
+                w.__agyRemoteControlInstance = dbgComp;
+                hookRemoteControlPrototype(w, Object.getPrototypeOf(dbgComp));
+                return dbgComp;
+              }
+              const foundFromDbg = searchNgContext(dbgComp || dbgNode);
+              if (foundFromDbg) {
+                w.__agyRemoteControlInstance = foundFromDbg;
+                hookRemoteControlPrototype(w, Object.getPrototypeOf(foundFromDbg));
+                return foundFromDbg;
               }
             }
-          }
-        }
-        if (!rcInst && typeof w.dispatchEvent === 'function') {
-          try {
-            const Evt = w.MessageEvent || (typeof MessageEvent !== 'undefined' ? MessageEvent : null);
-            if (Evt) {
-              w.dispatchEvent(new Evt('message', { data: '__agy_probe__' }));
-              if (w.__agyRemoteControlInstance && !w.__agyRemoteControlInstance.destroyed) {
-                rcInst = w.__agyRemoteControlInstance;
+            if (typeof mod.getComponent === 'function') {
+              const comp = mod.getComponent(targetEl);
+              if (isRcInstance(comp)) {
+                w.__agyRemoteControlInstance = comp;
+                hookRemoteControlPrototype(w, Object.getPrototypeOf(comp));
+                return comp;
+              }
+            }
+            const getLCtx = mod['\u0275getLContext'] || mod.getLContext;
+            if (typeof getLCtx === 'function') {
+              const lCtx = getLCtx(targetEl);
+              const foundFromLCtx = extractFromLContext(lCtx) || searchNgContext(lCtx?.lView || lCtx);
+              if (foundFromLCtx) {
+                w.__agyRemoteControlInstance = foundFromLCtx;
+                hookRemoteControlPrototype(w, Object.getPrototypeOf(foundFromLCtx));
+                return foundFromLCtx;
               }
             }
           } catch {}
         }
+        const RC = mod.RemoteControlComponent || (typeof mod.prototype?.proxyCommand === 'function' ? mod : null);
+        if (RC && RC.prototype && typeof RC.prototype.proxyCommand === 'function') {
+          hookRemoteControlPrototype(w, RC.prototype);
+        }
+      }
+    }
+
+    try {
+      if (!w.__agyRemoteControlInstance && typeof wDoc?.dispatchEvent === 'function') {
+        const BaseEvt = w.Event || (typeof Event !== 'undefined' ? Event : null);
+        if (BaseEvt) {
+          wDoc.dispatchEvent(new BaseEvt('visibilitychange'));
+        }
+      }
+      if (!w.__agyRemoteControlInstance && typeof w.dispatchEvent === 'function') {
+        const Evt = w.MessageEvent || (typeof MessageEvent !== 'undefined' ? MessageEvent : null);
+        if (Evt) {
+          w.dispatchEvent(new Evt('message', { data: '__agy_probe__' }));
+        }
+      }
+    } catch {}
+
+    return w.__agyRemoteControlInstance && !w.__agyRemoteControlInstance.destroyed
+      ? w.__agyRemoteControlInstance
+      : null;
+  }
+
+  function getRemoteControlProxyAdapter() {
+    try {
+      const candidateWins = [win, win?.parent !== win ? win?.parent : null].filter(Boolean);
+      for (const w of candidateWins) {
+        const rcInst = resolveRemoteControlInstance(w);
         if (rcInst && typeof rcInst.proxyCommand === 'function') {
           const callRpc = async (rpcPath, reqObj) => {
             const bytes = new TextEncoder().encode(JSON.stringify(reqObj || {}));
-            const res = await rcInst.proxyCommand(rpcPath, bytes);
+            const res = await rcInst.proxyCommand(rpcPath, bytes, {
+              'content-type': 'application/json',
+              'x-is-streaming': 'false',
+            });
             if (!res || !res.payload) return {};
             const text = new TextDecoder().decode(res.payload);
             return text ? JSON.parse(text) : {};
           };
           return {
             __isRcProxyAdapter: true,
+            rcInst,
             async getMcpServerStates() {
               return await callRpc('/exa.language_server_pb.LanguageServerService/GetMcpServerStates', {});
             },
@@ -234,11 +414,18 @@ function createHostMcpBridge(opts = {}) {
             async getCustomizationStates() {
               return await callRpc('/exa.language_server_pb.LanguageServerService/GetCustomizationStates', {});
             },
+            async getAllPlugins() {
+              return await callRpc('/exa.language_server_pb.LanguageServerService/GetAllPlugins', {});
+            },
+            async getAllSkills() {
+              return await callRpc('/exa.language_server_pb.LanguageServerService/GetAllSkills', {});
+            },
             async getLocalUserInfo() {
               return await callRpc('/exa.language_server_pb.LanguageServerService/GetLocalUserInfo', {});
             },
             async readFile(req) {
-              const r = await callRpc('/exa.language_server_pb.LanguageServerService/ReadFile', { uri: req?.uri });
+              const uri = typeof req === 'string' ? req : req?.uri;
+              const r = await callRpc('/exa.language_server_pb.LanguageServerService/ReadFile', { uri });
               if (r && typeof r.content === 'string') {
                 return { content: decodeBase64ToBytes(r.content) };
               }
@@ -744,7 +931,10 @@ function createHostMcpBridge(opts = {}) {
       } else {
         nextConfig.mcpServers[serverName].disabled = true;
       }
-      await writeMcpConfig(nextConfig, serverName);
+      const writeRes = await writeMcpConfig(nextConfig, serverName);
+      if (writeRes && writeRes.ok === false) {
+        return writeRes;
+      }
     }
     return fetchServerStates();
   }
@@ -867,12 +1057,13 @@ function createHostMcpBridge(opts = {}) {
   async function fetchHostInstalledPluginInfo(forceRefresh = false) {
     if (cachedHostPluginInfo && !forceRefresh) return cachedHostPluginInfo;
     const svc = scanFiberTree();
-    if (!svc || typeof svc.readFile !== 'function') return null;
+    if (!svc) return null;
 
     let geminiRoot = null;
     const extractRoot = (rawPath) => {
       if (!rawPath || typeof rawPath !== 'string') return null;
-      const norm = rawPath.replace(/\\/g, '/');
+      const fsPath = toFsPathFromFileUri(rawPath);
+      const norm = fsPath.replace(/\\/g, '/');
       const idx = norm.indexOf('/.gemini/');
       if (idx === -1) return null;
       return norm.slice(0, idx + '/.gemini'.length);
@@ -881,83 +1072,167 @@ function createHostMcpBridge(opts = {}) {
     try {
       const cfgUri = await resolveMcpConfigUri();
       if (cfgUri) {
-        geminiRoot = extractRoot(toFsPathFromFileUri(cfgUri));
+        geminiRoot = extractRoot(cfgUri);
       }
     } catch {}
 
-    if (!geminiRoot && typeof svc.getCustomizationStates === 'function') {
+    const pluginNames = new Set();
+    if (typeof svc.getAllPlugins === 'function') {
       try {
-        const st = await svc.getCustomizationStates([]);
-        const items = Array.isArray(st) ? st : (Array.isArray(st?.states) ? st.states : (Array.isArray(st?.items) ? st.items : []));
-        for (const item of items) {
-          const p = item?.path || item?.uri || item?.skillItem?.path || item?.ruleItem?.path || item?.pluginItem?.path || '';
-          const r = extractRoot(p);
-          if (r) {
-            geminiRoot = r;
-            break;
+        const plRes = await svc.getAllPlugins({});
+        const plugins = Array.isArray(plRes)
+          ? plRes
+          : (Array.isArray(plRes?.plugins) ? plRes.plugins : []);
+        for (const p of plugins) {
+          if (p?.name) pluginNames.add(String(p.name));
+          const pPath = p?.path || p?.uri || '';
+          if (!geminiRoot && pPath) {
+            const r = extractRoot(pPath);
+            if (r) geminiRoot = r;
           }
         }
       } catch {}
     }
 
-    if (!geminiRoot) return null;
+    if (typeof svc.getCustomizationStates === 'function') {
+      try {
+        const st = await svc.getCustomizationStates([]);
+        const items = Array.isArray(st) ? st : (Array.isArray(st?.states) ? st.states : (Array.isArray(st?.items) ? st.items : []));
+        for (const item of items) {
+          const p = item?.path || item?.uri || item?.skillItem?.path || item?.ruleItem?.path || item?.pluginItem?.path || '';
+          if (p.includes('ko-thought-translator')) pluginNames.add('ko-thought-translator');
+          if (p.includes('antigravity-statusbar')) pluginNames.add('antigravity-statusbar');
+          if (p.includes('antigravity-mcp-manager')) pluginNames.add('antigravity-mcp-manager');
+          if (!geminiRoot) {
+            const r = extractRoot(p);
+            if (r) geminiRoot = r;
+          }
+        }
+      } catch {}
+    }
+
+    if (!geminiRoot && typeof svc.getAllSkills === 'function') {
+      try {
+        const skRes = await svc.getAllSkills([]);
+        const skills = Array.isArray(skRes) ? skRes : (Array.isArray(skRes?.skills) ? skRes.skills : []);
+        for (const sk of skills) {
+          const p = sk?.path || sk?.uri || '';
+          if (p.includes('ko-thought-translator')) pluginNames.add('ko-thought-translator');
+          if (!geminiRoot) {
+            const r = extractRoot(p);
+            if (r) geminiRoot = r;
+          }
+        }
+      } catch {}
+    }
+
+    if (!geminiRoot) {
+      if (pluginNames.size > 0) {
+        return {
+          resolved: false,
+          geminiRoot: null,
+          autoinjectUri: null,
+          hasStatusbar: pluginNames.has('antigravity-statusbar'),
+          hasMcpManager: pluginNames.has('antigravity-mcp-manager'),
+          hasKoTranslator: pluginNames.has('ko-thought-translator'),
+          statusbarBlock: '',
+          mcpBlock: '',
+          koBlock: '',
+        };
+      }
+      return null;
+    }
 
     const autoinjectUri = toFileUriFromFsPath(`${geminiRoot}/antigravity/statusbar_autoinject.js`);
     if (!autoinjectUri) return null;
 
-    try {
-      let res = null;
+    let text = '';
+    if (typeof svc.readFile === 'function') {
       try {
-        res = await svc.readFile({ uri: autoinjectUri });
-      } catch {
-        res = await svc.readFile(autoinjectUri);
+        let res = null;
+        try {
+          res = await svc.readFile({ uri: autoinjectUri });
+        } catch {
+          res = await svc.readFile(autoinjectUri);
+        }
+        const rawBytes = res instanceof Uint8Array || ArrayBuffer.isView(res) ? res : res?.content;
+        text = typeof res === 'string'
+          ? res
+          : (rawBytes && rawBytes.length > 0 ? new TextDecoder().decode(rawBytes) : '');
+      } catch {}
+    }
+
+    if (!text) {
+      if (pluginNames.size > 0) {
+        return {
+          resolved: false,
+          geminiRoot,
+          autoinjectUri,
+          hasStatusbar: pluginNames.has('antigravity-statusbar'),
+          hasMcpManager: pluginNames.has('antigravity-mcp-manager'),
+          hasKoTranslator: pluginNames.has('ko-thought-translator'),
+          statusbarBlock: '',
+          mcpBlock: '',
+          koBlock: '',
+        };
       }
-      const rawBytes = res instanceof Uint8Array || ArrayBuffer.isView(res) ? res : res?.content;
-      const text = typeof res === 'string'
-        ? res
-        : (rawBytes && rawBytes.length > 0 ? new TextDecoder().decode(rawBytes) : '');
-      if (!text) return null;
-
-      const mcpBeginLine = '// === ' + ['BEGIN_AGY_MCP', 'MANAGER_V1'].join('_') + ' ===';
-      const mcpEndLine = '// === ' + ['END_AGY_MCP', 'MANAGER_V1'].join('_') + ' ===';
-      const mcpBeginBlock = '/* === ' + ['BEGIN_AGY_MCP', 'MANAGER_V1'].join('_') + ' === */';
-      const mcpEndBlock = '/* === ' + ['END_AGY_MCP', 'MANAGER_V1'].join('_') + ' === */';
-      const koBeginLine = '// === ' + ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' ===';
-      const koEndLine = '// === ' + ['END_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' ===';
-      const koBeginBlock = '/* === ' + ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' === */';
-      const koEndBlock = '/* === ' + ['END_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_') + ' === */';
-
-      const mcpBeginMarker = text.includes(mcpBeginBlock) ? mcpBeginBlock : mcpBeginLine;
-      const mcpEndMarker = text.includes(mcpEndBlock) ? mcpEndBlock : mcpEndLine;
-      const koBeginMarker = text.includes(koBeginBlock) ? koBeginBlock : koBeginLine;
-      const koEndMarker = text.includes(koEndBlock) ? koEndBlock : koEndLine;
-
-      const mcpB = text.indexOf(mcpBeginMarker);
-      const mcpE = text.indexOf(mcpEndMarker);
-      const koB = text.indexOf(koBeginMarker);
-      const koE = text.indexOf(koEndMarker);
-
-      const firstMarkerIdx = [mcpB, koB].filter((i) => i !== -1).sort((a, b) => a - b)[0] ?? text.length;
-      const baseSegment = text.slice(0, firstMarkerIdx).trim();
-
-      const hasStatusbar = baseSegment.includes('mountStatusBar') || baseSegment.includes('agyStatusBar');
-      const hasMcpManager = (mcpB !== -1 && mcpE > mcpB) || text.includes('mountMcpManager');
-      const hasKoTranslator = (koB !== -1 && koE > koB) || text.includes('__agyKoThoughtCleanup');
-
-      cachedHostPluginInfo = {
-        geminiRoot,
-        autoinjectUri,
-        hasStatusbar,
-        hasMcpManager,
-        hasKoTranslator,
-        statusbarBlock: hasStatusbar ? baseSegment : '',
-        mcpBlock: mcpB !== -1 && mcpE > mcpB ? text.slice(mcpB, mcpE + mcpEndMarker.length) : '',
-        koBlock: koB !== -1 && koE > koB ? text.slice(koB, koE + koEndMarker.length) : '',
-      };
-      return cachedHostPluginInfo;
-    } catch {
       return null;
     }
+
+    const mcpBeginStr = ['BEGIN_AGY_MCP', 'MANAGER'].join('_');
+    const mcpEndStr = ['END_AGY_MCP', 'MANAGER'].join('_');
+    const koBeginStr = ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_');
+    const koEndStr = ['END_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_');
+
+    const mcpBeginRe = new RegExp(`^[ \\t]*(?:\\/\\/ === ${mcpBeginStr}(?:_V1)? ===|\\/\\* === ${mcpBeginStr}(?:_V1)? === \\*\\/)[ \\t]*$`, 'm');
+    const mcpEndRe = new RegExp(`^[ \\t]*(?:\\/\\/ === ${mcpEndStr}(?:_V1)? ===|\\/\\* === ${mcpEndStr}(?:_V1)? === \\*\\/)[ \\t]*$`, 'm');
+    const koBeginRe = new RegExp(`^[ \\t]*(?:\\/\\/ === ${koBeginStr} ===|\\/\\* === ${koBeginStr} === \\*\\/)[ \\t]*$`, 'm');
+    const koEndRe = new RegExp(`^[ \\t]*(?:\\/\\/ === ${koEndStr} ===|\\/\\* === ${koEndStr} === \\*\\/)[ \\t]*$`, 'm');
+
+    const mcpBeginMatch = mcpBeginRe.exec(text);
+    const mcpEndMatch = mcpBeginMatch ? mcpEndRe.exec(text.slice(mcpBeginMatch.index)) : null;
+    const mcpB = mcpBeginMatch ? mcpBeginMatch.index : -1;
+    const mcpE = mcpEndMatch ? mcpBeginMatch.index + mcpEndMatch.index : -1;
+    const mcpEndLen = mcpEndMatch ? mcpEndMatch[0].length : 0;
+
+    const koBeginMatch = koBeginRe.exec(text);
+    const koEndMatch = koBeginMatch ? koEndRe.exec(text.slice(koBeginMatch.index)) : null;
+    const koB = koBeginMatch ? koBeginMatch.index : -1;
+    const koE = koEndMatch ? koBeginMatch.index + koEndMatch.index : -1;
+    const koEndLen = koEndMatch ? koEndMatch[0].length : 0;
+
+    const firstMarkerIdx = [mcpB, koB].filter((i) => i !== -1).sort((a, b) => a - b)[0] ?? text.length;
+    const baseSegment = text.slice(0, firstMarkerIdx).trim();
+
+    const isBaseStatusbar =
+      baseSegment.length > 0 &&
+      !baseSegment.includes('Antigravity Custom MCP Server Manager') &&
+      (baseSegment.includes('function mountStatusBar(') ||
+        baseSegment.includes('agy-ctx-statusbar') ||
+        baseSegment.includes('STATUSBAR_VERSION'));
+
+    const hasStatusbar = isBaseStatusbar || pluginNames.has('antigravity-statusbar');
+    const hasMcpManager =
+      (mcpB !== -1 && mcpE > mcpB) ||
+      text.includes('function mountMcpManager(') ||
+      pluginNames.has('antigravity-mcp-manager');
+    const hasKoTranslator =
+      (koB !== -1 && koE > koB) ||
+      text.includes('__agyKoThoughtCleanup') ||
+      pluginNames.has('ko-thought-translator');
+
+    cachedHostPluginInfo = {
+      resolved: true,
+      geminiRoot,
+      autoinjectUri,
+      hasStatusbar,
+      hasMcpManager,
+      hasKoTranslator,
+      statusbarBlock: isBaseStatusbar ? baseSegment : '',
+      mcpBlock: mcpB !== -1 && mcpE > mcpB ? text.slice(mcpB, mcpE + mcpEndLen) : '',
+      koBlock: koB !== -1 && koE > koB ? text.slice(koB, koE + koEndLen) : '',
+    };
+    return cachedHostPluginInfo;
   }
 
   return {
@@ -981,6 +1256,7 @@ function createHostMcpBridge(opts = {}) {
     getLastKnownStates,
     setCustomConfigUriOverride,
     fetchHostInstalledPluginInfo,
+    resolveRemoteControlInstance,
     toFsPathFromFileUri,
   };
 }
