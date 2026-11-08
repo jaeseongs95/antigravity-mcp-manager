@@ -1,4 +1,4 @@
-# Antigravity Custom MCP Server Manager (`antigravity-mcp-manager` `v1.4.8`)
+# Antigravity Custom MCP Server Manager (`antigravity-mcp-manager` `v1.4.13`)
 
 **Languages:** **English ([README.md](./README.md))** | **[한국어 (README.ko.md)](./README.ko.md)**
 
@@ -44,7 +44,7 @@ Add, edit, authenticate (`OAuth` / `Bearer` / `API Key` / `Basic`), toggle, and 
 git clone https://github.com/jaeseongs95/antigravity-mcp-manager.git
 cd antigravity-mcp-manager
 
-# 1. Run unit & bundle integration tests (15/15 tests)
+# 1. Run unit & bundle integration tests (16/16 tests)
 npm test
 
 # 2. Build dist/mcp_manager_autoinject.js, install to ~/.gemini/antigravity, patch app.asar & live-inject via CDP
@@ -154,7 +154,7 @@ antigravity-mcp-manager/
 ## Verification & Testing
 
 ```bash
-# Build dist/mcp_manager_autoinject.js and run all 15 unit + integration test suites
+# Build dist/mcp_manager_autoinject.js and run all 16 unit + integration test suites
 npm test
 ```
 

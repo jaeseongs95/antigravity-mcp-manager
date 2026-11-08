@@ -245,35 +245,55 @@ function extractAuthFromSpec(spec) {
   const entries = Object.entries(rawHeaders);
   let matchedKey = null;
 
-  for (const [k, v] of entries) {
-    if (k.toLowerCase() === 'authorization' && typeof v === 'string') {
-      const trimmed = v.trim();
-      const bearerMatch = /^Bearer\s+(.+)$/i.exec(trimmed);
-      if (bearerMatch) {
-        result.authMode = 'bearer';
-        result.bearerToken = bearerMatch[1].trim();
-        matchedKey = k;
-        break;
-      }
-      const basicMatch = /^Basic\s+(.+)$/i.exec(trimmed);
-      if (basicMatch) {
-        const decoded = decodeBase64(basicMatch[1].trim());
-        const colonIdx = decoded.indexOf(':');
-        result.authMode = 'basic';
-        if (colonIdx !== -1) {
-          result.basicUser = decoded.slice(0, colonIdx);
-          result.basicPass = decoded.slice(colonIdx + 1);
-        } else {
-          result.basicUser = decoded;
+  if (spec.authMode === 'apiKey') {
+    result.authMode = 'apiKey';
+    const explicitHdr = typeof spec.apiKeyHeader === 'string' && spec.apiKeyHeader.trim()
+      ? spec.apiKeyHeader.trim()
+      : '';
+    if (explicitHdr) {
+      result.apiKeyHeader = explicitHdr;
+      for (const [k, v] of entries) {
+        if (k.toLowerCase() === explicitHdr.toLowerCase() && typeof v === 'string') {
+          result.apiKeyHeader = k;
+          result.apiKeyValue = v.trim();
+          matchedKey = k;
+          break;
         }
+      }
+    }
+  }
+
+  if (!matchedKey) {
+    for (const [k, v] of entries) {
+      if (k.toLowerCase() === 'authorization' && typeof v === 'string') {
+        const trimmed = v.trim();
+        const bearerMatch = /^Bearer\s+(.+)$/i.exec(trimmed);
+        if (bearerMatch) {
+          result.authMode = 'bearer';
+          result.bearerToken = bearerMatch[1].trim();
+          matchedKey = k;
+          break;
+        }
+        const basicMatch = /^Basic\s+(.+)$/i.exec(trimmed);
+        if (basicMatch) {
+          const decoded = decodeBase64(basicMatch[1].trim());
+          const colonIdx = decoded.indexOf(':');
+          result.authMode = 'basic';
+          if (colonIdx !== -1) {
+            result.basicUser = decoded.slice(0, colonIdx);
+            result.basicPass = decoded.slice(colonIdx + 1);
+          } else {
+            result.basicUser = decoded;
+          }
+          matchedKey = k;
+          break;
+        }
+        result.authMode = 'apiKey';
+        result.apiKeyHeader = k;
+        result.apiKeyValue = trimmed;
         matchedKey = k;
         break;
       }
-      result.authMode = 'apiKey';
-      result.apiKeyHeader = k;
-      result.apiKeyValue = trimmed;
-      matchedKey = k;
-      break;
     }
   }
 
@@ -289,7 +309,7 @@ function extractAuthFromSpec(spec) {
     }
   }
 
-  if (!matchedKey && (spec.authMode === 'apiKey' || (entries.length === 1 && !spec.authMode && !spec.oauth))) {
+  if (!matchedKey && spec.authMode === 'apiKey') {
     const [k, v] = entries[0] || [];
     if (k && typeof v === 'string') {
       result.authMode = 'apiKey';
@@ -804,6 +824,7 @@ function validateAndBuildServerSpec({
   delete base.headers;
   delete base.oauth;
   delete base.authMode;
+  delete base.apiKeyHeader;
   delete base.description;
   delete base.disabled;
 
@@ -820,7 +841,7 @@ function validateAndBuildServerSpec({
     const { cleanUrl, extractedHeaders } = extractUrlAuthAndCleanUrl(rawTrimmedUrl);
     const manualHeaders = parseKeyValueInput(headers !== undefined ? headers : headersText);
     const effectiveAuthMode =
-      extractedHeaders.Authorization && (!authMode || authMode === 'oauth' || authMode === 'oauth_or_none')
+      extractedHeaders.Authorization && (!authMode || authMode === 'oauth' || authMode === 'oauth_or_none' || authMode === 'none')
         ? ''
         : authMode;
     const combinedBaseHeaders = { ...extractedHeaders, ...manualHeaders };
@@ -848,6 +869,10 @@ function validateAndBuildServerSpec({
       !extractedHeaders.Authorization
     ) {
       spec.authMode = authMode;
+    } else if (authMode === 'apiKey') {
+      spec.authMode = 'apiKey';
+      const cleanHdr = (typeof apiKeyHeader === 'string' && apiKeyHeader.trim()) ? apiKeyHeader.trim() : 'X-API-Key';
+      spec.apiKeyHeader = cleanHdr;
     }
     const cId = typeof oauthClientId === 'string' ? oauthClientId.trim() : (typeof oauth?.clientId === 'string' ? oauth.clientId.trim() : '');
     const cSec = typeof oauthClientSecret === 'string' ? oauthClientSecret.trim() : (typeof oauth?.clientSecret === 'string' ? oauth.clientSecret.trim() : '');

@@ -10,7 +10,7 @@ const {
   createModalController,
 } = require('./modal-ui');
 
-const MCP_MANAGER_VERSION = 'v1.4.12';
+const MCP_MANAGER_VERSION = 'v1.4.13';
 const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
 function getOrCreateTrustedTypesPolicy(win) {

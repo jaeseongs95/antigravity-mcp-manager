@@ -1665,7 +1665,7 @@ test('covers MCP-BUG-01..06 regressions: line-anchored marker extraction, 2-plug
     );
   }
 
-  //    c) MCP-CR-03: saving a URL with embedded token in default oauth mode preserves extracted Authorization header
+  //    c) MCP-CR-03: saving a URL with embedded token in default oauth or none mode preserves extracted Authorization header
   {
     const urlEmbeddedBuilt = validateAndBuildServerSpec({
       serverName: 'embedded-tok-srv',
@@ -1680,9 +1680,26 @@ test('covers MCP-BUG-01..06 regressions: line-anchored marker extraction, 2-plug
       { Authorization: 'Bearer tok_url_123' },
       'MCP-CR-03: URL-extracted Authorization header must not be wiped when form authMode is default oauth'
     );
+
+    const urlNoneBuilt = validateAndBuildServerSpec({
+      serverName: 'embedded-tok-none-srv',
+      transport: 'http',
+      url: 'https://tok_none_456@ssh-approval-origin.jaeseong.dev/mcp',
+      authMode: 'none',
+    });
+    assert.equal(urlNoneBuilt.ok, true);
+    assert.equal(urlNoneBuilt.spec.url, 'https://ssh-approval-origin.jaeseong.dev/mcp');
+    assert.deepEqual(
+      urlNoneBuilt.spec.headers,
+      { Authorization: 'Bearer tok_none_456' },
+      'MCP-D0016-RESIDUAL-01: URL-extracted Authorization header must be preserved even when form authMode is none'
+    );
+    const extractedFromUrlNone = extractAuthFromSpec(urlNoneBuilt.spec);
+    assert.equal(extractedFromUrlNone.authMode, 'bearer');
+    assert.equal(extractedFromUrlNone.bearerToken, 'tok_none_456');
   }
 
-  //    d) MCP-CR-04: HTTP authMode (none / oauth_or_none), auto-client oauthScopes, and custom apiKeyHeader round-trip
+  //    d) MCP-CR-04: HTTP authMode (none / oauth_or_none), auto-client oauthScopes, custom apiKeyHeader (single & multi-header), and OAuth single custom header round-trip
   {
     const noneBuilt = validateAndBuildServerSpec({
       serverName: 'public-http-srv',
@@ -1722,11 +1739,33 @@ test('covers MCP-BUG-01..06 regressions: line-anchored marker extraction, 2-plug
       authMode: 'apiKey',
       apiKeyHeader: 'X-Custom-Auth',
       apiKeyValue: 'custom_secret_789',
+      headersText: 'X-Tenant-Id=acme\nX-Region=ap-northeast-2',
     });
     assert.equal(customApiKeyBuilt.ok, true);
     const extractedCustomKey = extractAuthFromSpec(customApiKeyBuilt.spec);
-    assert.equal(extractedCustomKey.authMode, 'apiKey', 'MCP-CR-04: custom apiKeyHeader must round-trip as apiKey mode');
+    assert.equal(extractedCustomKey.authMode, 'apiKey', 'MCP-D0016-RESIDUAL-02: custom apiKeyHeader with extra headers must round-trip as apiKey mode');
     assert.equal(extractedCustomKey.apiKeyHeader, 'X-Custom-Auth');
     assert.equal(extractedCustomKey.apiKeyValue, 'custom_secret_789');
+    assert.deepEqual(extractedCustomKey.extraHeaders, {
+      'X-Tenant-Id': 'acme',
+      'X-Region': 'ap-northeast-2',
+    });
+
+    const oauthSingleHeaderBuilt = validateAndBuildServerSpec({
+      serverName: 'oauth-single-hdr-srv',
+      transport: 'http',
+      url: 'https://oauth.example.com/mcp',
+      authMode: 'oauth',
+      oauthClientMode: 'auto',
+      headersText: 'X-Workspace=my-ws',
+    });
+    assert.equal(oauthSingleHeaderBuilt.ok, true);
+    const extractedOauthSingle = extractAuthFromSpec(oauthSingleHeaderBuilt.spec);
+    assert.equal(
+      extractedOauthSingle.authMode,
+      'oauth',
+      'MCP-D0016-RESIDUAL-02: OAuth server with a single custom header must not be misclassified as apiKey on reload'
+    );
+    assert.deepEqual(extractedOauthSingle.extraHeaders, { 'X-Workspace': 'my-ws' });
   }
 });

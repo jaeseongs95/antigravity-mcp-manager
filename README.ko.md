@@ -1,4 +1,4 @@
-# Antigravity 커스텀 MCP 서버 매니저 (`antigravity-mcp-manager` `v1.4.8`)
+# Antigravity 커스텀 MCP 서버 매니저 (`antigravity-mcp-manager` `v1.4.13`)
 
 **언어 (Languages):** **[English (README.md)](./README.md)** | **한국어 ([README.ko.md](./README.ko.md))**
 
@@ -44,7 +44,7 @@
 git clone https://github.com/jaeseongs95/antigravity-mcp-manager.git
 cd antigravity-mcp-manager
 
-# 1. 단위 테스트 및 번들 통합 회귀 테스트 실행 (15/15 통과)
+# 1. 단위 테스트 및 번들 통합 회귀 테스트 실행 (16/16 통과)
 npm test
 
 # 2. dist/mcp_manager_autoinject.js 빌드, ~/.gemini/antigravity 설치, app.asar 패치 및 CDP 즉시 주입
@@ -154,7 +154,7 @@ antigravity-mcp-manager/
 ## 검증 및 테스트
 
 ```bash
-# dist/mcp_manager_autoinject.js 빌드 및 15개 단위·통합 회귀 테스트 실행
+# dist/mcp_manager_autoinject.js 빌드 및 16개 단위·통합 회귀 테스트 실행
 npm test
 ```
 
