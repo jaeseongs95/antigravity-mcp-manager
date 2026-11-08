@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Antigravity Custom MCP Server Manager
 // @namespace    https://github.com/jaeseongs95/antigravity-mcp-manager
-// @version      1.4.8
+// @version      1.4.9
 // @description  Add, edit, toggle, and manage custom Stdio & HTTP MCP servers (mcp_config.json) directly inside the Antigravity 2.0 native app and Remote Control web.
 // @match        https://antigravity.google.com/*
 // @match        https://*.antigravity.google.com/*
@@ -2275,15 +2275,7 @@
       );
     }
 
-    function ensureModalStyles(doc) {
-      if (!doc || !doc.head) return;
-      let style = doc.getElementById(STYLE_ID);
-      if (!style) {
-        style = doc.createElement('style');
-        style.id = STYLE_ID;
-        doc.head.appendChild(style);
-      }
-      style.textContent = `
+    const MODAL_STYLE_CSS = `
         #${MODAL_ID}, #${EDIT_POPUP_ID}, #${OAUTH_MODAL_ID} {
           position: fixed;
           inset: 0;
@@ -2294,6 +2286,7 @@
           align-items: center;
           justify-content: center;
           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, sans-serif;
+          font-variant-numeric: tabular-nums;
           color: #e4e7ef;
           padding: 20px;
           box-sizing: border-box;
@@ -2317,6 +2310,7 @@
           display: flex;
           flex-direction: column;
           overflow: hidden;
+          contain: layout style;
         }
         .agy-mcp-dialog.popup {
           width: min(640px, 95vw);
@@ -2823,6 +2817,18 @@
           gap: 10px;
         }
       `;
+
+    function ensureModalStyles(doc) {
+      if (!doc || !doc.head) return;
+      let style = doc.getElementById(STYLE_ID);
+      if (!style) {
+        style = doc.createElement('style');
+        style.id = STYLE_ID;
+        doc.head.appendChild(style);
+      }
+      if (style.textContent !== MODAL_STYLE_CSS) {
+        style.textContent = MODAL_STYLE_CSS;
+      }
     }
 
     function statusPillInfo(statusCode, isDisabled) {
@@ -3062,6 +3068,8 @@
         backdrop.id = OAUTH_MODAL_ID;
         backdrop.setAttribute('data-testid', 'agy-mcp-oauth-connect-modal');
         backdrop.setAttribute('data-agy-custom-mcp-btn', 'oauth-modal');
+        backdrop.setAttribute('data-agy-no-translate', 'true');
+        backdrop.setAttribute('translate', 'no');
         backdrop.addEventListener('click', (e) => {
           if (e.target === backdrop) closeOAuthConnectModal();
         });
@@ -4549,14 +4557,26 @@
         if (!backdrop) return;
         const body = backdrop.querySelector('.agy-mcp-body');
         if (!body) return;
-        while (body.firstChild) body.removeChild(body.firstChild);
+        const prevScrollTop = typeof body.scrollTop === 'number' ? body.scrollTop : 0;
+        const useFrag = typeof body.replaceChildren === 'function' && typeof doc.createDocumentFragment === 'function';
+        const target = useFrag ? doc.createDocumentFragment() : body;
+        if (!useFrag) {
+          while (body.firstChild) body.removeChild(body.firstChild);
+        }
 
         if (activeTab === 'servers') {
-          renderServersTab(body);
+          renderServersTab(target);
         } else if (activeTab === 'editor') {
-          renderEditorTab(body);
+          renderEditorTab(target);
         } else {
-          renderRawTab(body);
+          renderRawTab(target);
+        }
+
+        if (useFrag) {
+          body.replaceChildren(target);
+        }
+        if (typeof body.scrollTop === 'number') {
+          body.scrollTop = prevScrollTop;
         }
       }
 
@@ -4580,6 +4600,7 @@
         if (!backdrop) return;
         const body = backdrop.querySelector('.agy-mcp-body');
         if (!body) return;
+        const prevScrollTop = typeof body.scrollTop === 'number' ? body.scrollTop : 0;
         while (body.firstChild) body.removeChild(body.firstChild);
 
         const customMap = (cachedConfig.config && cachedConfig.config.mcpServers) || {};
@@ -4780,6 +4801,9 @@
         rightBtns.appendChild(saveBtn);
         footerRow.appendChild(rightBtns);
         body.appendChild(footerRow);
+        if (typeof body.scrollTop === 'number') {
+          body.scrollTop = prevScrollTop;
+        }
       }
 
       async function openEditPopup(serverName = '', options = {}) {
@@ -4801,6 +4825,8 @@
           backdrop.id = EDIT_POPUP_ID;
           backdrop.setAttribute('data-testid', 'agy-mcp-edit-popup');
           backdrop.setAttribute('data-agy-custom-mcp-btn', 'edit-popup');
+          backdrop.setAttribute('data-agy-no-translate', 'true');
+          backdrop.setAttribute('translate', 'no');
           backdrop.addEventListener('click', (e) => {
             if (e.target === backdrop) closeEditPopup();
           });
@@ -4865,7 +4891,11 @@
       function renderSettingsPageContent(container) {
         if (!container) return;
         ensureModalStyles(doc);
-        while (container.firstChild) container.removeChild(container.firstChild);
+        const prevScrollTop = typeof container.scrollTop === 'number' ? container.scrollTop : 0;
+        const useFrag = typeof container.replaceChildren === 'function' && typeof doc.createDocumentFragment === 'function';
+        if (!useFrag) {
+          while (container.firstChild) container.removeChild(container.firstChild);
+        }
 
         const wrapper = doc.createElement('div');
         wrapper.className = 'p-6 flex flex-col gap-5 w-full max-w-2xl mx-auto';
@@ -4962,7 +4992,14 @@
         renderSmartAutoAddBar(wrapper);
         renderServerCardsList(wrapper, setBanner);
 
-        container.appendChild(wrapper);
+        if (useFrag) {
+          container.replaceChildren(wrapper);
+        } else {
+          container.appendChild(wrapper);
+        }
+        if (typeof container.scrollTop === 'number') {
+          container.scrollTop = prevScrollTop;
+        }
       }
 
       async function openModal(initialTab = 'servers') {
@@ -4975,6 +5012,8 @@
           backdrop = doc.createElement('div');
           backdrop.id = MODAL_ID;
           backdrop.setAttribute('data-agy-custom-mcp-btn', 'main-modal');
+          backdrop.setAttribute('data-agy-no-translate', 'true');
+          backdrop.setAttribute('translate', 'no');
           backdrop.addEventListener('click', (e) => {
             if (e.target === backdrop) closeModal();
           });
@@ -5105,7 +5144,7 @@
       createModalController,
     } = require('./modal-ui');
 
-    const MCP_MANAGER_VERSION = 'v1.4.8';
+    const MCP_MANAGER_VERSION = 'v1.4.9';
     const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
     function getOrCreateTrustedTypesPolicy(win) {
@@ -5188,14 +5227,24 @@
     }
 
     function isOwnMcpNode(node) {
-      let cur = node;
+      let cur = node && node.nodeType !== 1 ? (node.parentElement || node.parentNode) : node;
       while (cur && cur.nodeType === 1) {
         if (
           cur.id === MODAL_ID ||
           cur.id === EDIT_POPUP_ID ||
           cur.id === OAUTH_MODAL_ID ||
           cur.id === 'agy-mcp-settings-pane' ||
-          (typeof cur.hasAttribute === 'function' && cur.hasAttribute(NATIVE_BTN_ATTR))
+          cur.id === 'agy-ko-settings-pane' ||
+          cur.id === 'agy-ctx-debug-modal' ||
+          cur.id === 'agy-ctx-statusbar-style' ||
+          cur.id === 'agy-mcp-manager-styles' ||
+          (typeof cur.className === 'string' &&
+            (cur.className.includes('agy-ctx-statusbar') || cur.className.includes('agy-ctx-menu'))) ||
+          (typeof cur.hasAttribute === 'function' &&
+            (cur.hasAttribute(NATIVE_BTN_ATTR) ||
+              cur.hasAttribute('data-agy-no-translate') ||
+              cur.hasAttribute('data-ko-translated') ||
+              cur.hasAttribute('data-agy-ko-translated')))
         ) {
           return true;
         }
@@ -5772,6 +5821,8 @@
               pane = doc.createElement('div');
               pane.id = 'agy-mcp-settings-pane';
               pane.setAttribute(NATIVE_BTN_ATTR, 'settings-pane');
+              pane.setAttribute('data-agy-no-translate', 'true');
+              pane.setAttribute('translate', 'no');
               pane.className = 'w-full bg-transparent h-full overflow-y-auto px-6 py-5 select-none';
               contentContainer.appendChild(pane);
             }
@@ -5916,13 +5967,8 @@
                 document: iframeDoc,
                 bridge,
               });
-            } else {
-              if (typeof iframeWin.agyMcpManager.__rebindIfBodyReplaced === 'function') {
-                iframeWin.agyMcpManager.__rebindIfBodyReplaced();
-              }
-              if (typeof iframeWin.agyMcpManager.injectIntoNativeMcpScreens === 'function') {
-                iframeWin.agyMcpManager.injectIntoNativeMcpScreens();
-              }
+            } else if (typeof iframeWin.agyMcpManager.__rebindIfBodyReplaced === 'function') {
+              iframeWin.agyMcpManager.__rebindIfBodyReplaced();
             }
             return true;
           }
@@ -6221,9 +6267,15 @@
       attachBodyObserver();
 
       function rebindIfBodyReplaced() {
+        const bodyReplaced = Boolean(doc.body && observedBody !== doc.body);
+        const styleMissing = Boolean(
+          doc.head && typeof doc.getElementById === 'function' && !doc.getElementById('agy-mcp-manager-styles')
+        );
+        if (!bodyReplaced && !styleMissing) return false;
         ensureModalStyles(doc);
         attachBodyObserver();
         injectIntoNativeMcpScreens();
+        return true;
       }
 
       // Keyboard shortcut: Ctrl+Shift+M to open/toggle modal, Escape to close

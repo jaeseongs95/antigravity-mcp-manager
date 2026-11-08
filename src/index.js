@@ -10,7 +10,7 @@ const {
   createModalController,
 } = require('./modal-ui');
 
-const MCP_MANAGER_VERSION = 'v1.4.8';
+const MCP_MANAGER_VERSION = 'v1.4.9';
 const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
 function getOrCreateTrustedTypesPolicy(win) {
@@ -93,14 +93,24 @@ function cleanupLegacyStatusBarArtifacts(win, doc) {
 }
 
 function isOwnMcpNode(node) {
-  let cur = node;
+  let cur = node && node.nodeType !== 1 ? (node.parentElement || node.parentNode) : node;
   while (cur && cur.nodeType === 1) {
     if (
       cur.id === MODAL_ID ||
       cur.id === EDIT_POPUP_ID ||
       cur.id === OAUTH_MODAL_ID ||
       cur.id === 'agy-mcp-settings-pane' ||
-      (typeof cur.hasAttribute === 'function' && cur.hasAttribute(NATIVE_BTN_ATTR))
+      cur.id === 'agy-ko-settings-pane' ||
+      cur.id === 'agy-ctx-debug-modal' ||
+      cur.id === 'agy-ctx-statusbar-style' ||
+      cur.id === 'agy-mcp-manager-styles' ||
+      (typeof cur.className === 'string' &&
+        (cur.className.includes('agy-ctx-statusbar') || cur.className.includes('agy-ctx-menu'))) ||
+      (typeof cur.hasAttribute === 'function' &&
+        (cur.hasAttribute(NATIVE_BTN_ATTR) ||
+          cur.hasAttribute('data-agy-no-translate') ||
+          cur.hasAttribute('data-ko-translated') ||
+          cur.hasAttribute('data-agy-ko-translated')))
     ) {
       return true;
     }
@@ -677,6 +687,8 @@ function mountMcpManager(env = {}) {
           pane = doc.createElement('div');
           pane.id = 'agy-mcp-settings-pane';
           pane.setAttribute(NATIVE_BTN_ATTR, 'settings-pane');
+          pane.setAttribute('data-agy-no-translate', 'true');
+          pane.setAttribute('translate', 'no');
           pane.className = 'w-full bg-transparent h-full overflow-y-auto px-6 py-5 select-none';
           contentContainer.appendChild(pane);
         }
@@ -821,13 +833,8 @@ function mountMcpManager(env = {}) {
             document: iframeDoc,
             bridge,
           });
-        } else {
-          if (typeof iframeWin.agyMcpManager.__rebindIfBodyReplaced === 'function') {
-            iframeWin.agyMcpManager.__rebindIfBodyReplaced();
-          }
-          if (typeof iframeWin.agyMcpManager.injectIntoNativeMcpScreens === 'function') {
-            iframeWin.agyMcpManager.injectIntoNativeMcpScreens();
-          }
+        } else if (typeof iframeWin.agyMcpManager.__rebindIfBodyReplaced === 'function') {
+          iframeWin.agyMcpManager.__rebindIfBodyReplaced();
         }
         return true;
       }
@@ -1126,9 +1133,15 @@ function mountMcpManager(env = {}) {
   attachBodyObserver();
 
   function rebindIfBodyReplaced() {
+    const bodyReplaced = Boolean(doc.body && observedBody !== doc.body);
+    const styleMissing = Boolean(
+      doc.head && typeof doc.getElementById === 'function' && !doc.getElementById('agy-mcp-manager-styles')
+    );
+    if (!bodyReplaced && !styleMissing) return false;
     ensureModalStyles(doc);
     attachBodyObserver();
     injectIntoNativeMcpScreens();
+    return true;
   }
 
   // Keyboard shortcut: Ctrl+Shift+M to open/toggle modal, Escape to close

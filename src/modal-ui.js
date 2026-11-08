@@ -23,15 +23,7 @@ function isAuthErrorText(errText) {
   );
 }
 
-function ensureModalStyles(doc) {
-  if (!doc || !doc.head) return;
-  let style = doc.getElementById(STYLE_ID);
-  if (!style) {
-    style = doc.createElement('style');
-    style.id = STYLE_ID;
-    doc.head.appendChild(style);
-  }
-  style.textContent = `
+const MODAL_STYLE_CSS = `
     #${MODAL_ID}, #${EDIT_POPUP_ID}, #${OAUTH_MODAL_ID} {
       position: fixed;
       inset: 0;
@@ -42,6 +34,7 @@ function ensureModalStyles(doc) {
       align-items: center;
       justify-content: center;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, sans-serif;
+      font-variant-numeric: tabular-nums;
       color: #e4e7ef;
       padding: 20px;
       box-sizing: border-box;
@@ -65,6 +58,7 @@ function ensureModalStyles(doc) {
       display: flex;
       flex-direction: column;
       overflow: hidden;
+      contain: layout style;
     }
     .agy-mcp-dialog.popup {
       width: min(640px, 95vw);
@@ -571,6 +565,18 @@ function ensureModalStyles(doc) {
       gap: 10px;
     }
   `;
+
+function ensureModalStyles(doc) {
+  if (!doc || !doc.head) return;
+  let style = doc.getElementById(STYLE_ID);
+  if (!style) {
+    style = doc.createElement('style');
+    style.id = STYLE_ID;
+    doc.head.appendChild(style);
+  }
+  if (style.textContent !== MODAL_STYLE_CSS) {
+    style.textContent = MODAL_STYLE_CSS;
+  }
 }
 
 function statusPillInfo(statusCode, isDisabled) {
@@ -810,6 +816,8 @@ function createModalController({ doc, bridge, onStateChanged }) {
     backdrop.id = OAUTH_MODAL_ID;
     backdrop.setAttribute('data-testid', 'agy-mcp-oauth-connect-modal');
     backdrop.setAttribute('data-agy-custom-mcp-btn', 'oauth-modal');
+    backdrop.setAttribute('data-agy-no-translate', 'true');
+    backdrop.setAttribute('translate', 'no');
     backdrop.addEventListener('click', (e) => {
       if (e.target === backdrop) closeOAuthConnectModal();
     });
@@ -2297,14 +2305,26 @@ function createModalController({ doc, bridge, onStateChanged }) {
     if (!backdrop) return;
     const body = backdrop.querySelector('.agy-mcp-body');
     if (!body) return;
-    while (body.firstChild) body.removeChild(body.firstChild);
+    const prevScrollTop = typeof body.scrollTop === 'number' ? body.scrollTop : 0;
+    const useFrag = typeof body.replaceChildren === 'function' && typeof doc.createDocumentFragment === 'function';
+    const target = useFrag ? doc.createDocumentFragment() : body;
+    if (!useFrag) {
+      while (body.firstChild) body.removeChild(body.firstChild);
+    }
 
     if (activeTab === 'servers') {
-      renderServersTab(body);
+      renderServersTab(target);
     } else if (activeTab === 'editor') {
-      renderEditorTab(body);
+      renderEditorTab(target);
     } else {
-      renderRawTab(body);
+      renderRawTab(target);
+    }
+
+    if (useFrag) {
+      body.replaceChildren(target);
+    }
+    if (typeof body.scrollTop === 'number') {
+      body.scrollTop = prevScrollTop;
     }
   }
 
@@ -2328,6 +2348,7 @@ function createModalController({ doc, bridge, onStateChanged }) {
     if (!backdrop) return;
     const body = backdrop.querySelector('.agy-mcp-body');
     if (!body) return;
+    const prevScrollTop = typeof body.scrollTop === 'number' ? body.scrollTop : 0;
     while (body.firstChild) body.removeChild(body.firstChild);
 
     const customMap = (cachedConfig.config && cachedConfig.config.mcpServers) || {};
@@ -2528,6 +2549,9 @@ function createModalController({ doc, bridge, onStateChanged }) {
     rightBtns.appendChild(saveBtn);
     footerRow.appendChild(rightBtns);
     body.appendChild(footerRow);
+    if (typeof body.scrollTop === 'number') {
+      body.scrollTop = prevScrollTop;
+    }
   }
 
   async function openEditPopup(serverName = '', options = {}) {
@@ -2549,6 +2573,8 @@ function createModalController({ doc, bridge, onStateChanged }) {
       backdrop.id = EDIT_POPUP_ID;
       backdrop.setAttribute('data-testid', 'agy-mcp-edit-popup');
       backdrop.setAttribute('data-agy-custom-mcp-btn', 'edit-popup');
+      backdrop.setAttribute('data-agy-no-translate', 'true');
+      backdrop.setAttribute('translate', 'no');
       backdrop.addEventListener('click', (e) => {
         if (e.target === backdrop) closeEditPopup();
       });
@@ -2613,7 +2639,11 @@ function createModalController({ doc, bridge, onStateChanged }) {
   function renderSettingsPageContent(container) {
     if (!container) return;
     ensureModalStyles(doc);
-    while (container.firstChild) container.removeChild(container.firstChild);
+    const prevScrollTop = typeof container.scrollTop === 'number' ? container.scrollTop : 0;
+    const useFrag = typeof container.replaceChildren === 'function' && typeof doc.createDocumentFragment === 'function';
+    if (!useFrag) {
+      while (container.firstChild) container.removeChild(container.firstChild);
+    }
 
     const wrapper = doc.createElement('div');
     wrapper.className = 'p-6 flex flex-col gap-5 w-full max-w-2xl mx-auto';
@@ -2710,7 +2740,14 @@ function createModalController({ doc, bridge, onStateChanged }) {
     renderSmartAutoAddBar(wrapper);
     renderServerCardsList(wrapper, setBanner);
 
-    container.appendChild(wrapper);
+    if (useFrag) {
+      container.replaceChildren(wrapper);
+    } else {
+      container.appendChild(wrapper);
+    }
+    if (typeof container.scrollTop === 'number') {
+      container.scrollTop = prevScrollTop;
+    }
   }
 
   async function openModal(initialTab = 'servers') {
@@ -2723,6 +2760,8 @@ function createModalController({ doc, bridge, onStateChanged }) {
       backdrop = doc.createElement('div');
       backdrop.id = MODAL_ID;
       backdrop.setAttribute('data-agy-custom-mcp-btn', 'main-modal');
+      backdrop.setAttribute('data-agy-no-translate', 'true');
+      backdrop.setAttribute('translate', 'no');
       backdrop.addEventListener('click', (e) => {
         if (e.target === backdrop) closeModal();
       });

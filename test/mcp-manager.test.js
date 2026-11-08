@@ -1299,4 +1299,47 @@ test('covers MCP-BUG-01..06 regressions: line-anchored marker extraction, 2-plug
   });
   const toggleRes = await roToggleBridge.toggleServerEnabled('srv1', false);
   assert.equal(toggleRes.ok, false, 'toggleServerEnabled must return ok:false when writeFile is unavailable');
+
+  // 4. Rendering optimization: ensureModalStyles is idempotent, companion mutations are ignored, and __rebindIfBodyReplaced is a no-op unless body/styles changed
+  const { ensureModalStyles } = require('../src/modal-ui');
+  let styleSetterCount = 0;
+  let storedCss = '';
+  const styleEl = {
+    id: 'agy-mcp-manager-styles',
+    get textContent() { return storedCss; },
+    set textContent(v) {
+      styleSetterCount += 1;
+      storedCss = v;
+    },
+  };
+  const styleDoc = {
+    head: { appendChild() {} },
+    getElementById(id) { return id === 'agy-mcp-manager-styles' ? styleEl : null; },
+    createElement() { return styleEl; },
+  };
+  ensureModalStyles(styleDoc);
+  ensureModalStyles(styleDoc);
+  ensureModalStyles(styleDoc);
+  assert.equal(styleSetterCount, 1, 'ensureModalStyles must not overwrite style.textContent when unchanged');
+
+  const koMutNode = {
+    nodeType: 1,
+    id: '',
+    className: '',
+    hasAttribute: (k) => k === 'data-ko-translated',
+  };
+  const statusBarMutNode = {
+    nodeType: 1,
+    id: '',
+    className: 'agy-ctx-statusbar',
+    hasAttribute: () => false,
+  };
+  assert.equal(
+    isRelevantMutationList([
+      { target: koMutNode, addedNodes: [statusBarMutNode] },
+      { target: statusBarMutNode, addedNodes: [koMutNode] },
+    ]),
+    false,
+    'ko-thought-translator and statusbar mutations must not trigger MCP Manager re-injection'
+  );
 });
