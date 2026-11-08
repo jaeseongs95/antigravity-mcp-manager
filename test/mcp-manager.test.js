@@ -1384,4 +1384,38 @@ test('covers MCP-BUG-01..06 regressions: line-anchored marker extraction, 2-plug
     false,
     'ko-thought-translator and statusbar mutations must not trigger MCP Manager re-injection'
   );
+
+  const plainChatParagraph = {
+    nodeType: 1,
+    tagName: 'P',
+    id: '',
+    className: 'chat-prose',
+    getAttribute: () => null,
+    hasAttribute: () => false,
+    querySelector: () => null,
+  };
+  assert.equal(
+    isRelevantMutationList([
+      { target: plainChatParagraph, addedNodes: [plainChatParagraph], removedNodes: [] },
+    ]),
+    false,
+    'ordinary chat paragraph mutations must not trigger MCP Manager DOM scans'
+  );
+
+  const settingsModalNode = {
+    nodeType: 1,
+    tagName: 'DIV',
+    id: '',
+    className: 'settings-modal-container',
+    getAttribute: () => null,
+    hasAttribute: () => false,
+    querySelector: () => null,
+  };
+  assert.equal(
+    isRelevantMutationList([
+      { target: plainChatParagraph, addedNodes: [settingsModalNode], removedNodes: [] },
+    ]),
+    true,
+    'adding settings-modal-container must trigger MCP Manager injection'
+  );
 });

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Antigravity Custom MCP Server Manager
 // @namespace    https://github.com/jaeseongs95/antigravity-mcp-manager
-// @version      1.4.9
+// @version      1.4.10
 // @description  Add, edit, toggle, and manage custom Stdio & HTTP MCP servers (mcp_config.json) directly inside the Antigravity 2.0 native app and Remote Control web.
 // @match        https://antigravity.google.com/*
 // @match        https://*.antigravity.google.com/*
@@ -15,7 +15,6 @@
   "./mcp-config-schema": function(module, exports, __require) {
     const require = (spec) => __require(".", spec);
     'use strict';
-
     const QUICK_TEMPLATES = [
       {
         id: 'filesystem',
@@ -99,7 +98,6 @@
         description: 'Streamable HTTP remote MCP endpoint (MCP spec 2025-03-26).',
       },
     ];
-
     function parseArgsInput(raw) {
       if (Array.isArray(raw)) {
         return raw.map((x) => String(x)).filter((x) => x.length > 0);
@@ -121,7 +119,6 @@
           .map((line) => line.trim())
           .filter(Boolean);
       }
-      // Tokenize respecting single/double quotes
       const tokens = [];
       const re = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|(\S+)/g;
       let match;
@@ -130,12 +127,10 @@
       }
       return tokens;
     }
-
     function formatArgsForInput(args) {
       if (!Array.isArray(args) || args.length === 0) return '';
       return args.join('\n');
     }
-
     function parseKeyValueInput(raw) {
       if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
         const out = {};
@@ -187,21 +182,18 @@
       }
       return out;
     }
-
     function formatKeyValueForInput(obj, sep = '=') {
       if (!obj || typeof obj !== 'object') return '';
       const entries = Object.entries(obj);
       if (entries.length === 0) return '';
       return entries.map(([k, v]) => `${k}${sep}${v}`).join('\n');
     }
-
     function detectTransport(spec) {
       if (!spec || typeof spec !== 'object') return 'stdio';
       if (typeof spec.url === 'string' && spec.url.trim()) return 'http';
       if (typeof spec.serverUrl === 'string' && spec.serverUrl.trim()) return 'http';
       return 'stdio';
     }
-
     function encodeBase64(str) {
       if (typeof Buffer !== 'undefined') {
         return Buffer.from(String(str), 'utf8').toString('base64');
@@ -211,7 +203,6 @@
       }
       return String(str);
     }
-
     function decodeBase64(b64) {
       try {
         if (typeof Buffer !== 'undefined') {
@@ -223,7 +214,6 @@
       } catch {}
       return '';
     }
-
     function extractAuthFromSpec(spec) {
       const isHttp = Boolean(spec && typeof spec === 'object' && (spec.url || spec.serverUrl || spec.type === 'http'));
       const result = {
@@ -240,7 +230,6 @@
         extraHeaders: {},
       };
       if (!spec || typeof spec !== 'object') return result;
-
       if (spec.oauth && typeof spec.oauth === 'object') {
         result.authMode = 'oauth';
         result.oauthClientId = typeof spec.oauth.clientId === 'string' ? spec.oauth.clientId : '';
@@ -252,15 +241,12 @@
           result.oauthClientMode = 'custom';
         }
       }
-
       if (spec.authMode === 'none' || spec.authMode === 'oauth' || spec.authMode === 'oauth_or_none') {
         result.authMode = spec.authMode;
       }
-
       const rawHeaders = spec.headers && typeof spec.headers === 'object' ? { ...spec.headers } : {};
       const entries = Object.entries(rawHeaders);
       let matchedKey = null;
-
       for (const [k, v] of entries) {
         if (k.toLowerCase() === 'authorization' && typeof v === 'string') {
           const trimmed = v.trim();
@@ -292,7 +278,6 @@
           break;
         }
       }
-
       if (!matchedKey) {
         for (const [k, v] of entries) {
           if (/^(?:x-api-key|api-key|x-auth-token|x-mcp-token|x-access-token)$/i.test(k) && typeof v === 'string') {
@@ -304,16 +289,13 @@
           }
         }
       }
-
       for (const [k, v] of entries) {
         if (k !== matchedKey) {
           result.extraHeaders[k] = String(v);
         }
       }
-
       return result;
     }
-
     function buildAuthHeaders({
       authMode,
       bearerToken,
@@ -325,18 +307,15 @@
     }) {
       const headers = baseHeaders && typeof baseHeaders === 'object' ? { ...baseHeaders } : {};
       const mode = typeof authMode === 'string' ? authMode.trim() : '';
-
       if (!mode) {
         return headers;
       }
-
       if (mode === 'none' || mode === 'oauth' || mode === 'oauth_or_none') {
         for (const k of Object.keys(headers)) {
           if (k.toLowerCase() === 'authorization') delete headers[k];
         }
         return headers;
       }
-
       if (mode === 'bearer') {
         for (const k of Object.keys(headers)) {
           if (k.toLowerCase() === 'authorization') delete headers[k];
@@ -350,7 +329,6 @@
         }
         return headers;
       }
-
       if (mode === 'apiKey') {
         const hdrName = (typeof apiKeyHeader === 'string' && apiKeyHeader.trim()) ? apiKeyHeader.trim() : 'X-API-Key';
         const hdrVal = typeof apiKeyValue === 'string' ? apiKeyValue.trim() : '';
@@ -359,7 +337,6 @@
         }
         return headers;
       }
-
       if (mode === 'basic') {
         for (const k of Object.keys(headers)) {
           if (k.toLowerCase() === 'authorization') delete headers[k];
@@ -371,10 +348,8 @@
         }
         return headers;
       }
-
       return headers;
     }
-
     function normalizeQuickAuthToken(rawAuth) {
       if (typeof rawAuth !== 'string' || !rawAuth.trim()) return null;
       const trimmed = rawAuth.trim();
@@ -399,7 +374,6 @@
         rawToken: trimmed,
       };
     }
-
     function sanitizeServerName(raw) {
       if (!raw || typeof raw !== 'string') return '';
       const cleaned = raw
@@ -412,7 +386,6 @@
         .replace(/^-+|-+$/g, '');
       return cleaned || '';
     }
-
     function deriveServerNameFromUrl(urlStr) {
       try {
         const u = new URL(urlStr);
@@ -423,7 +396,6 @@
           .split('/')
           .map((p) => sanitizeServerName(p))
           .filter((p) => p && p !== 'mcp' && p !== 'sse' && p !== 'v1' && p !== 'v2');
-
         if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') {
           const suffix = pathParts[0] || (u.port ? `${u.port}` : 'local');
           return sanitizeServerName(`local-${suffix}`) || 'local-mcp';
@@ -442,7 +414,6 @@
         return 'remote-mcp';
       }
     }
-
     function deriveServerNameFromCommandAndArgs(command, args) {
       const list = Array.isArray(args) ? args : [];
       for (let i = list.length - 1; i >= 0; i--) {
@@ -464,7 +435,6 @@
       }
       return sanitizeServerName(command) || 'custom-mcp';
     }
-
     const KNOWN_UVX_PACKAGES = new Set([
       'mcp-server-fetch',
       'mcp-server-sqlite',
@@ -472,7 +442,6 @@
       'mcp-server-time',
       'mcp-server-sentry',
     ]);
-
     function extractUrlAuthAndCleanUrl(rawUrlStr) {
       try {
         const u = new URL(rawUrlStr);
@@ -502,7 +471,6 @@
         return { cleanUrl: rawUrlStr, extractedHeaders: {} };
       }
     }
-
     function applyQuickAuthToResult(res, quickAuth) {
       if (!res || !res.ok || !quickAuth) return res;
       if (res.multipleServers) {
@@ -531,7 +499,6 @@
       }
       return res;
     }
-
     function parseSmartMcpInput(rawInput, optionalAuthToken = '') {
       if (typeof rawInput !== 'string' || !rawInput.trim()) {
         return {
@@ -541,8 +508,6 @@
       }
       const trimmed = rawInput.trim();
       const quickAuth = normalizeQuickAuthToken(optionalAuthToken);
-
-      // 1. JSON snippet (`{ "mcpServers": ... }`, `{ "my-server": { ... } }`, or `{ "url": "..." }`)
       if (trimmed.startsWith('{')) {
         try {
           const obj = JSON.parse(trimmed);
@@ -585,8 +550,6 @@
           return { ok: false, error: `Invalid JSON input: ${e.message}` };
         }
       }
-
-      // 1b. URL accompanied by inline auth flags/tokens (e.g. `https://host/mcp Bearer xxx`, `https://host/mcp --token xxx`, `curl -H "Authorization: Bearer xxx" https://host/mcp`)
       if (/https?:\/\/\S+/i.test(trimmed) && /\s/.test(trimmed)) {
         const tokens = parseArgsInput(trimmed);
         const firstToken = String(tokens[0] || '');
@@ -620,17 +583,12 @@
           return baseRes;
         }
       }
-
-      // 2. Single-token URL (`http://...` or `https://...`)
       if (/^https?:\/\/\S+$/i.test(trimmed)) {
         try {
           const u = new URL(trimmed);
           const host = u.hostname.toLowerCase();
-
-          // 2a. GitHub repository URL -> convert to npx package spec
           if (host === 'github.com' || host === 'www.github.com') {
             const parts = u.pathname.split('/').filter(Boolean);
-            // Official modelcontextprotocol/servers tree link
             const srcIdx = parts.indexOf('src');
             if (parts[0] === 'modelcontextprotocol' && parts[1] === 'servers' && srcIdx !== -1 && parts[srcIdx + 1]) {
               const subPkg = parts[srcIdx + 1];
@@ -653,8 +611,6 @@
               }), quickAuth);
             }
           }
-
-          // 2b. npmjs.com package URL -> convert to npx -y <pkg>
           if ((host === 'npmjs.com' || host === 'www.npmjs.com') && u.pathname.startsWith('/package/')) {
             const pkgName = u.pathname.slice('/package/'.length).replace(/\/+$/, '');
             if (pkgName) {
@@ -666,8 +622,6 @@
               }), quickAuth);
             }
           }
-
-          // 2c. Standard remote Streamable HTTP / SSE MCP server endpoint
           const { cleanUrl, extractedHeaders } = extractUrlAuthAndCleanUrl(trimmed);
           const serverName = deriveServerNameFromUrl(cleanUrl);
           const built = validateAndBuildServerSpec({
@@ -681,8 +635,6 @@
           return { ok: false, error: 'Invalid URL format.' };
         }
       }
-
-      // 3. Bare package name (`@scope/pkg` or `mcp-server-*`)
       if (/^(?:@[a-z0-9-~][a-z0-9-._~]*\/[a-z0-9-._~]+|mcp-server-[a-z0-9-._~]+|[a-z0-9-._~]+-mcp(?:-server)?)(?:@[^\s]+)?$/i.test(trimmed)) {
         const barePkg = trimmed.replace(/@[^@/]+$/, '');
         const isUvx = KNOWN_UVX_PACKAGES.has(barePkg.toLowerCase());
@@ -695,8 +647,6 @@
           args,
         }), quickAuth);
       }
-
-      // 4. Full command line (`npx -y @playwright/mcp@latest`, `uvx mcp-server-fetch`, `node server.js`, etc.)
       const tokens = parseArgsInput(trimmed);
       if (tokens.length > 0) {
         const command = tokens[0];
@@ -709,10 +659,8 @@
           args,
         }), quickAuth);
       }
-
       return { ok: false, error: 'Could not recognize MCP server address or command.' };
     }
-
     function validateAndBuildServerSpec({
       serverName,
       description,
@@ -744,8 +692,6 @@
       const rawCmd = typeof command === 'string' ? command.trim() : '';
       const rawUrl = typeof url === 'string' ? url.trim() : '';
       const rawArgsStr = typeof args === 'string' ? args.trim() : (typeof argsText === 'string' ? argsText.trim() : '');
-
-      // Smart fallback: if the user pasted a URL or full command into serverName, command, or args
       if (/^https?:\/\/\S+$/i.test(cleanName) && !rawUrl) {
         return parseSmartMcpInput(cleanName, bearerToken || apiKeyValue || '');
       }
@@ -772,7 +718,6 @@
           }
         }
       }
-
       if (!cleanName) {
         if (transport === 'http' || /^https?:\/\/.+/i.test(rawUrl)) {
           cleanName = deriveServerNameFromUrl(rawUrl);
@@ -790,7 +735,6 @@
           error: 'Server name may only contain letters, numbers, hyphens (-), underscores (_), and dots (.).',
         };
       }
-
       const base = existingSpec && typeof existingSpec === 'object' ? { ...existingSpec } : {};
       delete base.command;
       delete base.args;
@@ -803,9 +747,7 @@
       delete base.authMode;
       delete base.description;
       delete base.disabled;
-
       const cleanDesc = typeof description === 'string' ? description.trim() : '';
-
       if (transport === 'http') {
         const rawTrimmedUrl = typeof url === 'string' ? url.trim() : '';
         if (!rawTrimmedUrl) {
@@ -853,7 +795,6 @@
         }
         return { ok: true, serverName: cleanName, spec };
       }
-
       const cleanCmd = typeof command === 'string' ? command.trim() : '';
       if (!cleanCmd) {
         return { ok: false, error: 'Executable command is required for Stdio transport (e.g. "npx", "node", "uvx").' };
@@ -872,7 +813,6 @@
         parsedEnv[envKey] = apiKeyValue.trim();
       }
       const cleanCwd = typeof cwd === 'string' ? cwd.trim() : '';
-
       const spec = {
         ...base,
         command: cleanCmd,
@@ -891,7 +831,6 @@
       }
       return { ok: true, serverName: cleanName, spec };
     }
-
     function normalizeMcpConfigObject(raw) {
       let parsed = raw;
       if (typeof raw === 'string') {
@@ -908,8 +847,6 @@
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         return { ok: false, error: 'MCP config root must be a JSON object.' };
       }
-
-      // Support pasting either `{ "mcpServers": { ... } }` or direct `{ "my-server": { "command": "..." } }`
       let serversMap = parsed.mcpServers;
       if (!serversMap || typeof serversMap !== 'object' || Array.isArray(serversMap)) {
         const keys = Object.keys(parsed);
@@ -933,7 +870,6 @@
           return { ok: false, error: '"mcpServers" must be a JSON object mapping server names to configurations.' };
         }
       }
-
       for (const [name, spec] of Object.entries(parsed.mcpServers)) {
         if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
           return { ok: false, error: `Server "${name}" configuration must be a JSON object.` };
@@ -949,10 +885,8 @@
           };
         }
       }
-
       return { ok: true, config: parsed };
     }
-
     module.exports = {
       QUICK_TEMPLATES,
       parseArgsInput,
@@ -972,17 +906,13 @@
       validateAndBuildServerSpec,
       normalizeMcpConfigObject,
     };
-
   },
   "./host-mcp-bridge": function(module, exports, __require) {
     const require = (spec) => __require(".", spec);
     'use strict';
-
     const { normalizeMcpConfigObject } = require('./mcp-config-schema');
-
     const STORAGE_FALLBACK_KEY = 'agy-custom-mcp-config-backup-v1';
     const STORAGE_URI_OVERRIDE_KEY = 'agy-custom-mcp-config-uri-v1';
-
     function toFileUriFromFsPath(fsPath) {
       if (!fsPath || typeof fsPath !== 'string') return null;
       const trimmed = fsPath.trim();
@@ -997,7 +927,6 @@
       }
       return `file:///${normalized}`;
     }
-
     function toFsPathFromFileUri(uri) {
       if (!uri || typeof uri !== 'string') return '';
       const trimmed = uri.trim();
@@ -1012,7 +941,6 @@
         return trimmed;
       }
     }
-
     function extractGeminiConfigUriFromPath(rawPath) {
       if (!rawPath || typeof rawPath !== 'string') return null;
       const norm = rawPath.replace(/\\/g, '/');
@@ -1021,7 +949,6 @@
       const geminiRoot = norm.slice(0, idx + '/.gemini'.length);
       return toFileUriFromFsPath(`${geminiRoot}/config/mcp_config.json`);
     }
-
     function normalizeAuthorizationCode(rawCode) {
       if (rawCode === null || rawCode === undefined) return '';
       const trimmed = String(rawCode).trim();
@@ -1043,7 +970,6 @@
       }
       return trimmed;
     }
-
     function encodeBytesToBase64(bytes) {
       if (!bytes) return '';
       if (typeof Buffer !== 'undefined') {
@@ -1056,7 +982,6 @@
       }
       return typeof btoa === 'function' ? btoa(binary) : '';
     }
-
     function decodeBase64ToBytes(b64) {
       if (!b64) return new Uint8Array(0);
       if (bytesIsUint8(b64)) return b64;
@@ -1073,11 +998,9 @@
       }
       return new Uint8Array(0);
     }
-
     function bytesIsUint8(v) {
       return Boolean(v && (v instanceof Uint8Array || ArrayBuffer.isView(v)));
     }
-
     function createHostMcpBridge(opts = {}) {
       const win = opts.window || opts.win || (typeof window !== 'undefined' ? window : null);
       const doc = opts.document || opts.doc || (win && win.document ? win.document : null);
@@ -1087,7 +1010,22 @@
       let cachedElectronNative = null;
       let resolvedConfigUri = null;
       let lastKnownStates = [];
-
+      let sharedTextEncoder = null;
+      let sharedTextDecoder = null;
+      function encodeUtf8(str) {
+        if (!sharedTextEncoder && typeof TextEncoder === 'function') {
+          sharedTextEncoder = new TextEncoder();
+        }
+        if (sharedTextEncoder) return sharedTextEncoder.encode(str);
+        return Uint8Array.from(String(str).split('').map((c) => c.charCodeAt(0) & 0xff));
+      }
+      function decodeUtf8(bytes) {
+        if (!sharedTextDecoder && typeof TextDecoder === 'function') {
+          sharedTextDecoder = new TextDecoder('utf-8');
+        }
+        if (sharedTextDecoder) return sharedTextDecoder.decode(bytes);
+        return '';
+      }
       function getAccessibleRemoteIframeDoc() {
         try {
           const iframe = doc?.querySelector?.('ga-remote-control iframe');
@@ -1096,7 +1034,6 @@
           return null;
         }
       }
-
       function getAccessibleParentDoc() {
         try {
           if (win && win.parent && win.parent !== win && win.parent.document) {
@@ -1105,7 +1042,6 @@
         } catch {}
         return null;
       }
-
       function hookRemoteControlPrototype(w, proto) {
         if (!proto || proto === Object.prototype) return;
         proto.__agyTargetWin = w;
@@ -1156,14 +1092,12 @@
           }
         }
       }
-
       function resolveRemoteControlInstance(w) {
         if (!w) return null;
         if (w.__agyRemoteControlInstance && !w.__agyRemoteControlInstance.destroyed) {
           hookRemoteControlPrototype(w, Object.getPrototypeOf(w.__agyRemoteControlInstance));
           return w.__agyRemoteControlInstance;
         }
-
         const isRcInstance = (obj) =>
           Boolean(
             obj &&
@@ -1173,7 +1107,6 @@
                 typeof obj.onIframeLoad === 'function' ||
                 typeof obj.handleIframeMessage === 'function')
           );
-
         const extractFromLContext = (lCtx) => {
           if (!lCtx || typeof lCtx !== 'object') return null;
           if (isRcInstance(lCtx)) return lCtx;
@@ -1200,7 +1133,6 @@
           }
           return null;
         };
-
         const searchNgContext = (ctx) => {
           if (!ctx || typeof ctx !== 'object') return null;
           const direct = extractFromLContext(ctx);
@@ -1234,11 +1166,9 @@
           }
           return null;
         };
-
         const wDoc = w.document;
         const rcEl = wDoc?.querySelector?.('ga-remote-control') || null;
         const gaRootEl = wDoc?.querySelector?.('ga-root') || null;
-
         if (rcEl) {
           const ngFn = w.ng && typeof w.ng.getComponent === 'function' ? w.ng.getComponent : null;
           if (ngFn) {
@@ -1259,7 +1189,6 @@
             return found;
           }
         }
-
         if (gaRootEl) {
           const rootCtxKey = Object.keys(gaRootEl).find((k) => k.startsWith('__ngContext'));
           const foundFromRoot = searchNgContext(gaRootEl.__ngContext__ || (rootCtxKey ? gaRootEl[rootCtxKey] : null));
@@ -1269,7 +1198,6 @@
             return foundFromRoot;
           }
         }
-
         const nsRoot = w.default_GoogleAntigravity;
         if (nsRoot && typeof nsRoot === 'object') {
           const targetCandidates = [];
@@ -1287,7 +1215,6 @@
             targetCandidates.push(gaRootEl);
             if (gaRootEl.firstElementChild) targetCandidates.push(gaRootEl.firstElementChild);
           }
-
           for (const k of Object.keys(nsRoot)) {
             const mod = nsRoot[k];
             if (!mod || (typeof mod !== 'object' && typeof mod !== 'function')) continue;
@@ -1335,7 +1262,6 @@
             }
           }
         }
-
         w.__agyProbingRcInstance = true;
         try {
           const BaseEvt = w.Event || (typeof Event !== 'undefined' ? Event : null);
@@ -1381,12 +1307,10 @@
         } catch {} finally {
           w.__agyProbingRcInstance = false;
         }
-
         return w.__agyRemoteControlInstance && !w.__agyRemoteControlInstance.destroyed
           ? w.__agyRemoteControlInstance
           : null;
       }
-
       function getRemoteControlProxyAdapter() {
         try {
           const candidateWins = [win, win?.parent !== win ? win?.parent : null].filter(Boolean);
@@ -1394,13 +1318,13 @@
             const rcInst = resolveRemoteControlInstance(w);
             if (rcInst && typeof rcInst.proxyCommand === 'function') {
               const callRpc = async (rpcPath, reqObj) => {
-                const bytes = new TextEncoder().encode(JSON.stringify(reqObj || {}));
+                const bytes = encodeUtf8(JSON.stringify(reqObj || {}));
                 const res = await rcInst.proxyCommand(rpcPath, bytes, {
                   'content-type': 'application/json',
                   'x-is-streaming': 'false',
                 });
                 if (!res || !res.payload) return {};
-                const text = new TextDecoder().decode(res.payload);
+                const text = decodeUtf8(res.payload);
                 return text ? JSON.parse(text) : {};
               };
               return {
@@ -1464,7 +1388,6 @@
         } catch {}
         return null;
       }
-
       function scanFiberTree() {
         if (cachedService && typeof cachedService.getMcpServerStates === 'function' && !cachedService.__isRcProxyAdapter) {
           return cachedService;
@@ -1479,15 +1402,12 @@
             d.body?.firstElementChild,
             d.body,
           ].filter(Boolean);
-
           for (const rootEl of roots) {
             const fk = Object.keys(rootEl).find(
               (k) => k.startsWith('__reactContainer$') || k.startsWith('__reactFiber$')
             );
             const startFiber = fk ? rootEl[fk] : null;
             if (!startFiber) continue;
-
-            // 1. Walk up `.return` chain first (fast path when starting from conversation-view or settings-modal-container)
             let up = startFiber;
             while (up) {
               inspectFiberValue(up.memoizedProps?.value);
@@ -1499,25 +1419,25 @@
               up = up.return;
             }
             if (cachedService && !cachedService.__isRcProxyAdapter) return cachedService;
-
-            // 2. Bounded DFS down `.child` / `.sibling` when starting from root container
+            const now = Date.now();
+            if (d.__agyMcpLastDfsTs && now - d.__agyMcpLastDfsTs < 10000) {
+              continue;
+            }
+            d.__agyMcpLastDfsTs = now;
             const stack = [startFiber];
             const visited = new Set();
             while (stack.length > 0 && visited.size < 3500) {
               const f = stack.pop();
               if (!f || visited.has(f)) continue;
               visited.add(f);
-
               inspectFiberValue(f.memoizedProps?.value);
               if (cachedService && !cachedService.__isRcProxyAdapter && cachedConfigDirUri) return cachedService;
-
               if (f.child) stack.push(f.child);
               if (f.sibling) stack.push(f.sibling);
             }
             if (cachedService && !cachedService.__isRcProxyAdapter) return cachedService;
           }
         }
-
         if (!cachedService) {
           const rcProxy = getRemoteControlProxyAdapter();
           if (rcProxy) {
@@ -1526,7 +1446,6 @@
         }
         return cachedService;
       }
-
       function inspectFiberValue(val) {
         if (!val || typeof val !== 'object') return;
         if (
@@ -1563,7 +1482,6 @@
           } catch {}
         }
       }
-
       async function resolveMcpConfigUri() {
         try {
           const override = ls?.getItem?.(STORAGE_URI_OVERRIDE_KEY);
@@ -1572,16 +1490,12 @@
             return resolvedConfigUri;
           }
         } catch {}
-
         if (resolvedConfigUri) return resolvedConfigUri;
-
         const svc = scanFiberTree();
         if (cachedConfigDirUri) {
           resolvedConfigUri = toFileUriFromFsPath(`${cachedConfigDirUri}/mcp_config.json`);
           if (resolvedConfigUri) return resolvedConfigUri;
         }
-
-        // Try deriving from already loaded MCP server states (`spec.configPath` or `spec.pluginRoot`)
         if (svc && typeof svc.getMcpServerStates === 'function') {
           try {
             const res = await svc.getMcpServerStates();
@@ -1598,8 +1512,6 @@
             }
           } catch {}
         }
-
-        // Try deriving from `getStandaloneDir()` (`<home>/.gemini/antigravity/scratch`)
         if (svc && typeof svc.getStandaloneDir === 'function') {
           try {
             const res = await svc.getStandaloneDir();
@@ -1610,8 +1522,6 @@
             }
           } catch {}
         }
-
-        // Try deriving from `getLocalUserInfo()` (`homeDirUri` or `homeDir`)
         if (svc && typeof svc.getLocalUserInfo === 'function') {
           try {
             const uInfo = await svc.getLocalUserInfo();
@@ -1625,8 +1535,6 @@
             }
           } catch {}
         }
-
-        // Try deriving from `getCustomizationStates()`
         if (svc && typeof svc.getCustomizationStates === 'function') {
           try {
             const st = await svc.getCustomizationStates([]);
@@ -1641,8 +1549,6 @@
             }
           } catch {}
         }
-
-        // Fallback to environment variables if available in preload/node context
         try {
           const home =
             (typeof process !== 'undefined' && (process.env?.USERPROFILE || process.env?.HOME)) || null;
@@ -1651,10 +1557,8 @@
             return resolvedConfigUri;
           }
         } catch {}
-
         return resolvedConfigUri;
       }
-
       async function readMcpConfig() {
         const svc = scanFiberTree();
         const uri = await resolveMcpConfigUri();
@@ -1662,7 +1566,7 @@
           try {
             const res = await svc.readFile({ uri });
             if (res?.content && res.content.length > 0) {
-              const text = new TextDecoder().decode(res.content);
+              const text = decodeUtf8(res.content);
               if (text.trim()) {
                 const norm = normalizeMcpConfigObject(text);
                 if (norm.ok) {
@@ -1681,12 +1585,9 @@
             }
             return { config: { mcpServers: {} }, uri, fsPath: toFsPathFromFileUri(uri), error: null };
           } catch {
-            // File might not exist yet — treat as empty `{ mcpServers: {} }`
             return { config: { mcpServers: {} }, uri, fsPath: toFsPathFromFileUri(uri), error: null };
           }
         }
-
-        // Fallback to localStorage backup when in pure web mock / test sandbox without readFile
         try {
           const raw = ls?.getItem?.(STORAGE_FALLBACK_KEY);
           if (raw) {
@@ -1701,7 +1602,6 @@
             }
           }
         } catch {}
-
         return {
           config: { mcpServers: {} },
           uri: uri || 'file:///~/.gemini/config/mcp_config.json',
@@ -1709,7 +1609,6 @@
           error: null,
         };
       }
-
       async function writeFileToHost(svc, uri, bytes) {
         if (!svc || typeof svc.writeFile !== 'function' || !uri) {
           return { ok: false, persisted: false };
@@ -1726,7 +1625,6 @@
           }
         }
       }
-
       async function writeMcpConfig(rawConfig, targetServerName) {
         const norm = normalizeMcpConfigObject(rawConfig);
         if (!norm.ok) {
@@ -1736,12 +1634,11 @@
         try {
           ls?.setItem?.(STORAGE_FALLBACK_KEY, serialized);
         } catch {}
-
         const svc = scanFiberTree();
         const uri = await resolveMcpConfigUri();
         let persisted = false;
         if (svc && typeof svc.writeFile === 'function' && uri) {
-          const bytes = new TextEncoder().encode(serialized);
+          const bytes = encodeUtf8(serialized);
           const writeRes = await writeFileToHost(svc, uri, bytes);
           if (!writeRes.ok) {
             return { ok: false, persisted: false, error: writeRes.error };
@@ -1756,7 +1653,6 @@
               : 'Host file writer (writeFile) is not available in this session.',
           };
         }
-
         if (svc && typeof svc.refreshMcpServers === 'function') {
           try {
             await svc.refreshMcpServers({
@@ -1765,11 +1661,9 @@
             });
           } catch {}
         }
-
         await fetchServerStates();
         return { ok: true, persisted, config: norm.config, uri, fsPath: toFsPathFromFileUri(uri) };
       }
-
       async function fetchServerStates() {
         const svc = scanFiberTree();
         if (svc && typeof svc.getMcpServerStates === 'function') {
@@ -1800,12 +1694,10 @@
         }
         return { ok: true, states: lastKnownStates, error: null };
       }
-
       async function getMcpServerStates() {
         const res = await fetchServerStates();
         return Array.isArray(res?.states) ? res.states : [];
       }
-
       async function completeOAuth(serverName, authorizationCode) {
         const svc = scanFiberTree();
         const cleanName = typeof serverName === 'string' ? serverName.trim() : '';
@@ -1817,9 +1709,6 @@
           return { ok: false, error: 'Host OAuth service (completeMcpOAuth) is not available.' };
         }
         try {
-          // Native Antigravity `lB().completeMcpOAuth(serverName, authorizationCode)` takes 2 positional strings!
-          // Passing an object as first argument causes:
-          // `[internal] cannot encode field exa.language_server_pb.CompleteMcpOAuthRequest.server_name to JSON: expected string, got object`
           await svc.completeMcpOAuth(String(cleanName), String(code));
           await refreshServers(cleanName);
           return { ok: true };
@@ -1827,7 +1716,6 @@
           return { ok: false, error: e?.message || `Failed to complete OAuth for "${cleanName}".` };
         }
       }
-
       async function disconnectOAuth(serverName, account = '') {
         const svc = scanFiberTree();
         const cleanName = typeof serverName === 'string' ? serverName.trim() : '';
@@ -1838,7 +1726,6 @@
           return { ok: false, error: 'Host OAuth service (disconnectMcpOAuth) is not available.' };
         }
         try {
-          // Native Antigravity `lB().disconnectMcpOAuth(serverName, account)` takes 2 positional strings!
           await svc.disconnectMcpOAuth(String(cleanName), String(account || ''));
           await refreshServers(cleanName);
           return { ok: true };
@@ -1846,7 +1733,6 @@
           return { ok: false, error: e?.message || `Failed to disconnect OAuth for "${cleanName}".` };
         }
       }
-
       function openAuthUrl(url) {
         if (!url || typeof url !== 'string') return false;
         try {
@@ -1857,7 +1743,6 @@
         } catch {}
         return false;
       }
-
       async function waitForServerOAuthOrReady(serverName, timeoutMs = 3500) {
         if (!serverName) return null;
         const deadline = Date.now() + Math.max(200, Number(timeoutMs) || 3500);
@@ -1879,14 +1764,12 @@
         }
         return latestState;
       }
-
       async function applyAuthHeadersToServers(serverNames, authHeaders) {
         const { config } = await readMcpConfig();
         const nextServers = { ...(config.mcpServers || {}) };
         const names = Array.isArray(serverNames) && serverNames.length > 0
           ? serverNames
           : Object.keys(nextServers).filter((k) => Boolean(nextServers[k]?.url || nextServers[k]?.serverUrl));
-
         let updatedCount = 0;
         for (const name of names) {
           const current = nextServers[name];
@@ -1900,15 +1783,12 @@
             updatedCount++;
           }
         }
-
         if (updatedCount === 0) {
           return { ok: false, error: 'No matching HTTP custom servers found to update authentication.' };
         }
-
         const res = await writeMcpConfig({ ...config, mcpServers: nextServers });
         return { ...res, updatedCount };
       }
-
       async function refreshServers(serverName) {
         const svc = scanFiberTree();
         if (svc && typeof svc.refreshMcpServers === 'function') {
@@ -1923,7 +1803,6 @@
         }
         return fetchServerStates();
       }
-
       async function toggleServerEnabled(serverName, enabled) {
         const svc = scanFiberTree();
         if (svc && typeof svc.toggleMcpServer === 'function') {
@@ -1933,7 +1812,6 @@
             return { ok: false, error: e?.message || `Failed to toggle MCP server "${serverName}".` };
           }
         }
-        // Also persist `disabled` flag in mcp_config.json if this server is a custom server
         const { config } = await readMcpConfig();
         if (config.mcpServers && config.mcpServers[serverName]) {
           const nextConfig = {
@@ -1957,7 +1835,6 @@
         }
         return fetchServerStates();
       }
-
       async function upsertCustomServer(serverName, spec, previousName = null) {
         const { config } = await readMcpConfig();
         const nextServers = { ...(config.mcpServers || {}) };
@@ -1967,7 +1844,6 @@
         nextServers[serverName] = spec;
         return writeMcpConfig({ ...config, mcpServers: nextServers }, serverName);
       }
-
       async function deleteCustomServer(serverName) {
         const { config } = await readMcpConfig();
         const nextServers = { ...(config.mcpServers || {}) };
@@ -1977,7 +1853,6 @@
         delete nextServers[serverName];
         return writeMcpConfig({ ...config, mcpServers: nextServers }, serverName);
       }
-
       async function toggleServerTool(serverName, toolName, enabled) {
         const { config } = await readMcpConfig();
         if (!config.mcpServers || !config.mcpServers[serverName]) {
@@ -2037,7 +1912,6 @@
         await fetchServerStates();
         return { ok: true, persisted, config: nextConfig };
       }
-
       async function revealConfigInExplorer() {
         scanFiberTree();
         const uri = await resolveMcpConfigUri();
@@ -2051,11 +1925,9 @@
         }
         return { ok: false, error: 'File explorer reveal is not available in this environment.' };
       }
-
       function getLastKnownStates() {
         return lastKnownStates;
       }
-
       function setCustomConfigUriOverride(newPathOrUri) {
         if (!newPathOrUri || !String(newPathOrUri).trim()) {
           try {
@@ -2071,13 +1943,11 @@
         resolvedConfigUri = uri;
         return uri;
       }
-
       let cachedHostPluginInfo = null;
       async function fetchHostInstalledPluginInfo(forceRefresh = false) {
         if (cachedHostPluginInfo && !forceRefresh) return cachedHostPluginInfo;
         const svc = scanFiberTree();
         if (!svc) return null;
-
         let geminiRoot = null;
         const extractRoot = (rawPath) => {
           if (!rawPath || typeof rawPath !== 'string') return null;
@@ -2087,14 +1957,12 @@
           if (idx === -1) return null;
           return norm.slice(0, idx + '/.gemini'.length);
         };
-
         try {
           const cfgUri = await resolveMcpConfigUri();
           if (cfgUri) {
             geminiRoot = extractRoot(cfgUri);
           }
         } catch {}
-
         const pluginNames = new Set();
         if (typeof svc.getAllPlugins === 'function') {
           try {
@@ -2112,7 +1980,6 @@
             }
           } catch {}
         }
-
         if (typeof svc.getCustomizationStates === 'function') {
           try {
             const st = await svc.getCustomizationStates([]);
@@ -2129,7 +1996,6 @@
             }
           } catch {}
         }
-
         if (!geminiRoot && typeof svc.getAllSkills === 'function') {
           try {
             const skRes = await svc.getAllSkills([]);
@@ -2144,7 +2010,6 @@
             }
           } catch {}
         }
-
         if (!geminiRoot) {
           if (pluginNames.size > 0) {
             return {
@@ -2161,10 +2026,8 @@
           }
           return null;
         }
-
         const autoinjectUri = toFileUriFromFsPath(`${geminiRoot}/antigravity/statusbar_autoinject.js`);
         if (!autoinjectUri) return null;
-
         let text = '';
         if (typeof svc.readFile === 'function') {
           try {
@@ -2177,10 +2040,9 @@
             const rawBytes = res instanceof Uint8Array || ArrayBuffer.isView(res) ? res : res?.content;
             text = typeof res === 'string'
               ? res
-              : (rawBytes && rawBytes.length > 0 ? new TextDecoder().decode(rawBytes) : '');
+              : (rawBytes && rawBytes.length > 0 ? decodeUtf8(rawBytes) : '');
           } catch {}
         }
-
         if (!text) {
           if (pluginNames.size > 0) {
             return {
@@ -2197,43 +2059,34 @@
           }
           return null;
         }
-
         const mcpBeginStr = ['BEGIN_AGY_MCP', 'MANAGER'].join('_');
         const mcpEndStr = ['END_AGY_MCP', 'MANAGER'].join('_');
         const koBeginStr = ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_');
         const koEndStr = ['END_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_');
-
         const mcpBeginRe = new RegExp(`^[ \\t]*(?:\\/\\/ === ${mcpBeginStr}(?:_V1)? ===|\\/\\* === ${mcpBeginStr}(?:_V1)? === \\*\\/)[ \\t]*$`, 'm');
         const mcpEndRe = new RegExp(`^[ \\t]*(?:\\/\\/ === ${mcpEndStr}(?:_V1)? ===|\\/\\* === ${mcpEndStr}(?:_V1)? === \\*\\/)[ \\t]*$`, 'm');
         const koBeginRe = new RegExp(`^[ \\t]*(?:\\/\\/ === ${koBeginStr} ===|\\/\\* === ${koBeginStr} === \\*\\/)[ \\t]*$`, 'm');
         const koEndRe = new RegExp(`^[ \\t]*(?:\\/\\/ === ${koEndStr} ===|\\/\\* === ${koEndStr} === \\*\\/)[ \\t]*$`, 'm');
-
         const mcpBeginMatch = mcpBeginRe.exec(text);
         const mcpEndMatch = mcpBeginMatch ? mcpEndRe.exec(text.slice(mcpBeginMatch.index)) : null;
         const mcpB = mcpBeginMatch ? mcpBeginMatch.index : -1;
         const mcpE = mcpEndMatch ? mcpBeginMatch.index + mcpEndMatch.index : -1;
         const mcpEndLen = mcpEndMatch ? mcpEndMatch[0].length : 0;
-
         const koBeginMatch = koBeginRe.exec(text);
         const koEndMatch = koBeginMatch ? koEndRe.exec(text.slice(koBeginMatch.index)) : null;
         const koB = koBeginMatch ? koBeginMatch.index : -1;
         const koE = koEndMatch ? koBeginMatch.index + koEndMatch.index : -1;
         const koEndLen = koEndMatch ? koEndMatch[0].length : 0;
-
         const firstMarkerIdx = [mcpB, koB].filter((i) => i !== -1).sort((a, b) => a - b)[0] ?? text.length;
         const baseSegment = text.slice(0, firstMarkerIdx).trim();
-
         const sbFuncRe = new RegExp(`^[ \\t]*function ${['mount', 'StatusBar'].join('')}\\s*\\(`, 'm');
         const mcpFuncRe = new RegExp(`^[ \\t]*function ${['mount', 'McpManager'].join('')}\\s*\\(`, 'm');
-
         const isBaseStatusbar = sbFuncRe.test(baseSegment);
         const hasMcpMarker = (mcpB !== -1 && mcpE > mcpB) || (!isBaseStatusbar && mcpFuncRe.test(baseSegment));
         const hasKoMarker = koB !== -1 && koE > koB;
-
         const hasStatusbar = isBaseStatusbar || pluginNames.has('antigravity-statusbar');
         const hasMcpManager = hasMcpMarker || pluginNames.has('antigravity-mcp-manager');
         const hasKoTranslator = hasKoMarker || pluginNames.has('ko-thought-translator');
-
         cachedHostPluginInfo = {
           resolved: true,
           geminiRoot,
@@ -2247,7 +2100,6 @@
         };
         return cachedHostPluginInfo;
       }
-
       return {
         scanFiberTree,
         resolveMcpConfigUri,
@@ -2273,7 +2125,6 @@
         toFsPathFromFileUri,
       };
     }
-
     module.exports = {
       toFileUriFromFsPath,
       toFsPathFromFileUri,
@@ -2281,12 +2132,10 @@
       normalizeAuthorizationCode,
       createHostMcpBridge,
     };
-
   },
   "./modal-ui": function(module, exports, __require) {
     const require = (spec) => __require(".", spec);
     'use strict';
-
     const {
       QUICK_TEMPLATES,
       extractAuthFromSpec,
@@ -2297,19 +2146,16 @@
       formatKeyValueForEditor,
       normalizeMcpConfigObject,
     } = require('./mcp-config-schema');
-
     const MODAL_ID = 'agy-mcp-manager-modal-backdrop';
     const EDIT_POPUP_ID = 'agy-mcp-edit-popup-backdrop';
     const OAUTH_MODAL_ID = 'agy-mcp-oauth-connect-backdrop';
     const STYLE_ID = 'agy-mcp-manager-styles';
-
     function isAuthErrorText(errText) {
       if (!errText || typeof errText !== 'string') return false;
       return /unauthorized|401|403|forbidden|authentication|unauthenticated|invalid[_\s-]?token|missing.*authorization|bearer|api[_\s-]?key|oauth/i.test(
         errText
       );
     }
-
     const MODAL_STYLE_CSS = `
         #${MODAL_ID}, #${EDIT_POPUP_ID}, #${OAUTH_MODAL_ID} {
           position: fixed;
@@ -2851,8 +2697,7 @@
           flex-direction: column;
           gap: 10px;
         }
-      `;
-
+      `.replace(/\s+/g, ' ').trim();
     function ensureModalStyles(doc) {
       if (!doc || !doc.head) return;
       let style = doc.getElementById(STYLE_ID);
@@ -2865,7 +2710,6 @@
         style.textContent = MODAL_STYLE_CSS;
       }
     }
-
     function statusPillInfo(statusCode, isDisabled) {
       if (isDisabled || statusCode === 4) {
         return { label: 'DISABLED', cls: 'disabled' };
@@ -2881,7 +2725,6 @@
       }
       return { label: 'CONFIGURED', cls: 'pending' };
     }
-
     function formatSpecPreview(spec, runtimeState) {
       if (!spec || typeof spec !== 'object') return '(managed by plugin)';
       if (spec.url || spec.serverUrl) {
@@ -2905,7 +2748,6 @@
       const args = Array.isArray(spec.args) ? spec.args.join(' ') : '';
       return `${cmd} ${args}`.trim() || '(empty command)';
     }
-
     function createDefaultFormState() {
       return {
         originalName: '',
@@ -2935,7 +2777,6 @@
         disabled: false,
       };
     }
-
     function createModalController({ doc, bridge, onStateChanged }) {
       let activeTab = 'servers'; // 'servers' | 'editor' | 'raw'
       let editingForm = createDefaultFormState();
@@ -2945,17 +2786,14 @@
       let bannerState = { type: '', message: '' };
       let popupBannerState = { type: '', message: '' };
       let oauthPollTimer = null;
-
       function setBanner(type, message) {
         bannerState = { type, message };
         renderBanner();
       }
-
       function setPopupBanner(type, message) {
         popupBannerState = { type, message };
         renderPopupBanner();
       }
-
       function renderBanner() {
         const roots = [doc.getElementById(MODAL_ID), doc.getElementById('agy-mcp-settings-pane')].filter(Boolean);
         for (const root of roots) {
@@ -2970,7 +2808,6 @@
           }
         }
       }
-
       function renderPopupBanner() {
         const backdrop = doc.getElementById(EDIT_POPUP_ID);
         if (!backdrop) return;
@@ -2984,7 +2821,6 @@
           banner.textContent = '';
         }
       }
-
       function findRuntimeState(serverName) {
         if (!serverName) return null;
         return (
@@ -2993,14 +2829,12 @@
           ) || null
         );
       }
-
       function refreshEmbeddedSettingsPaneIfVisible() {
         const pane = doc.getElementById('agy-mcp-settings-pane');
         if (pane && pane.style.display !== 'none') {
           renderSettingsPageContent(pane);
         }
       }
-
       async function reloadData() {
         try {
           const [cfgResult, statesResult] = await Promise.all([
@@ -3020,7 +2854,6 @@
           setBanner('error', `Failed to load MCP configuration: ${err.message || err}`);
         }
       }
-
       function buildFormStateFromSpec(serverName, spec, options = {}) {
         const runtimeState = findRuntimeState(serverName);
         const effectiveSpec = spec || runtimeState?.spec || {};
@@ -3029,7 +2862,6 @@
         const isHttp = hasExplicitUrl || (!hasExplicitCmd && !serverName);
         const extractedAuth = extractAuthFromSpec(isHttp ? { ...effectiveSpec, url: effectiveSpec.url || effectiveSpec.serverUrl || 'https://example.com/mcp' } : effectiveSpec);
         const authMode = extractedAuth.authMode || (isHttp ? 'oauth' : 'none');
-
         return {
           originalName: options.isPrefill ? '' : (serverName || ''),
           serverName: serverName || '',
@@ -3063,15 +2895,12 @@
           disabled: Boolean(effectiveSpec && effectiveSpec.disabled),
         };
       }
-
       function populateFormFromSpec(serverName, spec, options = {}) {
         editingForm = buildFormStateFromSpec(serverName, spec, options);
       }
-
       function resetForm() {
         editingForm = createDefaultFormState();
       }
-
       function closeOAuthConnectModal() {
         if (oauthPollTimer) {
           clearInterval(oauthPollTimer);
@@ -3082,23 +2911,19 @@
           backdrop.parentNode.removeChild(backdrop);
         }
       }
-
       function isOAuthConnectModalOpen() {
         return Boolean(doc.getElementById(OAUTH_MODAL_ID));
       }
-
       async function openOAuthConnectModal(serverName, initialAuthUrl = '') {
         ensureModalStyles(doc);
         closeOAuthConnectModal();
         await reloadData();
-
         let st = findRuntimeState(serverName);
         if (!initialAuthUrl && (!st || (!st.authUrl && !st.hasAuthToken)) && typeof bridge.waitForServerOAuthOrReady === 'function') {
           st = await bridge.waitForServerOAuthOrReady(serverName, 2500);
           await reloadData();
         }
         const authUrl = initialAuthUrl || st?.authUrl || '';
-
         const backdrop = doc.createElement('div');
         backdrop.id = OAUTH_MODAL_ID;
         backdrop.setAttribute('data-testid', 'agy-mcp-oauth-connect-modal');
@@ -3108,12 +2933,10 @@
         backdrop.addEventListener('click', (e) => {
           if (e.target === backdrop) closeOAuthConnectModal();
         });
-
         const dialog = doc.createElement('div');
         dialog.className = 'agy-mcp-dialog oauth-connect';
         dialog.setAttribute('role', 'dialog');
         dialog.setAttribute('aria-label', `Connect ${serverName}`);
-
         const closeBtn = doc.createElement('button');
         closeBtn.type = 'button';
         closeBtn.className = 'agy-mcp-close-btn';
@@ -3123,7 +2946,6 @@
         closeBtn.textContent = '✕';
         closeBtn.addEventListener('click', () => closeOAuthConnectModal());
         dialog.appendChild(closeBtn);
-
         const iconsRow = doc.createElement('div');
         iconsRow.className = 'agy-mcp-oauth-icons';
         const brandIcon = doc.createElement('div');
@@ -3139,18 +2961,15 @@
         iconsRow.appendChild(dots);
         iconsRow.appendChild(mcpIcon);
         dialog.appendChild(iconsRow);
-
         const titleEl = doc.createElement('h2');
         titleEl.className = 'agy-mcp-oauth-title';
         titleEl.textContent = `Connect ${serverName}`;
         dialog.appendChild(titleEl);
-
         const descEl = doc.createElement('div');
         descEl.className = 'agy-mcp-oauth-desc';
         descEl.textContent =
           `Antigravity uses browser OAuth authentication to interact with the "${serverName}" MCP server. Click Connect below to sign in and authorize access in your browser.`;
         dialog.appendChild(descEl);
-
         const statusLine = doc.createElement('div');
         statusLine.className = 'agy-mcp-hint';
         statusLine.style.color = authUrl ? '#a5b4fc' : '#fcd34d';
@@ -3158,25 +2977,21 @@
           ? 'OAuth authorization URL is ready.'
           : 'Checking OAuth authorization URL from host...';
         dialog.appendChild(statusLine);
-
         const codeSection = doc.createElement('div');
         codeSection.style.display = 'flex';
         codeSection.style.width = '100%';
         codeSection.style.flexDirection = 'column';
         codeSection.style.gap = '6px';
-
         const codeInputRow = doc.createElement('div');
         codeInputRow.style.display = 'flex';
         codeInputRow.style.gap = '6px';
         codeInputRow.style.width = '100%';
-
         const codeInput = doc.createElement('input');
         codeInput.type = 'text';
         codeInput.className = 'agy-mcp-input';
         codeInput.style.flex = '1';
         codeInput.setAttribute('data-field', 'oauthModalCode');
         codeInput.placeholder = 'Paste authorization code here if shown in browser (optional)';
-
         const codeSubmitBtn = doc.createElement('button');
         codeSubmitBtn.type = 'button';
         codeSubmitBtn.className = 'agy-mcp-btn primary';
@@ -3198,12 +3013,10 @@
           if (isOpen()) renderModalContent();
           if (isEditPopupOpen()) renderEditPopupBody();
         });
-
         codeInputRow.appendChild(codeInput);
         codeInputRow.appendChild(codeSubmitBtn);
         codeSection.appendChild(codeInputRow);
         dialog.appendChild(codeSection);
-
         const launchBtn = doc.createElement('button');
         launchBtn.type = 'button';
         launchBtn.className = 'agy-mcp-oauth-full-btn launch';
@@ -3249,7 +3062,6 @@
           }
         });
         dialog.appendChild(launchBtn);
-
         const cancelBtn = doc.createElement('button');
         cancelBtn.type = 'button';
         cancelBtn.className = 'agy-mcp-oauth-full-btn cancel';
@@ -3257,28 +3069,23 @@
         cancelBtn.textContent = 'Cancel';
         cancelBtn.addEventListener('click', () => closeOAuthConnectModal());
         dialog.appendChild(cancelBtn);
-
         backdrop.appendChild(dialog);
         doc.body.appendChild(backdrop);
       }
-
       function renderSmartAutoAddBar(container) {
         const box = doc.createElement('div');
         box.className = 'agy-mcp-card';
         box.style.background = 'rgba(79, 70, 229, 0.09)';
         box.style.borderColor = 'rgba(99, 102, 241, 0.38)';
-
         const label = doc.createElement('div');
         label.className = 'agy-mcp-label';
         label.textContent = '⚡ Quick Auto-Add (Enter MCP Portal / Server URL, GitHub/npm Address, Command, or JSON):';
         box.appendChild(label);
-
         const row = doc.createElement('div');
         row.style.display = 'flex';
         row.style.gap = '8px';
         row.style.alignItems = 'center';
         row.style.flexWrap = 'wrap';
-
         const input = doc.createElement('input');
         input.type = 'text';
         input.className = 'agy-mcp-input';
@@ -3286,7 +3093,6 @@
         input.style.minWidth = '240px';
         input.setAttribute('data-testid', 'agy-mcp-smart-input');
         input.placeholder = 'https://example.com/mcp (OAuth auto-discovered), https://github.com/owner/repo, or npx -y ...';
-
         async function handleQuickConnect() {
           const parsed = parseSmartMcpInput(input.value);
           if (!parsed.ok) {
@@ -3338,21 +3144,18 @@
             setBanner('error', err.message || String(err));
           }
         }
-
         input.addEventListener('keydown', (e) => {
           if (e.key === 'Enter') {
             e.preventDefault();
             handleQuickConnect();
           }
         });
-
         const autoConnectBtn = doc.createElement('button');
         autoConnectBtn.type = 'button';
         autoConnectBtn.className = 'agy-mcp-btn primary';
         autoConnectBtn.setAttribute('data-testid', 'agy-mcp-smart-add-btn');
         autoConnectBtn.textContent = 'Auto-Add & Connect';
         autoConnectBtn.addEventListener('click', handleQuickConnect);
-
         const fillFormBtn = doc.createElement('button');
         fillFormBtn.type = 'button';
         fillFormBtn.className = 'agy-mcp-btn';
@@ -3374,27 +3177,22 @@
             setPopupBanner('info', `Auto-filled form for "${parsed.serverName}". Review OAuth / connection settings below.`);
           }
         });
-
         row.appendChild(input);
         row.appendChild(autoConnectBtn);
         row.appendChild(fillFormBtn);
         box.appendChild(row);
         container.appendChild(box);
       }
-
       function renderAuthFieldsSection(container, formObj, runtimeState, reRenderFn, bannerFn) {
         const authBox = doc.createElement('div');
         authBox.className = 'agy-mcp-auth-box';
         authBox.setAttribute('data-testid', 'agy-mcp-auth-section');
-
         const authField = doc.createElement('div');
         authField.className = 'agy-mcp-field full';
-
         const titleEl = doc.createElement('label');
         titleEl.className = 'agy-mcp-label';
         titleEl.textContent = 'Authentication';
         authField.appendChild(titleEl);
-
         const modeSelect = doc.createElement('select');
         modeSelect.className = 'agy-mcp-select';
         modeSelect.setAttribute('data-field', 'authMode');
@@ -3419,13 +3217,10 @@
         });
         authField.appendChild(modeSelect);
         authBox.appendChild(authField);
-
         if (formObj.authMode === 'oauth' || formObj.authMode === 'oauth_or_none') {
           const authUrl = runtimeState?.authUrl || '';
           const hasToken = Boolean(runtimeState?.hasAuthToken);
           const activeServerName = formObj.serverName || formObj.originalName;
-
-          // Instant OAuth Connect bar if server is already registered or has authUrl
           if (authUrl || hasToken || activeServerName) {
             const quickOAuthBar = doc.createElement('div');
             quickOAuthBar.style.display = 'flex';
@@ -3439,7 +3234,6 @@
             quickOAuthBar.style.border = hasToken
               ? '1px solid rgba(16, 185, 129, 0.35)'
               : '1px solid rgba(99, 102, 241, 0.38)';
-
             const statusTxt = doc.createElement('span');
             statusTxt.style.fontSize = '12px';
             statusTxt.style.color = hasToken ? '#6ee7b7' : '#c7d2fe';
@@ -3449,11 +3243,9 @@
               ? `🔗 OAuth Ready — Sign in to "${activeServerName}" in your browser.`
               : 'Automatically detects MCP portal OAuth settings and opens the sign-in window after saving.';
             quickOAuthBar.appendChild(statusTxt);
-
             const btnWrap = doc.createElement('div');
             btnWrap.style.display = 'flex';
             btnWrap.style.gap = '6px';
-
             if (activeServerName && !hasToken) {
               const connectBtn = doc.createElement('button');
               connectBtn.type = 'button';
@@ -3465,7 +3257,6 @@
               });
               btnWrap.appendChild(connectBtn);
             }
-
             if (hasToken && activeServerName) {
               const signOutBtn = doc.createElement('button');
               signOutBtn.type = 'button';
@@ -3483,41 +3274,31 @@
               });
               btnWrap.appendChild(signOutBtn);
             }
-
             quickOAuthBar.appendChild(btnWrap);
             authBox.appendChild(quickOAuthBar);
           }
-
-          // Collapsible "Advanced OAuth Settings" card matching ChatGPT's UI
           const advCard = doc.createElement('div');
           advCard.className = 'agy-mcp-adv-oauth-card';
-
           const advHeader = doc.createElement('div');
           advHeader.className = 'agy-mcp-adv-oauth-header';
           advHeader.setAttribute('data-testid', 'agy-mcp-advanced-oauth-toggle');
-
           const advLeft = doc.createElement('div');
           advLeft.style.display = 'flex';
           advLeft.style.flexDirection = 'column';
           advLeft.style.gap = '3px';
-
           const advTitle = doc.createElement('div');
           advTitle.className = 'agy-mcp-label';
           advTitle.textContent = 'Advanced OAuth Settings';
-
           const advSub = doc.createElement('div');
           advSub.className = 'agy-mcp-hint';
           advSub.textContent =
             'Review auto-detected OAuth settings or enter custom credentials, select client configuration mode, and set default scopes.';
-
           advLeft.appendChild(advTitle);
           advLeft.appendChild(advSub);
-
           const advArrow = doc.createElement('span');
           advArrow.style.fontSize = '16px';
           advArrow.style.color = '#94a3b8';
           advArrow.textContent = formObj.advancedOAuthOpen ? '⌄' : '›';
-
           advHeader.appendChild(advLeft);
           advHeader.appendChild(advArrow);
           advHeader.addEventListener('click', () => {
@@ -3525,7 +3306,6 @@
             reRenderFn();
           });
           advCard.appendChild(advHeader);
-
           if (formObj.advancedOAuthOpen) {
             const advBody = doc.createElement('div');
             advBody.style.display = 'flex';
@@ -3533,7 +3313,6 @@
             advBody.style.gap = '10px';
             advBody.style.paddingTop = '8px';
             advBody.style.borderTop = '1px solid #2b324a';
-
             const clientModeField = doc.createElement('div');
             clientModeField.className = 'agy-mcp-field';
             const cmLbl = doc.createElement('label');
@@ -3558,11 +3337,9 @@
             clientModeField.appendChild(cmLbl);
             clientModeField.appendChild(cmSelect);
             advBody.appendChild(clientModeField);
-
             if (formObj.oauthClientMode === 'custom') {
               const grid = doc.createElement('div');
               grid.className = 'agy-mcp-form-grid';
-
               const cidField = doc.createElement('div');
               cidField.className = 'agy-mcp-field';
               const cidLbl = doc.createElement('label');
@@ -3578,7 +3355,6 @@
               });
               cidField.appendChild(cidLbl);
               cidField.appendChild(cidInput);
-
               const csecField = doc.createElement('div');
               csecField.className = 'agy-mcp-field';
               const csecLbl = doc.createElement('label');
@@ -3595,12 +3371,10 @@
               });
               csecField.appendChild(csecLbl);
               csecField.appendChild(csecInput);
-
               grid.appendChild(cidField);
               grid.appendChild(csecField);
               advBody.appendChild(grid);
             }
-
             const scopeField = doc.createElement('div');
             scopeField.className = 'agy-mcp-field';
             const scopeLbl = doc.createElement('label');
@@ -3617,13 +3391,10 @@
             scopeField.appendChild(scopeLbl);
             scopeField.appendChild(scopeInput);
             advBody.appendChild(scopeField);
-
-            // Manual authorization code fallback row
             const manualCodeRow = doc.createElement('div');
             manualCodeRow.style.display = 'flex';
             manualCodeRow.style.gap = '6px';
             manualCodeRow.style.alignItems = 'center';
-
             const codeInput = doc.createElement('input');
             codeInput.type = 'text';
             codeInput.className = 'agy-mcp-input';
@@ -3634,7 +3405,6 @@
             codeInput.addEventListener('input', (e) => {
               formObj.oauthCode = e.target.value;
             });
-
             const submitCodeBtn = doc.createElement('button');
             submitCodeBtn.type = 'button';
             submitCodeBtn.className = 'agy-mcp-btn';
@@ -3656,14 +3426,11 @@
               bannerFn('success', `OAuth authentication completed for "${targetServer}".`);
               reRenderFn();
             });
-
             manualCodeRow.appendChild(codeInput);
             manualCodeRow.appendChild(submitCodeBtn);
             advBody.appendChild(manualCodeRow);
-
             advCard.appendChild(advBody);
           }
-
           authBox.appendChild(advCard);
         } else if (formObj.authMode === 'bearer') {
           const field = doc.createElement('div');
@@ -3677,7 +3444,6 @@
           const inputRow = doc.createElement('div');
           inputRow.style.display = 'flex';
           inputRow.style.gap = '6px';
-
           const tokInput = doc.createElement('input');
           tokInput.type = formObj.showSecret ? 'text' : 'password';
           tokInput.className = 'agy-mcp-input';
@@ -3688,7 +3454,6 @@
           tokInput.addEventListener('input', (e) => {
             formObj.bearerToken = e.target.value;
           });
-
           const toggleVisBtn = doc.createElement('button');
           toggleVisBtn.type = 'button';
           toggleVisBtn.className = 'agy-mcp-btn';
@@ -3698,7 +3463,6 @@
             tokInput.type = formObj.showSecret ? 'text' : 'password';
             toggleVisBtn.textContent = formObj.showSecret ? 'Hide' : 'Show';
           });
-
           inputRow.appendChild(tokInput);
           inputRow.appendChild(toggleVisBtn);
           field.appendChild(lbl);
@@ -3707,7 +3471,6 @@
         } else if (formObj.authMode === 'apiKey') {
           const grid = doc.createElement('div');
           grid.className = 'agy-mcp-form-grid';
-
           const hdrNameField = doc.createElement('div');
           hdrNameField.className = 'agy-mcp-field';
           const hdrNameLbl = doc.createElement('label');
@@ -3723,7 +3486,6 @@
           });
           hdrNameField.appendChild(hdrNameLbl);
           hdrNameField.appendChild(hdrNameInput);
-
           const hdrValField = doc.createElement('div');
           hdrValField.className = 'agy-mcp-field';
           const hdrValLbl = doc.createElement('label');
@@ -3755,14 +3517,12 @@
           valRow.appendChild(toggleVisBtn);
           hdrValField.appendChild(hdrValLbl);
           hdrValField.appendChild(valRow);
-
           grid.appendChild(hdrNameField);
           grid.appendChild(hdrValField);
           authBox.appendChild(grid);
         } else if (formObj.authMode === 'basic') {
           const grid = doc.createElement('div');
           grid.className = 'agy-mcp-form-grid';
-
           const uField = doc.createElement('div');
           uField.className = 'agy-mcp-field';
           const uLbl = doc.createElement('label');
@@ -3778,7 +3538,6 @@
           });
           uField.appendChild(uLbl);
           uField.appendChild(uInput);
-
           const pField = doc.createElement('div');
           pField.className = 'agy-mcp-field';
           const pLbl = doc.createElement('label');
@@ -3795,13 +3554,10 @@
           });
           pField.appendChild(pLbl);
           pField.appendChild(pInput);
-
           grid.appendChild(uField);
           grid.appendChild(pField);
           authBox.appendChild(grid);
         }
-
-        // Batch apply checkbox when multiple custom HTTP servers exist and custom header auth is selected
         const customServers = (cachedConfig.config && cachedConfig.config.mcpServers) || {};
         const httpServerNames = Object.keys(customServers).filter((k) =>
           Boolean(customServers[k]?.url || customServers[k]?.serverUrl)
@@ -3818,7 +3574,6 @@
           batchLabel.style.fontSize = '11.5px';
           batchLabel.style.color = '#c7d2fe';
           batchLabel.style.cursor = 'pointer';
-
           const batchChk = doc.createElement('input');
           batchChk.type = 'checkbox';
           batchChk.setAttribute('data-field', 'applyAuthToAllHttp');
@@ -3826,22 +3581,17 @@
           batchChk.addEventListener('change', (e) => {
             formObj.applyAuthToAllHttp = e.target.checked;
           });
-
           const batchSpan = doc.createElement('span');
           batchSpan.textContent = `Apply this authentication to all ${httpServerNames.length} custom HTTP servers (${httpServerNames.join(', ')})`;
           batchLabel.appendChild(batchChk);
           batchLabel.appendChild(batchSpan);
           authBox.appendChild(batchLabel);
         }
-
         container.appendChild(authBox);
       }
-
       function renderServerConnectionFields(container, formObj, reRenderFn) {
         const grid = doc.createElement('div');
         grid.className = 'agy-mcp-form-grid';
-
-        // 1. Name
         const nameField = doc.createElement('div');
         nameField.className = 'agy-mcp-field full';
         const nameLabel = doc.createElement('label');
@@ -3858,8 +3608,6 @@
         nameField.appendChild(nameLabel);
         nameField.appendChild(nameInput);
         grid.appendChild(nameField);
-
-        // 2. Description (Optional)
         const descField = doc.createElement('div');
         descField.className = 'agy-mcp-field full';
         const descLabel = doc.createElement('label');
@@ -3876,8 +3624,6 @@
         descField.appendChild(descLabel);
         descField.appendChild(descInput);
         grid.appendChild(descField);
-
-        // 3. Connection header + Segmented toggle (Connection: Server URL | Local / Tunnel (Stdio))
         const connHeaderField = doc.createElement('div');
         connHeaderField.className = 'agy-mcp-field full';
         const connTopRow = doc.createElement('div');
@@ -3885,14 +3631,11 @@
         connTopRow.style.alignItems = 'center';
         connTopRow.style.justifyContent = 'space-between';
         connTopRow.style.gap = '10px';
-
         const connLabel = doc.createElement('label');
         connLabel.className = 'agy-mcp-label';
         connLabel.textContent = 'Connection';
-
         const segWrap = doc.createElement('div');
         segWrap.className = 'agy-mcp-segmented';
-
         const segHttpBtn = doc.createElement('button');
         segHttpBtn.type = 'button';
         segHttpBtn.className = `agy-mcp-seg-btn${formObj.transport === 'http' ? ' active' : ''}`;
@@ -3904,7 +3647,6 @@
           }
           reRenderFn();
         });
-
         const segStdioBtn = doc.createElement('button');
         segStdioBtn.type = 'button';
         segStdioBtn.className = `agy-mcp-seg-btn${formObj.transport === 'stdio' ? ' active' : ''}`;
@@ -3913,11 +3655,8 @@
           formObj.transport = 'stdio';
           reRenderFn();
         });
-
         segWrap.appendChild(segHttpBtn);
         segWrap.appendChild(segStdioBtn);
-
-        // Keep hidden/accessible select for [data-field="transport"] programmatic compatibility
         const transSelect = doc.createElement('select');
         transSelect.className = 'agy-mcp-select';
         transSelect.style.display = 'none';
@@ -3935,12 +3674,10 @@
           formObj.transport = e.target.value;
           reRenderFn();
         });
-
         connTopRow.appendChild(connLabel);
         connTopRow.appendChild(segWrap);
         connHeaderField.appendChild(connTopRow);
         connHeaderField.appendChild(transSelect);
-
         if (formObj.transport === 'http') {
           const urlInput = doc.createElement('input');
           urlInput.className = 'agy-mcp-input';
@@ -3954,7 +3691,6 @@
           grid.appendChild(connHeaderField);
         } else {
           grid.appendChild(connHeaderField);
-
           const cmdField = doc.createElement('div');
           cmdField.className = 'agy-mcp-field';
           const cmdLabel = doc.createElement('label');
@@ -3971,7 +3707,6 @@
           cmdField.appendChild(cmdLabel);
           cmdField.appendChild(cmdInput);
           grid.appendChild(cmdField);
-
           const cwdField = doc.createElement('div');
           cwdField.className = 'agy-mcp-field';
           const cwdLabel = doc.createElement('label');
@@ -3988,7 +3723,6 @@
           cwdField.appendChild(cwdLabel);
           cwdField.appendChild(cwdInput);
           grid.appendChild(cwdField);
-
           const argsField = doc.createElement('div');
           argsField.className = 'agy-mcp-field full';
           const argsLabel = doc.createElement('label');
@@ -4005,7 +3739,6 @@
           argsField.appendChild(argsLabel);
           argsField.appendChild(argsArea);
           grid.appendChild(argsField);
-
           const envField = doc.createElement('div');
           envField.className = 'agy-mcp-field full';
           const envLabel = doc.createElement('label');
@@ -4023,10 +3756,8 @@
           envField.appendChild(envArea);
           grid.appendChild(envField);
         }
-
         container.appendChild(grid);
       }
-
       async function saveServerForm(formObj, bannerFn) {
         const built = validateAndBuildServerSpec(formObj);
         if (!built.ok) {
@@ -4039,7 +3770,6 @@
           bannerFn('error', res.error || 'Failed to save server');
           return res;
         }
-
         if (formObj.applyAuthToAllHttp && formObj.transport === 'http') {
           const authHeadersOnly = buildAuthHeaders({
             authMode: formObj.authMode,
@@ -4054,7 +3784,6 @@
             await bridge.applyAuthHeadersToServers(null, authHeadersOnly);
           }
         }
-
         let st = null;
         if (
           formObj.transport === 'http' &&
@@ -4063,10 +3792,8 @@
         ) {
           st = await bridge.waitForServerOAuthOrReady(built.serverName, 3000);
         }
-
         await reloadData();
         st = st || findRuntimeState(built.serverName);
-
         if (
           formObj.transport === 'http' &&
           (formObj.authMode === 'oauth' || formObj.authMode === 'oauth_or_none') &&
@@ -4079,10 +3806,8 @@
         } else {
           bannerFn('success', `Saved and triggered reload for "${built.serverName}".`);
         }
-
         return { ok: true, serverName: built.serverName, spec: built.spec, runtimeState: st };
       }
-
       function renderServerCardsList(container, customBannerFn = setBanner) {
         const customMap = (cachedConfig.config && cachedConfig.config.mcpServers) || {};
         const stateByName = new Map();
@@ -4092,11 +3817,9 @@
             stateByName.set(sName, st);
           }
         }
-
         const allServerNames = Array.from(
           new Set([...Object.keys(customMap), ...Array.from(stateByName.keys())])
         );
-
         if (allServerNames.length === 0) {
           const empty = doc.createElement('div');
           empty.className = 'agy-mcp-card';
@@ -4107,7 +3830,6 @@
           container.appendChild(empty);
           return;
         }
-
         for (const name of allServerNames) {
           const customSpec = customMap[name] || null;
           const runtimeState = stateByName.get(name) || null;
@@ -4116,39 +3838,30 @@
           const pill = statusPillInfo(runtimeState ? runtimeState.status : 0, isDisabled);
           const hasOAuthUrl = Boolean(runtimeState?.authUrl && !runtimeState?.hasAuthToken);
           const needsAuth = Boolean(hasOAuthUrl || (runtimeState && isAuthErrorText(runtimeState.error)));
-
           const card = doc.createElement('div');
           card.className = 'agy-mcp-card';
           card.setAttribute('data-mcp-server-card', name);
-
           const topRow = doc.createElement('div');
           topRow.className = 'agy-mcp-card-top';
-
           const titleRow = doc.createElement('div');
           titleRow.className = 'agy-mcp-card-title-row';
-
           const nameEl = doc.createElement('span');
           nameEl.className = 'agy-mcp-server-name';
           nameEl.textContent = name;
           titleRow.appendChild(nameEl);
-
           const statusBadge = doc.createElement('span');
           statusBadge.className = `agy-mcp-pill ${pill.cls}`;
           statusBadge.textContent = pill.label;
           titleRow.appendChild(statusBadge);
-
           const sourceBadge = doc.createElement('span');
           sourceBadge.className = `agy-mcp-pill ${isCustom ? 'source-custom' : 'source-plugin'}`;
           sourceBadge.textContent = isCustom ? 'Custom' : 'Plugin';
           titleRow.appendChild(sourceBadge);
-
           topRow.appendChild(titleRow);
-
           const actionsRow = doc.createElement('div');
           actionsRow.style.display = 'flex';
           actionsRow.style.gap = '6px';
           actionsRow.style.flexWrap = 'wrap';
-
           if (hasOAuthUrl) {
             const oauthConnectBtn = doc.createElement('button');
             oauthConnectBtn.type = 'button';
@@ -4160,7 +3873,6 @@
             });
             actionsRow.appendChild(oauthConnectBtn);
           }
-
           if (isCustom || needsAuth) {
             const authBtn = doc.createElement('button');
             authBtn.type = 'button';
@@ -4176,7 +3888,6 @@
             });
             actionsRow.appendChild(authBtn);
           }
-
           const toggleBtn = doc.createElement('button');
           toggleBtn.className = 'agy-mcp-btn';
           toggleBtn.textContent = isDisabled ? 'Enable' : 'Disable';
@@ -4195,7 +3906,6 @@
             }
           });
           actionsRow.appendChild(toggleBtn);
-
           const restartBtn = doc.createElement('button');
           restartBtn.className = 'agy-mcp-btn';
           restartBtn.textContent = '↻ Restart';
@@ -4215,7 +3925,6 @@
             }
           });
           actionsRow.appendChild(restartBtn);
-
           if (isCustom) {
             const editBtn = doc.createElement('button');
             editBtn.className = 'agy-mcp-btn';
@@ -4225,7 +3934,6 @@
               openEditPopup(name);
             });
             actionsRow.appendChild(editBtn);
-
             const delBtn = doc.createElement('button');
             delBtn.className = 'agy-mcp-btn danger';
             delBtn.textContent = 'Delete';
@@ -4245,15 +3953,12 @@
             });
             actionsRow.appendChild(delBtn);
           }
-
           topRow.appendChild(actionsRow);
           card.appendChild(topRow);
-
           const preview = doc.createElement('div');
           preview.className = 'agy-mcp-cmd-preview';
           preview.textContent = formatSpecPreview(customSpec || (runtimeState && runtimeState.spec), runtimeState);
           card.appendChild(preview);
-
           if (runtimeState && runtimeState.error) {
             const errBox = doc.createElement('div');
             errBox.style.display = 'flex';
@@ -4263,11 +3968,9 @@
             errBox.style.flexWrap = 'wrap';
             errBox.style.fontSize = '11.5px';
             errBox.style.color = '#fca5a5';
-
             const errMsg = doc.createElement('span');
             errMsg.textContent = `Error: ${runtimeState.error}`;
             errBox.appendChild(errMsg);
-
             if (needsAuth || isCustom) {
               const fixAuthBtn = doc.createElement('button');
               fixAuthBtn.type = 'button';
@@ -4284,22 +3987,18 @@
             }
             card.appendChild(errBox);
           }
-
           const tools = (runtimeState && Array.isArray(runtimeState.tools)) ? runtimeState.tools : [];
           const disabledToolsSet = new Set(
             (customSpec && Array.isArray(customSpec.disabledTools)) ? customSpec.disabledTools : []
           );
-
           if (tools.length > 0) {
             const toolsHeader = doc.createElement('div');
             toolsHeader.style.fontSize = '11px';
             toolsHeader.style.color = '#8b95b0';
             toolsHeader.textContent = `Tools (${tools.length}) ${isCustom ? '— click a tool chip to enable/disable it in mcp_config.json' : ''}:`;
             card.appendChild(toolsHeader);
-
             const toolsWrap = doc.createElement('div');
             toolsWrap.className = 'agy-mcp-tools-wrap';
-
             for (const t of tools) {
               const toolName = t && (t.name || t.toolName);
               if (!toolName) continue;
@@ -4329,33 +4028,27 @@
             }
             card.appendChild(toolsWrap);
           }
-
           container.appendChild(card);
         }
       }
-
       function renderServersTab(container) {
         renderSmartAutoAddBar(container);
-
         const topActions = doc.createElement('div');
         topActions.style.display = 'flex';
         topActions.style.justifyContent = 'space-between';
         topActions.style.alignItems = 'center';
         topActions.style.flexWrap = 'wrap';
         topActions.style.gap = '8px';
-
         const summary = doc.createElement('div');
         summary.style.fontSize = '12.5px';
         summary.style.color = '#9aa2b8';
         const customNames = Object.keys((cachedConfig.config && cachedConfig.config.mcpServers) || {});
         summary.textContent = `Custom Servers: ${customNames.length} | Active Runtime States: ${cachedStates.length}`;
         topActions.appendChild(summary);
-
         const btnGroup = doc.createElement('div');
         btnGroup.style.display = 'flex';
         btnGroup.style.gap = '6px';
         btnGroup.style.flexWrap = 'wrap';
-
         const refreshBtn = doc.createElement('button');
         refreshBtn.className = 'agy-mcp-btn';
         refreshBtn.textContent = '↻ Refresh All Servers';
@@ -4366,7 +4059,6 @@
           setBanner('success', 'MCP servers refreshed.');
           renderBody();
         });
-
         const editPopupBtn = doc.createElement('button');
         editPopupBtn.className = 'agy-mcp-btn';
         editPopupBtn.setAttribute('data-testid', 'agy-mcp-open-edit-popup-btn');
@@ -4374,7 +4066,6 @@
         editPopupBtn.addEventListener('click', () => {
           openEditPopup(customNames[0] || '');
         });
-
         const addBtn = doc.createElement('button');
         addBtn.className = 'agy-mcp-btn primary';
         addBtn.setAttribute('data-testid', 'agy-mcp-open-add-tab');
@@ -4384,26 +4075,21 @@
           activeTab = 'editor';
           renderModalContent();
         });
-
         btnGroup.appendChild(refreshBtn);
         btnGroup.appendChild(editPopupBtn);
         btnGroup.appendChild(addBtn);
         topActions.appendChild(btnGroup);
         container.appendChild(topActions);
-
         renderServerCardsList(container, setBanner);
       }
-
       function renderEditorTab(container) {
         renderSmartAutoAddBar(container);
-
         const templateSection = doc.createElement('div');
         templateSection.className = 'agy-mcp-field';
         const tplLabel = doc.createElement('div');
         tplLabel.className = 'agy-mcp-label';
         tplLabel.textContent = 'Quick Preset Templates (Click to prefill):';
         templateSection.appendChild(tplLabel);
-
         const tplBar = doc.createElement('div');
         tplBar.className = 'agy-mcp-templates-bar';
         for (const tpl of QUICK_TEMPLATES) {
@@ -4436,23 +4122,19 @@
         }
         templateSection.appendChild(tplBar);
         container.appendChild(templateSection);
-
         const runtimeState = findRuntimeState(editingForm.serverName || editingForm.originalName);
         renderServerConnectionFields(container, editingForm, renderBody);
         renderAuthFieldsSection(container, editingForm, runtimeState, renderBody, setBanner);
-
         const riskBox = doc.createElement('div');
         riskBox.className = 'agy-mcp-risk-notice';
         riskBox.textContent =
           '⚠️ Custom MCP servers carry risks. Only connect to MCP servers you trust.';
         container.appendChild(riskBox);
-
         const footerRow = doc.createElement('div');
         footerRow.style.display = 'flex';
         footerRow.style.justifyContent = 'space-between';
         footerRow.style.alignItems = 'center';
         footerRow.style.marginTop = '6px';
-
         const chkLabel = doc.createElement('label');
         chkLabel.style.display = 'inline-flex';
         chkLabel.style.alignItems = 'center';
@@ -4470,11 +4152,9 @@
         chkLabel.appendChild(chk);
         chkLabel.appendChild(chkText);
         footerRow.appendChild(chkLabel);
-
         const actionBtns = doc.createElement('div');
         actionBtns.style.display = 'flex';
         actionBtns.style.gap = '8px';
-
         const cancelBtn = doc.createElement('button');
         cancelBtn.type = 'button';
         cancelBtn.className = 'agy-mcp-btn';
@@ -4483,7 +4163,6 @@
           activeTab = 'servers';
           renderModalContent();
         });
-
         const saveBtn = doc.createElement('button');
         saveBtn.type = 'button';
         saveBtn.className = 'agy-mcp-btn primary';
@@ -4499,13 +4178,11 @@
             setBanner('error', err.message || String(err));
           }
         });
-
         actionBtns.appendChild(cancelBtn);
         actionBtns.appendChild(saveBtn);
         footerRow.appendChild(actionBtns);
         container.appendChild(footerRow);
       }
-
       function renderRawTab(container) {
         const pathBar = doc.createElement('div');
         pathBar.style.display = 'flex';
@@ -4513,17 +4190,14 @@
         pathBar.style.alignItems = 'center';
         pathBar.style.gap = '8px';
         pathBar.style.flexWrap = 'wrap';
-
         const uriCode = doc.createElement('code');
         uriCode.style.fontSize = '11.5px';
         uriCode.style.color = '#a5b4fc';
         uriCode.textContent = cachedConfig.uri || 'file://~/.gemini/config/mcp_config.json';
         pathBar.appendChild(uriCode);
-
         const pathBtns = doc.createElement('div');
         pathBtns.style.display = 'flex';
         pathBtns.style.gap = '6px';
-
         const revealBtn = doc.createElement('button');
         revealBtn.type = 'button';
         revealBtn.className = 'agy-mcp-btn';
@@ -4534,19 +4208,16 @@
         pathBtns.appendChild(revealBtn);
         pathBar.appendChild(pathBtns);
         container.appendChild(pathBar);
-
         const editorArea = doc.createElement('textarea');
         editorArea.className = 'agy-mcp-textarea';
         editorArea.setAttribute('data-testid', 'agy-mcp-raw-json-textarea');
         editorArea.style.minHeight = '320px';
         editorArea.value = JSON.stringify(cachedConfig.config, null, 2) + '\n';
         container.appendChild(editorArea);
-
         const actionRow = doc.createElement('div');
         actionRow.style.display = 'flex';
         actionRow.style.justifyContent = 'flex-end';
         actionRow.style.gap = '8px';
-
         const formatBtn = doc.createElement('button');
         formatBtn.type = 'button';
         formatBtn.className = 'agy-mcp-btn';
@@ -4560,7 +4231,6 @@
           editorArea.value = JSON.stringify(norm.config, null, 2) + '\n';
           setBanner('info', 'Formatted JSON.');
         });
-
         const saveRawBtn = doc.createElement('button');
         saveRawBtn.type = 'button';
         saveRawBtn.className = 'agy-mcp-btn primary';
@@ -4581,12 +4251,10 @@
           setBanner('success', 'Saved mcp_config.json and refreshed MCP servers.');
           renderBody();
         });
-
         actionRow.appendChild(formatBtn);
         actionRow.appendChild(saveRawBtn);
         container.appendChild(actionRow);
       }
-
       function renderBody() {
         const backdrop = doc.getElementById(MODAL_ID);
         if (!backdrop) return;
@@ -4598,7 +4266,6 @@
         if (!useFrag) {
           while (body.firstChild) body.removeChild(body.firstChild);
         }
-
         if (activeTab === 'servers') {
           renderServersTab(target);
         } else if (activeTab === 'editor') {
@@ -4606,7 +4273,6 @@
         } else {
           renderRawTab(target);
         }
-
         if (useFrag) {
           body.replaceChildren(target);
         }
@@ -4614,7 +4280,6 @@
           body.scrollTop = prevScrollTop;
         }
       }
-
       function renderModalContent() {
         const backdrop = doc.getElementById(MODAL_ID);
         if (!backdrop) return;
@@ -4629,7 +4294,6 @@
         renderBanner();
         renderBody();
       }
-
       function renderEditPopupBody() {
         const backdrop = doc.getElementById(EDIT_POPUP_ID);
         if (!backdrop) return;
@@ -4637,40 +4301,32 @@
         if (!body) return;
         const prevScrollTop = typeof body.scrollTop === 'number' ? body.scrollTop : 0;
         while (body.firstChild) body.removeChild(body.firstChild);
-
         const customMap = (cachedConfig.config && cachedConfig.config.mcpServers) || {};
         const customNames = Object.keys(customMap);
         const activeName = popupForm.originalName || popupForm.serverName;
         const runtimeState = findRuntimeState(activeName);
-
-        // Server selector bar at top of popup
         const selectorCard = doc.createElement('div');
         selectorCard.className = 'agy-mcp-card';
         selectorCard.style.background = '#191d2b';
-
         const selectorRow = doc.createElement('div');
         selectorRow.style.display = 'flex';
         selectorRow.style.alignItems = 'center';
         selectorRow.style.justifyContent = 'space-between';
         selectorRow.style.gap = '10px';
         selectorRow.style.flexWrap = 'wrap';
-
         const selLabel = doc.createElement('label');
         selLabel.className = 'agy-mcp-label';
         selLabel.textContent = 'Select Custom MCP Server to Edit:';
         selectorRow.appendChild(selLabel);
-
         const sel = doc.createElement('select');
         sel.className = 'agy-mcp-select';
         sel.style.flex = '1';
         sel.style.minWidth = '220px';
         sel.setAttribute('data-field', 'popupServerSelect');
-
         const newOpt = doc.createElement('option');
         newOpt.value = '';
         newOpt.textContent = '+ Add Custom MCP Server (New Custom MCP Server)';
         sel.appendChild(newOpt);
-
         const allCandidateNames = Array.from(new Set([...customNames, ...(activeName ? [activeName] : [])]));
         for (const sName of allCandidateNames) {
           const opt = doc.createElement('option');
@@ -4692,7 +4348,6 @@
         });
         selectorRow.appendChild(sel);
         selectorCard.appendChild(selectorRow);
-
         if (runtimeState) {
           const stRow = doc.createElement('div');
           stRow.style.display = 'flex';
@@ -4700,13 +4355,11 @@
           stRow.style.gap = '8px';
           stRow.style.flexWrap = 'wrap';
           stRow.style.fontSize = '11.5px';
-
           const pill = statusPillInfo(runtimeState.status, Boolean(popupForm.disabled));
           const badge = doc.createElement('span');
           badge.className = `agy-mcp-pill ${pill.cls}`;
           badge.textContent = pill.label;
           stRow.appendChild(badge);
-
           if (runtimeState.error) {
             const errSpan = doc.createElement('span');
             errSpan.style.color = '#fca5a5';
@@ -4720,18 +4373,14 @@
           }
           selectorCard.appendChild(stRow);
         }
-
         body.appendChild(selectorCard);
-
         renderServerConnectionFields(body, popupForm, renderEditPopupBody);
         renderAuthFieldsSection(body, popupForm, runtimeState, renderEditPopupBody, setPopupBanner);
-
         const riskBox = doc.createElement('div');
         riskBox.className = 'agy-mcp-risk-notice';
         riskBox.textContent =
           '⚠️ Custom MCP servers carry risks. Only connect to MCP servers you trust.';
         body.appendChild(riskBox);
-
         const footerRow = doc.createElement('div');
         footerRow.style.display = 'flex';
         footerRow.style.justifyContent = 'space-between';
@@ -4739,12 +4388,10 @@
         footerRow.style.gap = '10px';
         footerRow.style.flexWrap = 'wrap';
         footerRow.style.marginTop = '6px';
-
         const leftControls = doc.createElement('div');
         leftControls.style.display = 'flex';
         leftControls.style.alignItems = 'center';
         leftControls.style.gap = '10px';
-
         const chkLabel = doc.createElement('label');
         chkLabel.style.display = 'inline-flex';
         chkLabel.style.alignItems = 'center';
@@ -4762,7 +4409,6 @@
         chkLabel.appendChild(chk);
         chkLabel.appendChild(chkText);
         leftControls.appendChild(chkLabel);
-
         if (popupForm.originalName && customMap[popupForm.originalName]) {
           const delBtn = doc.createElement('button');
           delBtn.type = 'button';
@@ -4792,13 +4438,10 @@
           });
           leftControls.appendChild(delBtn);
         }
-
         footerRow.appendChild(leftControls);
-
         const rightBtns = doc.createElement('div');
         rightBtns.style.display = 'flex';
         rightBtns.style.gap = '8px';
-
         const openFullBtn = doc.createElement('button');
         openFullBtn.type = 'button';
         openFullBtn.className = 'agy-mcp-btn';
@@ -4807,13 +4450,11 @@
           closeEditPopup();
           openModal('servers');
         });
-
         const cancelBtn = doc.createElement('button');
         cancelBtn.type = 'button';
         cancelBtn.className = 'agy-mcp-btn';
         cancelBtn.textContent = 'Cancel';
         cancelBtn.addEventListener('click', () => closeEditPopup());
-
         const saveBtn = doc.createElement('button');
         saveBtn.type = 'button';
         saveBtn.className = 'agy-mcp-btn primary';
@@ -4830,7 +4471,6 @@
             setPopupBanner('error', err.message || String(err));
           }
         });
-
         rightBtns.appendChild(openFullBtn);
         rightBtns.appendChild(cancelBtn);
         rightBtns.appendChild(saveBtn);
@@ -4840,12 +4480,10 @@
           body.scrollTop = prevScrollTop;
         }
       }
-
       async function openEditPopup(serverName = '', options = {}) {
         ensureModalStyles(doc);
         popupBannerState = { type: '', message: '' };
         await reloadData();
-
         const customMap = (cachedConfig.config && cachedConfig.config.mcpServers) || {};
         const customNames = Object.keys(customMap);
         const targetName = serverName !== undefined && serverName !== null && serverName !== ''
@@ -4853,7 +4491,6 @@
           : (options.createNew ? '' : (customNames[0] || ''));
         const targetSpec = options.prefillSpec || (targetName ? customMap[targetName] : null);
         popupForm = buildFormStateFromSpec(targetName, targetSpec, options);
-
         let backdrop = doc.getElementById(EDIT_POPUP_ID);
         if (!backdrop) {
           backdrop = doc.createElement('div');
@@ -4865,12 +4502,10 @@
           backdrop.addEventListener('click', (e) => {
             if (e.target === backdrop) closeEditPopup();
           });
-
           const dialog = doc.createElement('div');
           dialog.className = 'agy-mcp-dialog popup';
           dialog.setAttribute('role', 'dialog');
           dialog.setAttribute('aria-label', 'Add or Edit Custom MCP Server');
-
           const header = doc.createElement('div');
           header.className = 'agy-mcp-header';
           const titleWrap = doc.createElement('div');
@@ -4883,46 +4518,36 @@
           badge.textContent = 'OAuth & Custom MCP';
           titleWrap.appendChild(title);
           titleWrap.appendChild(badge);
-
           const closeBtn = doc.createElement('button');
           closeBtn.type = 'button';
           closeBtn.className = 'agy-mcp-close-btn';
           closeBtn.setAttribute('aria-label', 'Close Edit Popup');
           closeBtn.textContent = '✕';
           closeBtn.addEventListener('click', () => closeEditPopup());
-
           header.appendChild(titleWrap);
           header.appendChild(closeBtn);
           dialog.appendChild(header);
-
           const banner = doc.createElement('div');
           banner.className = 'agy-mcp-status-banner';
           dialog.appendChild(banner);
-
           const body = doc.createElement('div');
           body.className = 'agy-mcp-body';
           dialog.appendChild(body);
-
           backdrop.appendChild(dialog);
           doc.body.appendChild(backdrop);
         }
-
         renderPopupBanner();
         renderEditPopupBody();
       }
-
       function closeEditPopup() {
         const backdrop = doc.getElementById(EDIT_POPUP_ID);
         if (backdrop && backdrop.parentNode) {
           backdrop.parentNode.removeChild(backdrop);
         }
       }
-
       function isEditPopupOpen() {
         return Boolean(doc.getElementById(EDIT_POPUP_ID));
       }
-
-      // Render full Settings page content when user selects "MCP 서버" tab inside native Settings modal (.settings-modal-container)
       function renderSettingsPageContent(container) {
         if (!container) return;
         ensureModalStyles(doc);
@@ -4931,7 +4556,6 @@
         if (!useFrag) {
           while (container.firstChild) container.removeChild(container.firstChild);
         }
-
         const wrapper = doc.createElement('div');
         wrapper.className = 'p-6 flex flex-col gap-5 w-full max-w-2xl mx-auto';
         wrapper.style.padding = '24px';
@@ -4940,40 +4564,33 @@
         wrapper.style.gap = '18px';
         wrapper.style.maxWidth = '720px';
         wrapper.style.margin = '0 auto';
-
         const pageHdr = doc.createElement('div');
         pageHdr.style.display = 'flex';
         pageHdr.style.alignItems = 'flex-start';
         pageHdr.style.justifyContent = 'space-between';
         pageHdr.style.gap = '12px';
         pageHdr.style.flexWrap = 'wrap';
-
         const titleCol = doc.createElement('div');
         titleCol.style.display = 'flex';
         titleCol.style.flexDirection = 'column';
         titleCol.style.gap = '4px';
-
         const h2 = doc.createElement('h2');
         h2.style.fontSize = '20px';
         h2.style.fontWeight = '600';
         h2.style.margin = '0';
         h2.style.color = '#f8fafc';
         h2.textContent = 'MCP Servers';
-
         const sub = doc.createElement('div');
         sub.style.fontSize = '13px';
         sub.style.color = '#94a3b8';
         sub.textContent = 'Register, authenticate, and manage remote OAuth MCP portals and local (Stdio) custom MCP servers.';
-
         titleCol.appendChild(h2);
         titleCol.appendChild(sub);
         pageHdr.appendChild(titleCol);
-
         const hdrActions = doc.createElement('div');
         hdrActions.style.display = 'flex';
         hdrActions.style.gap = '8px';
         hdrActions.style.flexWrap = 'wrap';
-
         const addPopupBtn = doc.createElement('button');
         addPopupBtn.type = 'button';
         addPopupBtn.className = 'agy-mcp-btn primary';
@@ -4982,7 +4599,6 @@
         addPopupBtn.addEventListener('click', () => {
           openEditPopup('', { createNew: true });
         });
-
         const editPopupBtn = doc.createElement('button');
         editPopupBtn.type = 'button';
         editPopupBtn.className = 'agy-mcp-btn';
@@ -4991,7 +4607,6 @@
         editPopupBtn.addEventListener('click', () => {
           openEditPopup();
         });
-
         const rawModalBtn = doc.createElement('button');
         rawModalBtn.type = 'button';
         rawModalBtn.className = 'agy-mcp-btn';
@@ -4999,7 +4614,6 @@
         rawModalBtn.addEventListener('click', () => {
           openModal('raw');
         });
-
         const refreshBtn = doc.createElement('button');
         refreshBtn.type = 'button';
         refreshBtn.className = 'agy-mcp-btn';
@@ -5008,14 +4622,12 @@
           await bridge.refreshServers();
           await reloadData();
         });
-
         hdrActions.appendChild(addPopupBtn);
         hdrActions.appendChild(editPopupBtn);
         hdrActions.appendChild(rawModalBtn);
         hdrActions.appendChild(refreshBtn);
         pageHdr.appendChild(hdrActions);
         wrapper.appendChild(pageHdr);
-
         const statusBanner = doc.createElement('div');
         statusBanner.className = 'agy-mcp-status-banner';
         if (bannerState.type && bannerState.message) {
@@ -5023,10 +4635,8 @@
           statusBanner.textContent = bannerState.message;
         }
         wrapper.appendChild(statusBanner);
-
         renderSmartAutoAddBar(wrapper);
         renderServerCardsList(wrapper, setBanner);
-
         if (useFrag) {
           container.replaceChildren(wrapper);
         } else {
@@ -5036,12 +4646,10 @@
           container.scrollTop = prevScrollTop;
         }
       }
-
       async function openModal(initialTab = 'servers') {
         ensureModalStyles(doc);
         activeTab = initialTab;
         bannerState = { type: '', message: '' };
-
         let backdrop = doc.getElementById(MODAL_ID);
         if (!backdrop) {
           backdrop = doc.createElement('div');
@@ -5052,13 +4660,10 @@
           backdrop.addEventListener('click', (e) => {
             if (e.target === backdrop) closeModal();
           });
-
           const dialog = doc.createElement('div');
           dialog.className = 'agy-mcp-dialog';
           dialog.setAttribute('role', 'dialog');
           dialog.setAttribute('aria-label', 'Antigravity Custom MCP Server Manager');
-
-          // Header
           const header = doc.createElement('div');
           header.className = 'agy-mcp-header';
           const titleWrap = doc.createElement('div');
@@ -5071,19 +4676,15 @@
           badge.textContent = 'Native RPC Bridge';
           titleWrap.appendChild(title);
           titleWrap.appendChild(badge);
-
           const closeBtn = doc.createElement('button');
           closeBtn.type = 'button';
           closeBtn.className = 'agy-mcp-close-btn';
           closeBtn.setAttribute('aria-label', 'Close MCP Manager');
           closeBtn.textContent = '✕';
           closeBtn.addEventListener('click', () => closeModal());
-
           header.appendChild(titleWrap);
           header.appendChild(closeBtn);
           dialog.appendChild(header);
-
-          // Tabs
           const tabsBar = doc.createElement('div');
           tabsBar.className = 'agy-mcp-tabs';
           const tabDefs = [
@@ -5107,37 +4708,28 @@
             tabsBar.appendChild(tBtn);
           }
           dialog.appendChild(tabsBar);
-
-          // Banner
           const banner = doc.createElement('div');
           banner.className = 'agy-mcp-status-banner';
           dialog.appendChild(banner);
-
-          // Body
           const body = doc.createElement('div');
           body.className = 'agy-mcp-body';
           dialog.appendChild(body);
-
           backdrop.appendChild(dialog);
           doc.body.appendChild(backdrop);
         }
-
         renderModalContent();
         await reloadData();
         renderModalContent();
       }
-
       function closeModal() {
         const backdrop = doc.getElementById(MODAL_ID);
         if (backdrop && backdrop.parentNode) {
           backdrop.parentNode.removeChild(backdrop);
         }
       }
-
       function isOpen() {
         return Boolean(doc.getElementById(MODAL_ID));
       }
-
       return {
         openModal,
         closeModal,
@@ -5153,7 +4745,6 @@
         getCachedState: () => ({ config: cachedConfig.config, states: cachedStates }),
       };
     }
-
     module.exports = {
       MODAL_ID,
       EDIT_POPUP_ID,
@@ -5163,12 +4754,10 @@
       ensureModalStyles,
       createModalController,
     };
-
   },
   "./index": function(module, exports, __require) {
     const require = (spec) => __require(".", spec);
     'use strict';
-
     const schema = require('./mcp-config-schema');
     const { createHostMcpBridge } = require('./host-mcp-bridge');
     const {
@@ -5178,10 +4767,8 @@
       ensureModalStyles,
       createModalController,
     } = require('./modal-ui');
-
-    const MCP_MANAGER_VERSION = 'v1.4.9';
+    const MCP_MANAGER_VERSION = 'v1.4.10';
     const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
-
     function getOrCreateTrustedTypesPolicy(win) {
       if (!win) return null;
       if (win.__agyTrustedTypesPolicy) return win.__agyTrustedTypesPolicy;
@@ -5202,7 +4789,6 @@
       }
       return null;
     }
-
     function extractServerNameFromRow(row) {
       if (!row || typeof row.querySelector !== 'function') return '';
       const fixBtn = row.querySelector('[data-testid="mcp-server-fix-with-agent"]');
@@ -5230,7 +4816,6 @@
       }
       return '';
     }
-
     function cleanupLegacyStatusBarArtifacts(win, doc) {
       try {
         if (win && win.agyStatusBar && typeof win.agyStatusBar.unregisterAdapter === 'function') {
@@ -5252,15 +4837,12 @@
                   el.parentNode.removeChild(el);
                 }
               } catch (_e) {
-                // ignore
               }
             });
         }
       } catch (_err) {
-        // ignore
       }
     }
-
     function isOwnMcpNode(node) {
       let cur = node && node.nodeType !== 1 ? (node.parentElement || node.parentNode) : node;
       while (cur && cur.nodeType === 1) {
@@ -5287,23 +4869,55 @@
       }
       return false;
     }
-
+    function nodeTouchesMcpAnchors(node) {
+      if (!node || node.nodeType !== 1) return false;
+      const tag = String(node.tagName || '').toUpperCase();
+      if (tag === 'GA-REMOTE-CONTROL' || tag === 'IFRAME') return true;
+      const cls = typeof node.className === 'string' ? node.className : '';
+      if (cls.includes('settings-modal-container')) return true;
+      const tid = typeof node.getAttribute === 'function' ? node.getAttribute('data-testid') : '';
+      if (
+        tid === 'add-mcp-button' ||
+        tid === 'add-mcp-screen' ||
+        tid === 'mcp-server-row' ||
+        tid === 'mcp-server-fix-with-agent' ||
+        (tid && tid.startsWith('settings-nav-item-'))
+      ) {
+        return true;
+      }
+      if (typeof node.querySelector === 'function') {
+        try {
+          if (
+            node.querySelector(
+              '.settings-modal-container, [data-testid="add-mcp-button"], [data-testid="add-mcp-screen"], [data-testid="mcp-server-row"], [data-testid="mcp-server-fix-with-agent"], [data-testid^="settings-nav-item-"], ga-remote-control, iframe'
+            )
+          ) {
+            return true;
+          }
+        } catch {}
+      }
+      return false;
+    }
     function isRelevantMutationList(mutations) {
       if (!Array.isArray(mutations) || mutations.length === 0) return true;
       for (let i = 0; i < mutations.length; i++) {
         const m = mutations[i];
         if (!m) continue;
-        if (!isOwnMcpNode(m.target)) {
-          const added = m.addedNodes;
-          if (!added || added.length === 0) return true;
-          for (let j = 0; j < added.length; j++) {
-            if (!isOwnMcpNode(added[j])) return true;
-          }
+        if (isOwnMcpNode(m.target)) continue;
+        const added = m.addedNodes;
+        if (!added || added.length === 0) {
+          if (!m.removedNodes) return true;
+          if (nodeTouchesMcpAnchors(m.target)) return true;
+          continue;
+        }
+        for (let j = 0; j < added.length; j++) {
+          const n = added[j];
+          if (!n || isOwnMcpNode(n)) continue;
+          if (!n.nodeType || nodeTouchesMcpAnchors(n) || nodeTouchesMcpAnchors(m.target)) return true;
         }
       }
       return false;
     }
-
     function ensureRemoteCompanionScripts(win, doc, bridge) {
       try {
         let isChildFrame = false;
@@ -5311,12 +4925,10 @@
           isChildFrame = Boolean(win && win.parent && win.parent !== win);
         } catch (_e) {}
         if (isChildFrame) return Promise.resolve({ loaded: [] });
-
         const isRemoteWeb =
           Boolean(win?.location?.hostname && String(win.location.hostname).includes('antigravity.google.com')) ||
           Boolean(doc?.querySelector?.('ga-remote-control'));
         if (!isRemoteWeb || !doc?.head) return Promise.resolve({ loaded: [] });
-
         const execScriptText = (code) => {
           if (!code || !doc.head) return false;
           const s = doc.createElement('script');
@@ -5356,7 +4968,6 @@
             return false;
           }
         };
-
         const injectRemoteOrHostFallback = async (flagKey, url, hostCodeFallback) => {
           if (win[flagKey]) return false;
           win[flagKey] = true;
@@ -5373,7 +4984,6 @@
           win[flagKey] = false;
           return false;
         };
-
         let attempts = 0;
         const tryLoadCompanions = async () => {
           attempts += 1;
@@ -5393,7 +5003,6 @@
             }
             if (!info) return { loaded };
           }
-
           if (info.hasStatusbar && !win.agyStatusBar) {
             const ok = await injectRemoteOrHostFallback(
               '__agyLoadingStatusBarCompanion',
@@ -5412,17 +5021,14 @@
           }
           return { loaded, hostInfo: info };
         };
-
         return tryLoadCompanions().catch(() => ({ loaded: [] }));
       } catch (_e) {
         return Promise.resolve({ loaded: [] });
       }
     }
-
     function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady) {
       if (!win || !doc || !iframe) return false;
       if (iframe.__agyMcpPromoted === MCP_MANAGER_VERSION || iframe.__agyKoPromoted) return false;
-
       const rcInst =
         (bridge && typeof bridge.resolveRemoteControlInstance === 'function'
           ? bridge.resolveRemoteControlInstance(win)
@@ -5430,7 +5036,6 @@
         win.__agyRemoteControlInstance ||
         null;
       if (!rcInst) return false;
-
       const rawCandidate =
         iframe.getAttribute?.('src') ||
         iframe.src ||
@@ -5438,14 +5043,12 @@
         '';
       const rawSrc = String(rawCandidate).match(/https?:\/\/[^\s"'<>)+]+/)?.[0] || String(rawCandidate);
       if (!rawSrc || !rawSrc.includes('?iframe=true')) return false;
-
       let parsedUrl;
       try {
         parsedUrl = new URL(rawSrc, win.location?.href || 'https://antigravity.google.com');
       } catch (_e) {
         return false;
       }
-
       const basePath = parsedUrl.pathname.replace(/^\/antigravity/, '').replace(/\/+$/, '');
       const verMatch = basePath.match(/\/web\/([^/]+)/);
       const appVersion = verMatch ? verMatch[1] : '2.29.0';
@@ -5454,7 +5057,6 @@
           ? 'https://www.gstatic.com/antigravity'
           : parsedUrl.origin;
       const cdnBaseUrl = `${cdnOrigin}${basePath}`;
-
       iframe.__agyMcpPromoted = MCP_MANAGER_VERSION;
       const savedChildPath = String(
         new URLSearchParams(win.location?.search || '').get('p') ||
@@ -5465,7 +5067,6 @@
       if (savedChildPath) {
         rcInst.initialChildPath = savedChildPath;
       }
-
       const buildInitialIframeHistoryUrl = () => {
         if (!savedChildPath) return `${basePath}/?iframe=true`;
         const qIdx = savedChildPath.indexOf('?');
@@ -5475,13 +5076,11 @@
         const fullPath = cleanSubPath ? `${basePath}/${cleanSubPath}` : `${basePath}/`;
         return subQuery ? `${fullPath}?${subQuery}&iframe=true` : `${fullPath}?iframe=true`;
       };
-
       const origSrcDesc =
         typeof HTMLIFrameElement !== 'undefined'
           ? Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src')
           : null;
       const spoofedSrc = `${win.location?.origin || 'https://antigravity.google.com'}${basePath}/?iframe=true`;
-
       const rcProto = Object.getPrototypeOf(rcInst);
       if (rcProto && typeof rcProto.onIframeLoad === 'function' && !rcProto.__agyOrigOnIframeLoad) {
         rcProto.__agyOrigOnIframeLoad = rcProto.onIframeLoad;
@@ -5498,13 +5097,11 @@
         };
       }
       rcInst.__agySuppressAutoIframeLoad = true;
-
       const onBlankLoad = () => {
         try {
           const cw = iframe.contentWindow;
           const cd = iframe.contentDocument || cw?.document;
           if (!cw || !cd) return;
-
           const nonce = doc.querySelector?.('script[nonce]')?.nonce || '';
           const nonceAttr = nonce ? ` nonce="${nonce}"` : '';
           const ttPolicy = getOrCreateTrustedTypesPolicy(win);
@@ -5514,11 +5111,9 @@
             `<link rel="stylesheet" href="${cdnBaseUrl}/compiled_tailwind.css"${nonceAttr}>` +
             `<style>html,body,#root{height:100%;height:100dvh;max-height:100dvh;margin:0;overflow:hidden;background-color:transparent;overscroll-behavior:none;-webkit-text-size-adjust:100%;}</style>` +
             `</head><body><div id="root"></div></body></html>`;
-
           cd.open();
           cd.write(ttPolicy && typeof ttPolicy.createHTML === 'function' ? ttPolicy.createHTML(shellHtml) : shellHtml);
           cd.close();
-
           try {
             const prevDec = cw.__JETSKI_LS_CLIENT_DECORATOR__;
             cw.__JETSKI_LS_CLIENT_DECORATOR__ = function (client) {
@@ -5530,7 +5125,6 @@
               return decorated;
             };
           } catch (_e) {}
-
           try {
             cw.history?.replaceState?.(null, '', buildInitialIframeHistoryUrl());
           } catch (_e) {}
@@ -5540,7 +5134,6 @@
               get: () => win.location?.href || '',
             });
           } catch (_e) {}
-
           cw.__APP_CONFIG__ = {
             productName: 'antigravity',
             csrfToken: 'csrf_token',
@@ -5569,7 +5162,6 @@
             };
             cw.customElements.__agyGuarded = true;
           }
-
           const msgListeners = new Set();
           try {
             if (typeof cw.addEventListener === 'function' && !cw.__agyMsgBufferInstalled) {
@@ -5611,21 +5203,18 @@
               }
             }
           } catch (_e) {}
-
           const prismScript = cd.createElement('script');
           if (nonce) prismScript.nonce = nonce;
           prismScript.async = false;
           const prismUrl = `${cdnBaseUrl}/prism_bundle.js`;
           prismScript.src =
             ttPolicy && typeof ttPolicy.createScriptURL === 'function' ? ttPolicy.createScriptURL(prismUrl) : prismUrl;
-
           const mainScript = cd.createElement('script');
           if (nonce) mainScript.nonce = nonce;
           mainScript.async = false;
           const mainUrl = `${cdnBaseUrl}/main.js`;
           mainScript.src =
             ttPolicy && typeof ttPolicy.createScriptURL === 'function' ? ttPolicy.createScriptURL(mainUrl) : mainUrl;
-
           mainScript.onload = () => {
             rcInst.__agySuppressAutoIframeLoad = false;
             cw.__agyMainBooted = true;
@@ -5654,7 +5243,6 @@
             rcInst.__agySuppressAutoIframeLoad = false;
             delete iframe.__agyMcpPromoted;
           };
-
           if (cd.head) {
             cd.head.appendChild(prismScript);
             cd.head.appendChild(mainScript);
@@ -5666,7 +5254,6 @@
           delete iframe.__agyMcpPromoted;
         }
       };
-
       try {
         delete iframe.src;
       } catch (_e) {}
@@ -5716,15 +5303,11 @@
       }
       return true;
     }
-
     function mountMcpManager(env = {}) {
       const win = env.window || (typeof window !== 'undefined' ? window : null);
       const doc = env.document || (win && win.document ? win.document : null);
       if (!win || !doc || !doc.body) return null;
-
-      // Ensure no statusbar buttons/adapters remain from any prior version
       cleanupLegacyStatusBarArtifacts(win, doc);
-
       if (win.agyMcpManager && win.agyMcpManager.version === MCP_MANAGER_VERSION) {
         if (typeof win.agyMcpManager.__rebindIfBodyReplaced === 'function') {
           win.agyMcpManager.__rebindIfBodyReplaced();
@@ -5735,18 +5318,14 @@
         try {
           win.agyMcpManager.destroy();
         } catch (_e) {
-          // ignore cleanup error
         }
       }
-
       ensureModalStyles(doc);
-
       const bridge = env.bridge || createHostMcpBridge({ window: win, document: doc });
       const modal = createModalController({
         doc,
         bridge,
       });
-
       async function handleServerAuthenticateAction(serverName) {
         if (!serverName) {
           modal.openEditPopup('', { focusAuth: true });
@@ -5765,27 +5344,20 @@
             return;
           }
         } catch (_e) {
-          // fallback to edit popup
         }
         modal.openEditPopup(serverName, { focusAuth: true });
       }
-
-      // Inject "MCP Servers" sidebar tab inside Antigravity's Settings modal (.settings-modal-container),
-      // matching the exact DOM wrapper structure of native nav items & KoTranslator without ever re-appending.
       function ensureNativeSettingsModalIntegration() {
         if (!doc.body) return;
         const settingsModal = doc.querySelector('.settings-modal-container');
         if (!settingsModal) return;
-
         const modelsNavBtn = settingsModal.querySelector('button[data-testid="settings-nav-item-Models"]');
         if (!modelsNavBtn) return;
-
         const navGroup =
           modelsNavBtn.closest('.flex.flex-col.gap-0\\.5') ||
           modelsNavBtn.parentElement?.parentElement ||
           modelsNavBtn.parentElement;
         if (!navGroup) return;
-
         const setNavBtnActiveVisual = (btnEl, isActive) => {
           if (!btnEl) return;
           const sp = btnEl.querySelector?.('span');
@@ -5803,7 +5375,6 @@
             }
           }
         };
-
         const syncExclusiveNavHighlight = (activeTestId) => {
           const allNavBtns = settingsModal.querySelectorAll('button[data-testid^="settings-nav-item-"]');
           allNavBtns.forEach((b) => {
@@ -5811,29 +5382,23 @@
             setNavBtnActiveVisual(b, tid === activeTestId);
           });
         };
-
-        // IMPORTANT: If button already exists in settingsModal, DO NOT move or re-append it!
-        // Re-appending inside MutationObserver causes an infinite microtask loop that freezes the app.
         let mcpNavBtn = settingsModal.querySelector('button[data-testid="settings-nav-item-McpManager"]');
         if (!mcpNavBtn) {
           const navWrap = doc.createElement('div');
           navWrap.className = 'relative group/nav-item mx-2 agy-mcp-settings-root';
           navWrap.setAttribute(NATIVE_BTN_ATTR, 'settings-nav-wrap');
-
           mcpNavBtn = doc.createElement('button');
           mcpNavBtn.type = 'button';
           mcpNavBtn.setAttribute('data-testid', 'settings-nav-item-McpManager');
           mcpNavBtn.setAttribute(NATIVE_BTN_ATTR, 'settings-nav-item');
           mcpNavBtn.className =
             'flex items-center gap-1.5 w-full px-2 py-1 rounded-lg cursor-pointer border-none text-left transition-all outline-none hover:bg-sidebar-muted';
-
           const labelSpan = doc.createElement('span');
           labelSpan.className =
             'text-sm transition-colors select-none truncate flex-1 text-secondary-foreground group-hover/nav-item:text-foreground';
           labelSpan.textContent = 'MCP Servers';
           mcpNavBtn.appendChild(labelSpan);
           navWrap.appendChild(mcpNavBtn);
-
           const koNavBtn = settingsModal.querySelector('button[data-testid="settings-nav-item-KoTranslator"]');
           const koWrap = koNavBtn ? (koNavBtn.parentElement !== navGroup ? koNavBtn.parentElement : koNavBtn) : null;
           if (koWrap && koWrap.parentElement === navGroup && koWrap.nextSibling) {
@@ -5841,12 +5406,9 @@
           } else {
             navGroup.appendChild(navWrap);
           }
-
           const activateMcpPane = () => {
             const contentContainer = settingsModal.querySelector('.grow.w-full');
             if (!contentContainer) return;
-
-            // Hide other panes (preserving native display in `data-agy-prev-display` compatible with KoTranslator)
             Array.from(contentContainer.children).forEach((child) => {
               if (child.id === 'agy-mcp-settings-pane') return;
               if (child.id === 'agy-ko-settings-pane') {
@@ -5858,7 +5420,6 @@
               }
               child.style.display = 'none';
             });
-
             let pane = contentContainer.querySelector('#agy-mcp-settings-pane');
             if (!pane) {
               pane = doc.createElement('div');
@@ -5871,18 +5432,14 @@
             }
             pane.style.display = 'block';
             modal.renderSettingsPageContent(pane);
-
-            // Exclusively highlight "MCP Servers" and clear highlight on all other nav tabs (e.g., "Models", "KoTranslator")
             syncExclusiveNavHighlight('settings-nav-item-McpManager');
           };
-
           mcpNavBtn.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
             activateMcpPane();
           });
         }
-
         if (!settingsModal.hasAttribute('data-agy-mcp-nav-bound')) {
           settingsModal.setAttribute('data-agy-mcp-nav-bound', 'true');
           settingsModal.addEventListener(
@@ -5894,22 +5451,15 @@
               if (!btn) return;
               const testId = btn.getAttribute('data-testid') || '';
               if (testId === 'settings-nav-item-McpManager') return;
-
               const contentContainer = settingsModal.querySelector('.grow.w-full');
               if (!contentContainer) return;
-
               const pane = contentContainer.querySelector('#agy-mcp-settings-pane');
               const wasMcpPaneVisible = Boolean(pane && pane.style.display !== 'none');
               if (pane) {
                 pane.style.display = 'none';
                 pane.removeAttribute('data-agy-prev-display');
               }
-
-              // Exclusively highlight the clicked tab (whether native like "Models" or "KoTranslator")
-              // and clear highlight on all other tabs so two tabs never look pressed simultaneously
               syncExclusiveNavHighlight(testId);
-
-              // Restore native children if switching from MCP pane to a native tab (not KoTranslator)
               if (wasMcpPaneVisible && testId !== 'settings-nav-item-KoTranslator') {
                 Array.from(contentContainer.children).forEach((child) => {
                   if (child.id !== 'agy-mcp-settings-pane' && child.id !== 'agy-ko-settings-pane') {
@@ -5928,8 +5478,6 @@
           );
         }
       }
-
-      // Inject "+ Add Custom MCP Server", "⚙️ Edit Custom MCP Settings", and "🔗 OAuth / Auth Settings" controls into Customizations / MCP views
       function buildQuickActionToolbar() {
         const wrap = doc.createElement('div');
         wrap.setAttribute(NATIVE_BTN_ATTR, 'empty-mcp-note');
@@ -5940,7 +5488,6 @@
         wrap.style.paddingLeft = '12px';
         wrap.style.marginTop = '6px';
         wrap.style.marginBottom = '6px';
-
         const addCustomBtn = doc.createElement('button');
         addCustomBtn.type = 'button';
         addCustomBtn.className = 'agy-mcp-injected-native-btn';
@@ -5951,7 +5498,6 @@
           e.stopPropagation();
           modal.openEditPopup('', { createNew: true });
         });
-
         const editCustomBtn = doc.createElement('button');
         editCustomBtn.type = 'button';
         editCustomBtn.className = 'agy-mcp-btn';
@@ -5962,7 +5508,6 @@
           e.stopPropagation();
           modal.openEditPopup();
         });
-
         const authCustomBtn = doc.createElement('button');
         authCustomBtn.type = 'button';
         authCustomBtn.className = 'agy-mcp-btn auth';
@@ -5973,7 +5518,6 @@
           e.stopPropagation();
           modal.openEditPopup('', { focusAuth: true });
         });
-
         const rawBtn = doc.createElement('button');
         rawBtn.type = 'button';
         rawBtn.className = 'agy-mcp-btn';
@@ -5983,19 +5527,16 @@
           e.stopPropagation();
           modal.openModal('raw');
         });
-
         wrap.appendChild(addCustomBtn);
         wrap.appendChild(editCustomBtn);
         wrap.appendChild(authCustomBtn);
         wrap.appendChild(rawBtn);
         return wrap;
       }
-
       let isChildFrame = false;
       try {
         isChildFrame = Boolean(win && win.parent && win.parent !== win);
       } catch (_e) {}
-
       const isRemoteHostPage =
         !isChildFrame &&
         (Boolean(win?.location?.hostname && String(win.location.hostname).includes('antigravity.google.com')) ||
@@ -6003,7 +5544,6 @@
         Boolean(doc?.head);
       let companionCheckDone = !(isRemoteHostPage && bridge && typeof bridge.fetchHostInstalledPluginInfo === 'function');
       let hostHasKoTranslator = false;
-
       function ensureRemoteIframeMounted() {
         const iframe = doc.querySelector?.('ga-remote-control iframe');
         if (!iframe) return false;
@@ -6029,7 +5569,6 @@
             return true;
           }
         } catch (_e) {
-          // Cross-origin iframe: wait until companion check finishes so we never race with ko-thought-translator
           if (
             companionCheckDone &&
             !hostHasKoTranslator &&
@@ -6044,7 +5583,6 @@
         }
         return false;
       }
-
       if (!isChildFrame) {
         ensureRemoteCompanionScripts(win, doc, bridge)
           .then((res) => {
@@ -6062,7 +5600,6 @@
             ensureRemoteIframeMounted();
           });
       }
-
       let remoteIframePollTimer = null;
       if (doc.querySelector?.('ga-remote-control') && !ensureRemoteIframeMounted()) {
         let pollCount = 0;
@@ -6084,17 +5621,10 @@
           }
         }
       }
-
       function injectIntoNativeMcpScreens() {
         if (!doc.body) return;
-
-        // Support Remote Control web (`https://antigravity.google.com/r/...`) inner workbench iframe
         ensureRemoteIframeMounted();
-
-        // 0) Settings Modal ("MCP Servers" tab right below "Models" / "KoTranslator")
         ensureNativeSettingsModalIntegration();
-
-        // A) Next to native [data-testid="add-mcp-button"] in Customizations -> MCP Servers header
         const addMcpBtns = doc.querySelectorAll('[data-testid="add-mcp-button"]');
         addMcpBtns.forEach((nativeBtn) => {
           const parent = nativeBtn.parentElement;
@@ -6122,14 +5652,11 @@
             parent.insertBefore(customBtn, nativeBtn);
           }
         });
-
-        // B) Inside native [data-testid="add-mcp-screen"] ("Add MCP Server" modal / screen)
         const addMcpScreens = doc.querySelectorAll('[data-testid="add-mcp-screen"]');
         addMcpScreens.forEach((screen) => {
           if (screen.querySelector(`[${NATIVE_BTN_ATTR}="inside-add-screen"]`)) return;
           const headerRow = screen.firstElementChild;
           if (!headerRow) return;
-
           const banner = doc.createElement('div');
           banner.setAttribute(NATIVE_BTN_ATTR, 'inside-add-screen');
           banner.style.display = 'flex';
@@ -6143,15 +5670,12 @@
           banner.style.background = 'rgba(79, 70, 229, 0.12)';
           banner.style.border = '1px solid rgba(99, 102, 241, 0.32)';
           banner.style.fontSize = '12px';
-
           const desc = doc.createElement('span');
           desc.textContent = 'Custom MCP Servers (OAuth Server URL or Local/Tunnel Stdio):';
-
           const btnGroup = doc.createElement('div');
           btnGroup.style.display = 'flex';
           btnGroup.style.gap = '6px';
           btnGroup.style.flexWrap = 'wrap';
-
           const openEditorBtn = doc.createElement('button');
           openEditorBtn.type = 'button';
           openEditorBtn.className = 'agy-mcp-injected-native-btn';
@@ -6162,7 +5686,6 @@
             e.stopPropagation();
             modal.openEditPopup('', { createNew: true });
           });
-
           const editAuthBtn = doc.createElement('button');
           editAuthBtn.type = 'button';
           editAuthBtn.className = 'agy-mcp-btn';
@@ -6172,7 +5695,6 @@
             e.stopPropagation();
             modal.openEditPopup();
           });
-
           const manageBtn = doc.createElement('button');
           manageBtn.type = 'button';
           manageBtn.className = 'agy-mcp-btn';
@@ -6182,21 +5704,17 @@
             e.stopPropagation();
             modal.openModal('servers');
           });
-
           btnGroup.appendChild(openEditorBtn);
           btnGroup.appendChild(editAuthBtn);
           btnGroup.appendChild(manageBtn);
           banner.appendChild(desc);
           banner.appendChild(btnGroup);
-
           if (headerRow.nextSibling) {
             screen.insertBefore(banner, headerRow.nextSibling);
           } else {
             screen.appendChild(banner);
           }
         });
-
-        // C) Next to the "No MCP servers yet." empty note OR above the [data-testid="mcp-server-row"] list
         const firstServerRow = doc.querySelector('[data-testid="mcp-server-row"]');
         if (firstServerRow && firstServerRow.parentElement && firstServerRow.parentElement.parentElement) {
           const listContainer = firstServerRow.parentElement;
@@ -6228,14 +5746,10 @@
             }
           });
         }
-
-        // D) Inside each native [data-testid="mcp-server-row"] item: inject "⚙️ Edit Settings" and "🔗 Connect OAuth / Auth" buttons
         const rows = doc.querySelectorAll('[data-testid="mcp-server-row"]');
         rows.forEach((row) => {
           const serverName = extractServerNameFromRow(row);
           if (!serverName) return;
-
-          // D1) Top title/badge line of the row
           const topLine = row.firstElementChild;
           const leftGroup = topLine && topLine.firstElementChild ? topLine.firstElementChild : null;
           if (leftGroup && !leftGroup.querySelector(`[${NATIVE_BTN_ATTR}="row-edit-btn"]`)) {
@@ -6251,7 +5765,6 @@
               e.stopPropagation();
               modal.openEditPopup(serverName);
             });
-
             const authRowBtn = doc.createElement('button');
             authRowBtn.type = 'button';
             authRowBtn.className = 'agy-mcp-inline-row-btn auth';
@@ -6264,12 +5777,9 @@
               e.stopPropagation();
               handleServerAuthenticateAction(serverName);
             });
-
             leftGroup.appendChild(editRowBtn);
             leftGroup.appendChild(authRowBtn);
           }
-
-          // D2) Next to [data-testid="mcp-server-fix-with-agent"] inside error boxes (e.g. "Unauthorized")
           const fixBtn = row.querySelector('[data-testid="mcp-server-fix-with-agent"]');
           if (fixBtn && fixBtn.parentElement && !fixBtn.parentElement.querySelector(`[${NATIVE_BTN_ATTR}="fix-auth-btn"]`)) {
             const btnWrap = doc.createElement('div');
@@ -6277,7 +5787,6 @@
             btnWrap.style.alignItems = 'center';
             btnWrap.style.gap = '6px';
             btnWrap.setAttribute(NATIVE_BTN_ATTR, 'fix-actions-wrap');
-
             const fixAuthBtn = doc.createElement('button');
             fixAuthBtn.type = 'button';
             fixAuthBtn.className = 'agy-mcp-inline-row-btn auth';
@@ -6290,7 +5799,6 @@
               e.stopPropagation();
               handleServerAuthenticateAction(serverName);
             });
-
             const fixEditBtn = doc.createElement('button');
             fixEditBtn.type = 'button';
             fixEditBtn.className = 'agy-mcp-inline-row-btn';
@@ -6303,16 +5811,13 @@
               e.stopPropagation();
               modal.openEditPopup(serverName);
             });
-
             btnWrap.appendChild(fixAuthBtn);
             btnWrap.appendChild(fixEditBtn);
             fixBtn.parentElement.insertBefore(btnWrap, fixBtn);
           }
         });
       }
-
       injectIntoNativeMcpScreens();
-
       let observer = null;
       let observedBody = null;
       let injectTimer = null;
@@ -6337,7 +5842,6 @@
         observer.observe(doc.body, { childList: true, subtree: true });
       }
       attachBodyObserver();
-
       function rebindIfBodyReplaced() {
         const bodyReplaced = Boolean(doc.body && observedBody !== doc.body);
         const styleMissing = Boolean(
@@ -6349,8 +5853,6 @@
         injectIntoNativeMcpScreens();
         return true;
       }
-
-      // Keyboard shortcut: Ctrl+Shift+M to open/toggle modal, Escape to close
       function onKeyDown(e) {
         if (!e) return;
         if (e.key === 'Escape') {
@@ -6377,7 +5879,6 @@
         }
       }
       win.addEventListener('keydown', onKeyDown);
-
       const controller = {
         version: MCP_MANAGER_VERSION,
         openModal: (tab) => modal.openModal(tab),
@@ -6423,11 +5924,9 @@
           }
         },
       };
-
       win.agyMcpManager = controller;
       return controller;
     }
-
     if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', () => mountMcpManager());
@@ -6435,7 +5934,6 @@
         mountMcpManager();
       }
     }
-
     module.exports = {
       MCP_MANAGER_VERSION,
       mountMcpManager,
@@ -6447,7 +5945,6 @@
       createHostMcpBridge,
       createModalController,
     };
-
   }
   };
   const __cache = {};

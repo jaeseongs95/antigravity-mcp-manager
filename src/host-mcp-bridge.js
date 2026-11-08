@@ -109,6 +109,24 @@ function createHostMcpBridge(opts = {}) {
   let cachedElectronNative = null;
   let resolvedConfigUri = null;
   let lastKnownStates = [];
+  let sharedTextEncoder = null;
+  let sharedTextDecoder = null;
+
+  function encodeUtf8(str) {
+    if (!sharedTextEncoder && typeof TextEncoder === 'function') {
+      sharedTextEncoder = new TextEncoder();
+    }
+    if (sharedTextEncoder) return sharedTextEncoder.encode(str);
+    return Uint8Array.from(String(str).split('').map((c) => c.charCodeAt(0) & 0xff));
+  }
+
+  function decodeUtf8(bytes) {
+    if (!sharedTextDecoder && typeof TextDecoder === 'function') {
+      sharedTextDecoder = new TextDecoder('utf-8');
+    }
+    if (sharedTextDecoder) return sharedTextDecoder.decode(bytes);
+    return '';
+  }
 
   function getAccessibleRemoteIframeDoc() {
     try {
@@ -416,13 +434,13 @@ function createHostMcpBridge(opts = {}) {
         const rcInst = resolveRemoteControlInstance(w);
         if (rcInst && typeof rcInst.proxyCommand === 'function') {
           const callRpc = async (rpcPath, reqObj) => {
-            const bytes = new TextEncoder().encode(JSON.stringify(reqObj || {}));
+            const bytes = encodeUtf8(JSON.stringify(reqObj || {}));
             const res = await rcInst.proxyCommand(rpcPath, bytes, {
               'content-type': 'application/json',
               'x-is-streaming': 'false',
             });
             if (!res || !res.payload) return {};
-            const text = new TextDecoder().decode(res.payload);
+            const text = decodeUtf8(res.payload);
             return text ? JSON.parse(text) : {};
           };
           return {
@@ -522,7 +540,12 @@ function createHostMcpBridge(opts = {}) {
         }
         if (cachedService && !cachedService.__isRcProxyAdapter) return cachedService;
 
-        // 2. Bounded DFS down `.child` / `.sibling` when starting from root container
+        // 2. Bounded DFS down `.child` / `.sibling` when starting from root container (throttled to 10s per doc)
+        const now = Date.now();
+        if (d.__agyMcpLastDfsTs && now - d.__agyMcpLastDfsTs < 10000) {
+          continue;
+        }
+        d.__agyMcpLastDfsTs = now;
         const stack = [startFiber];
         const visited = new Set();
         while (stack.length > 0 && visited.size < 3500) {
@@ -684,7 +707,7 @@ function createHostMcpBridge(opts = {}) {
       try {
         const res = await svc.readFile({ uri });
         if (res?.content && res.content.length > 0) {
-          const text = new TextDecoder().decode(res.content);
+          const text = decodeUtf8(res.content);
           if (text.trim()) {
             const norm = normalizeMcpConfigObject(text);
             if (norm.ok) {
@@ -763,7 +786,7 @@ function createHostMcpBridge(opts = {}) {
     const uri = await resolveMcpConfigUri();
     let persisted = false;
     if (svc && typeof svc.writeFile === 'function' && uri) {
-      const bytes = new TextEncoder().encode(serialized);
+      const bytes = encodeUtf8(serialized);
       const writeRes = await writeFileToHost(svc, uri, bytes);
       if (!writeRes.ok) {
         return { ok: false, persisted: false, error: writeRes.error };
@@ -1199,7 +1222,7 @@ function createHostMcpBridge(opts = {}) {
         const rawBytes = res instanceof Uint8Array || ArrayBuffer.isView(res) ? res : res?.content;
         text = typeof res === 'string'
           ? res
-          : (rawBytes && rawBytes.length > 0 ? new TextDecoder().decode(rawBytes) : '');
+          : (rawBytes && rawBytes.length > 0 ? decodeUtf8(rawBytes) : '');
       } catch {}
     }
 

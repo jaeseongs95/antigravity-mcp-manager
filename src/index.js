@@ -10,7 +10,7 @@ const {
   createModalController,
 } = require('./modal-ui');
 
-const MCP_MANAGER_VERSION = 'v1.4.9';
+const MCP_MANAGER_VERSION = 'v1.4.10';
 const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
 function getOrCreateTrustedTypesPolicy(win) {
@@ -119,17 +119,52 @@ function isOwnMcpNode(node) {
   return false;
 }
 
+function nodeTouchesMcpAnchors(node) {
+  if (!node || node.nodeType !== 1) return false;
+  const tag = String(node.tagName || '').toUpperCase();
+  if (tag === 'GA-REMOTE-CONTROL' || tag === 'IFRAME') return true;
+  const cls = typeof node.className === 'string' ? node.className : '';
+  if (cls.includes('settings-modal-container')) return true;
+  const tid = typeof node.getAttribute === 'function' ? node.getAttribute('data-testid') : '';
+  if (
+    tid === 'add-mcp-button' ||
+    tid === 'add-mcp-screen' ||
+    tid === 'mcp-server-row' ||
+    tid === 'mcp-server-fix-with-agent' ||
+    (tid && tid.startsWith('settings-nav-item-'))
+  ) {
+    return true;
+  }
+  if (typeof node.querySelector === 'function') {
+    try {
+      if (
+        node.querySelector(
+          '.settings-modal-container, [data-testid="add-mcp-button"], [data-testid="add-mcp-screen"], [data-testid="mcp-server-row"], [data-testid="mcp-server-fix-with-agent"], [data-testid^="settings-nav-item-"], ga-remote-control, iframe'
+        )
+      ) {
+        return true;
+      }
+    } catch {}
+  }
+  return false;
+}
+
 function isRelevantMutationList(mutations) {
   if (!Array.isArray(mutations) || mutations.length === 0) return true;
   for (let i = 0; i < mutations.length; i++) {
     const m = mutations[i];
     if (!m) continue;
-    if (!isOwnMcpNode(m.target)) {
-      const added = m.addedNodes;
-      if (!added || added.length === 0) return true;
-      for (let j = 0; j < added.length; j++) {
-        if (!isOwnMcpNode(added[j])) return true;
-      }
+    if (isOwnMcpNode(m.target)) continue;
+    const added = m.addedNodes;
+    if (!added || added.length === 0) {
+      if (!m.removedNodes) return true;
+      if (nodeTouchesMcpAnchors(m.target)) return true;
+      continue;
+    }
+    for (let j = 0; j < added.length; j++) {
+      const n = added[j];
+      if (!n || isOwnMcpNode(n)) continue;
+      if (!n.nodeType || nodeTouchesMcpAnchors(n) || nodeTouchesMcpAnchors(m.target)) return true;
     }
   }
   return false;

@@ -564,7 +564,7 @@ const MODAL_STYLE_CSS = `
       flex-direction: column;
       gap: 10px;
     }
-  `;
+  `.replace(/\s+/g, ' ').trim();
 
 function ensureModalStyles(doc) {
   if (!doc || !doc.head) return;
