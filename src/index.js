@@ -10,7 +10,7 @@ const {
   createModalController,
 } = require('./modal-ui');
 
-const MCP_MANAGER_VERSION = 'v1.4.13';
+const MCP_MANAGER_VERSION = 'v1.4.14';
 const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
 function getOrCreateTrustedTypesPolicy(win) {
@@ -1287,11 +1287,13 @@ function mountMcpManager(env = {}) {
       });
       if (win.agyMcpManager === controller) {
         delete win.agyMcpManager;
+        delete win.__agyMcpManagerActive;
       }
     },
   };
 
   win.agyMcpManager = controller;
+  win.__agyMcpManagerActive = MCP_MANAGER_VERSION;
   return controller;
 }
 

@@ -875,6 +875,7 @@ test('createModalController and mountMcpManager render English UI, prevent Mutat
 
   const mgr = mountMcpManager({ window: mockWin, document: doc, bridge: mockBridge });
   assert.equal(mgr.version, MCP_MANAGER_VERSION);
+  assert.equal(mockWin.__agyMcpManagerActive, MCP_MANAGER_VERSION, 'MCP-D0016-ACTIVE-GLOBAL: mountMcpManager must set window.__agyMcpManagerActive to MCP_MANAGER_VERSION');
 
   const mcpNavBtn = navGroup.querySelector('[data-testid="settings-nav-item-McpManager"]');
   assert.ok(mcpNavBtn);
