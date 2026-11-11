@@ -30,24 +30,59 @@ const MCP_BEGIN = '// === BEGIN_AGY_MCP_MANAGER_V1 ===';
 const MCP_END = '// === END_AGY_MCP_MANAGER_V1 ===';
 const KO_BEGIN = '// === BEGIN_AGY_KO_THOUGHT_LOCALIZER_V2 ===';
 
+const MCP_BEGIN_RE = /^(?:\/\/ === BEGIN_AGY_MCP_MANAGER(?:_V1)? ===|\/\* === BEGIN_AGY_MCP_MANAGER(?:_V1)? === \*\/)[ \t]*$/gm;
+const MCP_END_RE = /^(?:\/\/ === END_AGY_MCP_MANAGER(?:_V1)? ===|\/\* === END_AGY_MCP_MANAGER(?:_V1)? === \*\/)[ \t]*$/gm;
+const KO_BEGIN_RE = /^(?:\/\/ === BEGIN_AGY_KO_THOUGHT_LOCALIZER_V2 ===|\/\* === BEGIN_AGY_KO_THOUGHT_LOCALIZER_V2 === \*\/)[ \t]*$/gm;
+
+function findAnchoredSpan(text, beginRe, endRe) {
+  beginRe.lastIndex = 0;
+  const bMatch = beginRe.exec(text);
+  if (!bMatch) return null;
+  const start = bMatch.index;
+  endRe.lastIndex = bMatch.index + bMatch[0].length;
+  const eMatch = endRe.exec(text);
+  if (!eMatch) return null;
+  let end = eMatch.index + eMatch[0].length;
+  while (true) {
+    const after = text.slice(end);
+    const nl = /^\n+/.exec(after);
+    if (!nl) break;
+    const nextIdx = end + nl[0].length;
+    endRe.lastIndex = nextIdx;
+    const nextEnd = endRe.exec(text);
+    if (nextEnd && nextEnd.index === nextIdx) {
+      end = nextEnd.index + nextEnd[0].length;
+    } else {
+      break;
+    }
+  }
+  return { start, end };
+}
+
 function mergeMcpManagerBlock(existingContent, mcpBundleText) {
   const cleanMcp = mcpBundleText.replace(/\r\n/g, '\n').trim();
   const wrappedBlock = `${MCP_BEGIN}\n${cleanMcp}\n${MCP_END}`;
 
   let text = (existingContent || '').replace(/\r\n/g, '\n');
 
-  // Remove any previous MCP_MANAGER block
-  const bIdx = text.indexOf(MCP_BEGIN);
-  const eIdx = text.indexOf(MCP_END);
-  if (bIdx !== -1 && eIdx !== -1 && eIdx > bIdx) {
-    text = (text.slice(0, bIdx).trimEnd() + '\n\n' + text.slice(eIdx + MCP_END.length).trimStart()).trim();
+  // Remove any previous column-0 anchored MCP_MANAGER block(s)
+  let mcpSpan = findAnchoredSpan(text, MCP_BEGIN_RE, MCP_END_RE);
+  while (mcpSpan) {
+    const before = text.slice(0, mcpSpan.start).trimEnd();
+    const after = text.slice(mcpSpan.end).trimStart();
+    text = before && after ? `${before}\n\n${after}` : (before || after);
+    mcpSpan = findAnchoredSpan(text, MCP_BEGIN_RE, MCP_END_RE);
   }
 
-  // Insert before KO_BEGIN if present so ko-thought-translator's baseCode preservation keeps MCP Manager too
-  const koIdx = text.indexOf(KO_BEGIN);
-  if (koIdx !== -1) {
-    const beforeKo = text.slice(0, koIdx).trimEnd();
-    const fromKo = text.slice(koIdx).trimStart();
+  // Insert before column-0 anchored KO_BEGIN if present so ko-thought-translator's baseCode preservation keeps MCP Manager too
+  KO_BEGIN_RE.lastIndex = 0;
+  const koMatch = KO_BEGIN_RE.exec(text);
+  if (koMatch) {
+    const beforeKo = text.slice(0, koMatch.index).trimEnd();
+    const fromKo = text.slice(koMatch.index).trimStart();
+    if (!beforeKo) {
+      return `${wrappedBlock}\n\n${fromKo}\n`;
+    }
     return `${beforeKo}\n\n${wrappedBlock}\n\n${fromKo}\n`;
   }
 

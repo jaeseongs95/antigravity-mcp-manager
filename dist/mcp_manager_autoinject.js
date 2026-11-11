@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Antigravity Custom MCP Server Manager
 // @namespace    https://github.com/jaeseongs95/antigravity-mcp-manager
-// @version      1.4.14
+// @version      1.4.15
 // @description  Add, edit, toggle, and manage custom Stdio & HTTP MCP servers (mcp_config.json) directly inside the Antigravity 2.0 native app and Remote Control web.
 // @match        https://antigravity.google.com/*
 // @match        https://*.antigravity.google.com/*
@@ -724,7 +724,7 @@
       basicPass,
       disabled,
       existingSpec,
-    }) {
+    }, externalExistingSpec) {
       let cleanName = typeof serverName === 'string' ? serverName.trim() : '';
       const rawCmd = typeof command === 'string' ? command.trim() : '';
       const rawUrl = typeof url === 'string' ? url.trim() : '';
@@ -772,7 +772,8 @@
           error: 'Server name may only contain letters, numbers, hyphens (-), underscores (_), and dots (.).',
         };
       }
-      const base = existingSpec && typeof existingSpec === 'object' ? { ...existingSpec } : {};
+      const resolvedExisting = existingSpec || externalExistingSpec;
+      const base = resolvedExisting && typeof resolvedExisting === 'object' ? { ...resolvedExisting } : {};
       delete base.command;
       delete base.args;
       delete base.env;
@@ -873,6 +874,9 @@
         ...base,
         command: cleanCmd,
       };
+      if (cleanDesc) {
+        spec.description = cleanDesc;
+      }
       if (parsedArgs.length > 0) {
         spec.args = parsedArgs;
       }
@@ -1432,8 +1436,9 @@
                 async readFile(req) {
                   const uri = typeof req === 'string' ? req : req?.uri;
                   const r = await callRpc('/exa.language_server_pb.LanguageServerService/ReadFile', { uri });
-                  if (r && typeof r.content === 'string') {
-                    return { content: decodeBase64ToBytes(r.content) };
+                  const b64 = typeof r?.content === 'string' ? r.content : (typeof r?.contents === 'string' ? r.contents : null);
+                  if (b64 !== null) {
+                    return { content: decodeBase64ToBytes(b64) };
                   }
                   return r;
                 },
@@ -1798,9 +1803,20 @@
       }
       function openAuthUrl(url) {
         if (!url || typeof url !== 'string') return false;
+        const trimmed = url.trim();
+        if (!trimmed) return false;
+        let parsed;
+        try {
+          parsed = new URL(trimmed);
+        } catch {
+          return false;
+        }
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+          return false;
+        }
         try {
           if (win && typeof win.open === 'function') {
-            win.open(url, '_blank', 'noopener,noreferrer');
+            win.open(parsed.href, '_blank', 'noopener,noreferrer');
             return true;
           }
         } catch {}
@@ -2011,16 +2027,17 @@
       let cachedHostPluginInfo = null;
       async function fetchHostInstalledPluginInfo(forceRefresh = false) {
         if (cachedHostPluginInfo && !forceRefresh) return cachedHostPluginInfo;
-        const svc = scanFiberTree();
+        const svc = scanFiberTree() || getRemoteControlProxyAdapter();
         if (!svc) return null;
         let geminiRoot = null;
         const extractRoot = (rawPath) => {
           if (!rawPath || typeof rawPath !== 'string') return null;
           const fsPath = toFsPathFromFileUri(rawPath);
           const norm = fsPath.replace(/\\/g, '/');
-          const idx = norm.indexOf('/.gemini/');
+          const normWithSlash = norm.endsWith('/') ? norm : `${norm}/`;
+          const idx = normWithSlash.indexOf('/.gemini/');
           if (idx === -1) return null;
-          return norm.slice(0, idx + '/.gemini'.length);
+          return normWithSlash.slice(0, idx + '/.gemini'.length);
         };
         try {
           const cfgUri = await resolveMcpConfigUri();
@@ -2076,6 +2093,12 @@
           } catch {}
         }
         if (!geminiRoot) {
+          const rcSelected = svc?.rcInst?.localUserInfo?.selectedGeminiDir || '';
+          if (rcSelected) {
+            geminiRoot = extractRoot(rcSelected);
+          }
+        }
+        if (!geminiRoot) {
           if (pluginNames.size > 0) {
             return {
               resolved: false,
@@ -2128,20 +2151,40 @@
         const mcpEndStr = ['END_AGY_MCP', 'MANAGER'].join('_');
         const koBeginStr = ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_');
         const koEndStr = ['END_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_');
-        const mcpBeginRe = new RegExp(`^[ \\t]*(?:\\/\\/ === ${mcpBeginStr}(?:_V1)? ===|\\/\\* === ${mcpBeginStr}(?:_V1)? === \\*\\/)[ \\t]*$`, 'm');
-        const mcpEndRe = new RegExp(`^[ \\t]*(?:\\/\\/ === ${mcpEndStr}(?:_V1)? ===|\\/\\* === ${mcpEndStr}(?:_V1)? === \\*\\/)[ \\t]*$`, 'm');
-        const koBeginRe = new RegExp(`^[ \\t]*(?:\\/\\/ === ${koBeginStr} ===|\\/\\* === ${koBeginStr} === \\*\\/)[ \\t]*$`, 'm');
-        const koEndRe = new RegExp(`^[ \\t]*(?:\\/\\/ === ${koEndStr} ===|\\/\\* === ${koEndStr} === \\*\\/)[ \\t]*$`, 'm');
-        const mcpBeginMatch = mcpBeginRe.exec(text);
-        const mcpEndMatch = mcpBeginMatch ? mcpEndRe.exec(text.slice(mcpBeginMatch.index)) : null;
-        const mcpB = mcpBeginMatch ? mcpBeginMatch.index : -1;
-        const mcpE = mcpEndMatch ? mcpBeginMatch.index + mcpEndMatch.index : -1;
-        const mcpEndLen = mcpEndMatch ? mcpEndMatch[0].length : 0;
-        const koBeginMatch = koBeginRe.exec(text);
-        const koEndMatch = koBeginMatch ? koEndRe.exec(text.slice(koBeginMatch.index)) : null;
-        const koB = koBeginMatch ? koBeginMatch.index : -1;
-        const koE = koEndMatch ? koBeginMatch.index + koEndMatch.index : -1;
-        const koEndLen = koEndMatch ? koEndMatch[0].length : 0;
+        const mcpBeginRe = new RegExp(`^(?:\\/\\/ === ${mcpBeginStr}(?:_V1)? ===|\\/\\* === ${mcpBeginStr}(?:_V1)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
+        const mcpEndRe = new RegExp(`^(?:\\/\\/ === ${mcpEndStr}(?:_V1)? ===|\\/\\* === ${mcpEndStr}(?:_V1)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
+        const koBeginRe = new RegExp(`^(?:\\/\\/ === ${koBeginStr} ===|\\/\\* === ${koBeginStr} === \\*\\/)[ \\t]*\\r?$`, 'gm');
+        const koEndRe = new RegExp(`^(?:\\/\\/ === ${koEndStr} ===|\\/\\* === ${koEndStr} === \\*\\/)[ \\t]*\\r?$`, 'gm');
+        const findAnchoredSpan = (srcText, beginRe, endRe) => {
+          beginRe.lastIndex = 0;
+          const bMatch = beginRe.exec(srcText);
+          if (!bMatch) return { start: -1, end: -1 };
+          const start = bMatch.index;
+          endRe.lastIndex = bMatch.index + bMatch[0].length;
+          const eMatch = endRe.exec(srcText);
+          if (!eMatch) return { start, end: -1 };
+          let end = eMatch.index + eMatch[0].length;
+          while (true) {
+            const afterEnd = srcText.slice(end);
+            const nlMatch = /^(?:\r?\n)+/.exec(afterEnd);
+            if (!nlMatch) break;
+            const nextLineIdx = end + nlMatch[0].length;
+            endRe.lastIndex = nextLineIdx;
+            const nextEnd = endRe.exec(srcText);
+            if (nextEnd && nextEnd.index === nextLineIdx) {
+              end = nextEnd.index + nextEnd[0].length;
+            } else {
+              break;
+            }
+          }
+          return { start, end };
+        };
+        const mcpSpan = findAnchoredSpan(text, mcpBeginRe, mcpEndRe);
+        const koSpan = findAnchoredSpan(text, koBeginRe, koEndRe);
+        const mcpB = mcpSpan.start;
+        const mcpE = mcpSpan.end;
+        const koB = koSpan.start;
+        const koE = koSpan.end;
         const firstMarkerIdx = [mcpB, koB].filter((i) => i !== -1).sort((a, b) => a - b)[0] ?? text.length;
         const baseSegment = text.slice(0, firstMarkerIdx).trim();
         const sbFuncRe = new RegExp(`^[ \\t]*function ${['mount', 'StatusBar'].join('')}\\s*\\(`, 'm');
@@ -2160,8 +2203,8 @@
           hasMcpManager,
           hasKoTranslator,
           statusbarBlock: isBaseStatusbar ? baseSegment : '',
-          mcpBlock: mcpB !== -1 && mcpE > mcpB ? text.slice(mcpB, mcpE + mcpEndLen) : '',
-          koBlock: koB !== -1 && koE > koB ? text.slice(koB, koE + koEndLen) : '',
+          mcpBlock: mcpB !== -1 && mcpE > mcpB ? text.slice(mcpB, mcpE).trim() : '',
+          koBlock: koB !== -1 && koE > koB ? text.slice(koB, koE).trim() : '',
         };
         return cachedHostPluginInfo;
       }
@@ -2222,547 +2265,547 @@
       );
     }
     const MODAL_STYLE_CSS = `
-        #${MODAL_ID}, #${EDIT_POPUP_ID}, #${OAUTH_MODAL_ID} {
-          position: fixed;
-          inset: 0;
-          z-index: 2147483645;
-          background: rgba(9, 11, 17, 0.75);
-          backdrop-filter: blur(4px);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, sans-serif;
-          font-variant-numeric: tabular-nums;
-          color: #e4e7ef;
-          padding: 20px;
-          box-sizing: border-box;
-        }
-        #${EDIT_POPUP_ID} {
-          z-index: 2147483646;
-        }
-        #${OAUTH_MODAL_ID} {
-          z-index: 2147483647;
-        }
-        #${MODAL_ID} *, #${EDIT_POPUP_ID} *, #${OAUTH_MODAL_ID} *, #agy-mcp-settings-pane * {
-          box-sizing: border-box;
-        }
-        .agy-mcp-dialog {
-          width: min(860px, 96vw);
-          max-height: min(800px, 92vh);
-          background: #161821;
-          border: 1px solid #2c3144;
-          border-radius: 14px;
-          box-shadow: 0 22px 60px rgba(0, 0, 0, 0.65);
-          display: flex;
-          flex-direction: column;
-          overflow: hidden;
-          contain: layout style;
-        }
-        .agy-mcp-dialog.popup {
-          width: min(640px, 95vw);
-          max-height: min(780px, 92vh);
-          border-color: #3b425e;
-        }
-        .agy-mcp-dialog.oauth-connect {
-          width: min(440px, 94vw);
-          background: #181a24;
-          border: 1px solid #32384e;
-          border-radius: 20px;
-          padding: 26px 24px 22px 24px;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          text-align: center;
-          gap: 14px;
-          position: relative;
-        }
-        .agy-mcp-oauth-icons {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 12px;
-          margin-top: 4px;
-        }
-        .agy-mcp-oauth-icon-box {
-          width: 52px;
-          height: 52px;
-          border-radius: 14px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 24px;
-          font-weight: 700;
-          background: #232738;
-          border: 1px solid #383f58;
-          color: #f8fafc;
-          box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
-        }
-        .agy-mcp-oauth-icon-box.brand {
-          background: linear-gradient(135deg, #4f46e5, #3730a3);
-          border-color: #6366f1;
-        }
-        .agy-mcp-oauth-dots {
-          color: #64748b;
-          font-size: 18px;
-          letter-spacing: 2px;
-          font-weight: 700;
-        }
-        .agy-mcp-oauth-title {
-          font-size: 20px;
-          font-weight: 700;
-          color: #f8fafc;
-          margin: 2px 0 0 0;
-        }
-        .agy-mcp-oauth-desc {
-          font-size: 12.5px;
-          line-height: 1.55;
-          color: #94a3b8;
-          text-align: left;
-          background: rgba(255, 255, 255, 0.025);
-          border: 1px solid rgba(148, 163, 184, 0.14);
-          border-radius: 10px;
-          padding: 12px 14px;
-          width: 100%;
-        }
-        .agy-mcp-oauth-full-btn {
-          width: 100%;
-          padding: 11px 16px;
-          border-radius: 999px;
-          font-size: 13.5px;
-          font-weight: 600;
-          cursor: pointer;
-          border: 1px solid transparent;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          gap: 6px;
-          transition: all 0.14s ease;
-        }
-        .agy-mcp-oauth-full-btn.launch {
-          background: #4f46e5;
-          border-color: #6366f1;
-          color: #ffffff;
-        }
-        .agy-mcp-oauth-full-btn.launch:hover {
-          background: #4338ca;
-        }
-        .agy-mcp-oauth-full-btn.cancel {
-          background: #25293a;
-          border-color: #383f58;
-          color: #e2e8f0;
-        }
-        .agy-mcp-oauth-full-btn.cancel:hover {
-          background: #2f354a;
-        }
-        .agy-mcp-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 14px 18px;
-          background: #1c1f2b;
-          border-bottom: 1px solid #282d3f;
-        }
-        .agy-mcp-title-wrap {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-        }
-        .agy-mcp-title {
-          font-size: 15px;
-          font-weight: 600;
-          color: #f3f5fa;
-          margin: 0;
-        }
-        .agy-mcp-badge {
-          font-size: 11px;
-          padding: 2px 7px;
-          border-radius: 999px;
-          background: rgba(99, 102, 241, 0.18);
-          color: #a5b4fc;
-          border: 1px solid rgba(99, 102, 241, 0.35);
-        }
-        .agy-mcp-close-btn {
-          background: transparent;
-          border: 1px solid transparent;
-          color: #9aa2b8;
-          font-size: 16px;
-          width: 28px;
-          height: 28px;
-          border-radius: 6px;
-          cursor: pointer;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-        }
-        .agy-mcp-close-btn:hover {
-          background: #272b3b;
-          color: #ffffff;
-        }
-        .agy-mcp-tabs {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          padding: 8px 18px;
-          background: #191c26;
-          border-bottom: 1px solid #262a3b;
-        }
-        .agy-mcp-tab {
-          background: transparent;
-          border: 1px solid transparent;
-          color: #9aa2b8;
-          padding: 6px 12px;
-          border-radius: 6px;
-          font-size: 12.5px;
-          font-weight: 500;
-          cursor: pointer;
-          transition: all 0.12s ease;
-        }
-        .agy-mcp-tab:hover {
-          color: #e4e7ef;
-          background: rgba(255, 255, 255, 0.04);
-        }
-        .agy-mcp-tab.active {
-          color: #ffffff;
-          background: #272c3f;
-          border-color: #3b425e;
-        }
-        .agy-mcp-status-banner {
-          padding: 8px 18px;
-          font-size: 12px;
-          border-bottom: 1px solid #262a3b;
-          display: none;
-        }
-        .agy-mcp-status-banner.info {
-          display: block;
-          background: rgba(59, 130, 246, 0.14);
-          color: #93c5fd;
-        }
-        .agy-mcp-status-banner.success {
-          display: block;
-          background: rgba(16, 185, 129, 0.14);
-          color: #6ee7b7;
-        }
-        .agy-mcp-status-banner.error {
-          display: block;
-          background: rgba(239, 68, 68, 0.16);
-          color: #fca5a5;
-        }
-        .agy-mcp-body {
-          padding: 16px 18px;
-          overflow-y: auto;
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-          gap: 14px;
-        }
-        .agy-mcp-btn {
-          background: #262b3d;
-          color: #e4e7ef;
-          border: 1px solid #383f58;
-          border-radius: 7px;
-          padding: 6px 11px;
-          font-size: 12px;
-          font-weight: 500;
-          cursor: pointer;
-          display: inline-flex;
-          align-items: center;
-          gap: 5px;
-        }
-        .agy-mcp-btn:hover {
-          background: #30374f;
-          border-color: #4a5373;
-        }
-        .agy-mcp-btn.primary {
-          background: #4f46e5;
-          border-color: #6366f1;
-          color: #ffffff;
-        }
-        .agy-mcp-btn.primary:hover {
-          background: #4338ca;
-        }
-        .agy-mcp-btn.danger {
-          background: rgba(239, 68, 68, 0.15);
-          border-color: rgba(239, 68, 68, 0.4);
-          color: #fca5a5;
-        }
-        .agy-mcp-btn.danger:hover {
-          background: rgba(239, 68, 68, 0.28);
-        }
-        .agy-mcp-card {
-          background: #1d202d;
-          border: 1px solid #2b3042;
-          border-radius: 10px;
-          padding: 12px 14px;
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-        .agy-mcp-card-top {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-          flex-wrap: wrap;
-        }
-        .agy-mcp-card-title-row {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          flex-wrap: wrap;
-        }
-        .agy-mcp-server-name {
-          font-size: 13.5px;
-          font-weight: 600;
-          color: #f3f5fa;
-        }
-        .agy-mcp-pill {
-          font-size: 10.5px;
-          padding: 2px 6px;
-          border-radius: 4px;
-          font-weight: 600;
-          text-transform: uppercase;
-        }
-        .agy-mcp-pill.ready {
-          background: rgba(16, 185, 129, 0.18);
-          color: #6ee7b7;
-          border: 1px solid rgba(16, 185, 129, 0.35);
-        }
-        .agy-mcp-pill.pending {
-          background: rgba(245, 158, 11, 0.18);
-          color: #fcd34d;
-          border: 1px solid rgba(245, 158, 11, 0.35);
-        }
-        .agy-mcp-pill.error {
-          background: rgba(239, 68, 68, 0.18);
-          color: #fca5a5;
-          border: 1px solid rgba(239, 68, 68, 0.35);
-        }
-        .agy-mcp-pill.disabled {
-          background: rgba(148, 163, 184, 0.15);
-          color: #94a3b8;
-          border: 1px solid rgba(148, 163, 184, 0.3);
-        }
-        .agy-mcp-pill.source-custom {
-          background: rgba(99, 102, 241, 0.18);
-          color: #c7d2fe;
-          border: 1px solid rgba(99, 102, 241, 0.35);
-        }
-        .agy-mcp-pill.source-plugin {
-          background: rgba(14, 165, 233, 0.15);
-          color: #7dd3fc;
-          border: 1px solid rgba(14, 165, 233, 0.3);
-        }
-        .agy-mcp-cmd-preview {
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-          font-size: 11.5px;
-          color: #9aa2b8;
-          background: #141722;
-          padding: 5px 8px;
-          border-radius: 6px;
-          border: 1px solid #232838;
-          word-break: break-all;
-        }
-        .agy-mcp-tools-wrap {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 5px;
-          margin-top: 2px;
-        }
-        .agy-mcp-tool-chip {
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-          font-size: 11px;
-          padding: 2px 7px;
-          border-radius: 4px;
-          background: #252a3b;
-          color: #cbd5e1;
-          border: 1px solid #353c54;
-          cursor: pointer;
-        }
-        .agy-mcp-tool-chip.disabled {
-          opacity: 0.48;
-          text-decoration: line-through;
-          background: #191c27;
-        }
-        .agy-mcp-form-grid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 12px;
-        }
-        .agy-mcp-field {
-          display: flex;
-          flex-direction: column;
-          gap: 5px;
-        }
-        .agy-mcp-field.full {
-          grid-column: 1 / -1;
-        }
-        .agy-mcp-label {
-          font-size: 12.5px;
-          font-weight: 600;
-          color: #e2e8f0;
-        }
-        .agy-mcp-hint {
-          font-size: 11.5px;
-          color: #8b95b0;
-          line-height: 1.45;
-        }
-        .agy-mcp-input, .agy-mcp-textarea, .agy-mcp-select {
-          width: 100%;
-          background: #12151f;
-          border: 1px solid #2d3348;
-          border-radius: 8px;
-          padding: 8px 11px;
-          color: #f1f5f9;
-          font-size: 12.5px;
-          font-family: inherit;
-        }
-        .agy-mcp-textarea {
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-          min-height: 70px;
-          resize: vertical;
-        }
-        .agy-mcp-input:focus, .agy-mcp-textarea:focus, .agy-mcp-select:focus {
-          outline: none;
-          border-color: #6366f1;
-        }
-        .agy-mcp-segmented {
-          display: inline-flex;
-          align-items: center;
-          background: #11141d;
-          border: 1px solid #2b3147;
-          border-radius: 999px;
-          padding: 2px;
-          gap: 2px;
-        }
-        .agy-mcp-seg-btn {
-          background: transparent;
-          border: none;
-          color: #94a3b8;
-          font-size: 11.5px;
-          font-weight: 600;
-          padding: 4px 12px;
-          border-radius: 999px;
-          cursor: pointer;
-          transition: all 0.12s ease;
-        }
-        .agy-mcp-seg-btn.active {
-          background: #272d42;
-          color: #f8fafc;
-          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
-        }
-        .agy-mcp-adv-oauth-card {
-          background: #191d2b;
-          border: 1px solid #2d344d;
-          border-radius: 10px;
-          padding: 12px 14px;
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-        }
-        .agy-mcp-adv-oauth-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-          cursor: pointer;
-          user-select: none;
-        }
-        .agy-mcp-risk-notice {
-          background: rgba(245, 158, 11, 0.08);
-          border: 1px solid rgba(245, 158, 11, 0.28);
-          border-radius: 10px;
-          padding: 10px 13px;
-          font-size: 11.5px;
-          color: #fcd34d;
-          display: flex;
-          align-items: flex-start;
-          gap: 8px;
-          line-height: 1.45;
-        }
-        .agy-mcp-templates-bar {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 6px;
-        }
-        .agy-mcp-template-chip {
-          font-size: 11.5px;
-          padding: 4px 9px;
-          border-radius: 6px;
-          background: #212638;
-          border: 1px solid #323954;
-          color: #d5dcf0;
-          cursor: pointer;
-        }
-        .agy-mcp-template-chip:hover {
-          background: #2b324a;
-          border-color: #4f5980;
-        }
-        .agy-mcp-injected-native-btn {
-          margin-left: 8px;
-          background: #4f46e5;
-          color: #ffffff;
-          border: 1px solid #6366f1;
-          border-radius: 6px;
-          padding: 5px 10px;
-          font-size: 12px;
-          font-weight: 500;
-          cursor: pointer;
-          display: inline-flex;
-          align-items: center;
-          gap: 5px;
-        }
-        .agy-mcp-injected-native-btn:hover {
-          background: #4338ca;
-        }
-        .agy-mcp-btn.auth {
-          background: rgba(99, 102, 241, 0.18);
-          border-color: rgba(99, 102, 241, 0.48);
-          color: #c7d2fe;
-        }
-        .agy-mcp-btn.auth:hover {
-          background: rgba(99, 102, 241, 0.3);
-          border-color: rgba(99, 102, 241, 0.7);
-        }
-        .agy-mcp-inline-row-btn {
-          background: #252a3d;
-          color: #e2e8f0;
-          border: 1px solid #3b425e;
-          border-radius: 5px;
-          padding: 2px 8px;
-          font-size: 11px;
-          font-weight: 500;
-          cursor: pointer;
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-          line-height: 1.4;
-          white-space: nowrap;
-          flex-shrink: 0;
-        }
-        .agy-mcp-inline-row-btn:hover {
-          background: #323954;
-          border-color: #525d82;
-          color: #ffffff;
-        }
-        .agy-mcp-inline-row-btn.auth {
-          background: rgba(99, 102, 241, 0.18);
-          border-color: rgba(99, 102, 241, 0.48);
-          color: #c7d2fe;
-        }
-        .agy-mcp-inline-row-btn.auth:hover {
-          background: rgba(99, 102, 241, 0.32);
-          border-color: rgba(99, 102, 241, 0.75);
-        }
-        .agy-mcp-auth-box {
-          background: rgba(99, 102, 241, 0.06);
-          border: 1px solid rgba(99, 102, 241, 0.28);
-          border-radius: 10px;
-          padding: 12px 14px;
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-        }
-      `.replace(/\s+/g, ' ').trim();
+    #${MODAL_ID}, #${EDIT_POPUP_ID}, #${OAUTH_MODAL_ID} {
+      position: fixed;
+      inset: 0;
+      z-index: 2147483645;
+      background: rgba(9, 11, 17, 0.75);
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, sans-serif;
+      font-variant-numeric: tabular-nums;
+      color: #e4e7ef;
+      padding: 20px;
+      box-sizing: border-box;
+    }
+    #${EDIT_POPUP_ID} {
+      z-index: 2147483646;
+    }
+    #${OAUTH_MODAL_ID} {
+      z-index: 2147483647;
+    }
+    #${MODAL_ID} *, #${EDIT_POPUP_ID} *, #${OAUTH_MODAL_ID} *, #agy-mcp-settings-pane * {
+      box-sizing: border-box;
+    }
+    .agy-mcp-dialog {
+      width: min(860px, 96vw);
+      max-height: min(800px, 92vh);
+      background: #161821;
+      border: 1px solid #2c3144;
+      border-radius: 14px;
+      box-shadow: 0 22px 60px rgba(0, 0, 0, 0.65);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      contain: layout style;
+    }
+    .agy-mcp-dialog.popup {
+      width: min(640px, 95vw);
+      max-height: min(780px, 92vh);
+      border-color: #3b425e;
+    }
+    .agy-mcp-dialog.oauth-connect {
+      width: min(440px, 94vw);
+      background: #181a24;
+      border: 1px solid #32384e;
+      border-radius: 20px;
+      padding: 26px 24px 22px 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 14px;
+      position: relative;
+    }
+    .agy-mcp-oauth-icons {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-top: 4px;
+    }
+    .agy-mcp-oauth-icon-box {
+      width: 52px;
+      height: 52px;
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      font-weight: 700;
+      background: #232738;
+      border: 1px solid #383f58;
+      color: #f8fafc;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+    }
+    .agy-mcp-oauth-icon-box.brand {
+      background: linear-gradient(135deg, #4f46e5, #3730a3);
+      border-color: #6366f1;
+    }
+    .agy-mcp-oauth-dots {
+      color: #64748b;
+      font-size: 18px;
+      letter-spacing: 2px;
+      font-weight: 700;
+    }
+    .agy-mcp-oauth-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: #f8fafc;
+      margin: 2px 0 0 0;
+    }
+    .agy-mcp-oauth-desc {
+      font-size: 12.5px;
+      line-height: 1.55;
+      color: #94a3b8;
+      text-align: left;
+      background: rgba(255, 255, 255, 0.025);
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      border-radius: 10px;
+      padding: 12px 14px;
+      width: 100%;
+    }
+    .agy-mcp-oauth-full-btn {
+      width: 100%;
+      padding: 11px 16px;
+      border-radius: 999px;
+      font-size: 13.5px;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid transparent;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.14s ease;
+    }
+    .agy-mcp-oauth-full-btn.launch {
+      background: #4f46e5;
+      border-color: #6366f1;
+      color: #ffffff;
+    }
+    .agy-mcp-oauth-full-btn.launch:hover {
+      background: #4338ca;
+    }
+    .agy-mcp-oauth-full-btn.cancel {
+      background: #25293a;
+      border-color: #383f58;
+      color: #e2e8f0;
+    }
+    .agy-mcp-oauth-full-btn.cancel:hover {
+      background: #2f354a;
+    }
+    .agy-mcp-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 18px;
+      background: #1c1f2b;
+      border-bottom: 1px solid #282d3f;
+    }
+    .agy-mcp-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .agy-mcp-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: #f3f5fa;
+      margin: 0;
+    }
+    .agy-mcp-badge {
+      font-size: 11px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: rgba(99, 102, 241, 0.18);
+      color: #a5b4fc;
+      border: 1px solid rgba(99, 102, 241, 0.35);
+    }
+    .agy-mcp-close-btn {
+      background: transparent;
+      border: 1px solid transparent;
+      color: #9aa2b8;
+      font-size: 16px;
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .agy-mcp-close-btn:hover {
+      background: #272b3b;
+      color: #ffffff;
+    }
+    .agy-mcp-tabs {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 18px;
+      background: #191c26;
+      border-bottom: 1px solid #262a3b;
+    }
+    .agy-mcp-tab {
+      background: transparent;
+      border: 1px solid transparent;
+      color: #9aa2b8;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12.5px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.12s ease;
+    }
+    .agy-mcp-tab:hover {
+      color: #e4e7ef;
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .agy-mcp-tab.active {
+      color: #ffffff;
+      background: #272c3f;
+      border-color: #3b425e;
+    }
+    .agy-mcp-status-banner {
+      padding: 8px 18px;
+      font-size: 12px;
+      border-bottom: 1px solid #262a3b;
+      display: none;
+    }
+    .agy-mcp-status-banner.info {
+      display: block;
+      background: rgba(59, 130, 246, 0.14);
+      color: #93c5fd;
+    }
+    .agy-mcp-status-banner.success {
+      display: block;
+      background: rgba(16, 185, 129, 0.14);
+      color: #6ee7b7;
+    }
+    .agy-mcp-status-banner.error {
+      display: block;
+      background: rgba(239, 68, 68, 0.16);
+      color: #fca5a5;
+    }
+    .agy-mcp-body {
+      padding: 16px 18px;
+      overflow-y: auto;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .agy-mcp-btn {
+      background: #262b3d;
+      color: #e4e7ef;
+      border: 1px solid #383f58;
+      border-radius: 7px;
+      padding: 6px 11px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .agy-mcp-btn:hover {
+      background: #30374f;
+      border-color: #4a5373;
+    }
+    .agy-mcp-btn.primary {
+      background: #4f46e5;
+      border-color: #6366f1;
+      color: #ffffff;
+    }
+    .agy-mcp-btn.primary:hover {
+      background: #4338ca;
+    }
+    .agy-mcp-btn.danger {
+      background: rgba(239, 68, 68, 0.15);
+      border-color: rgba(239, 68, 68, 0.4);
+      color: #fca5a5;
+    }
+    .agy-mcp-btn.danger:hover {
+      background: rgba(239, 68, 68, 0.28);
+    }
+    .agy-mcp-card {
+      background: #1d202d;
+      border: 1px solid #2b3042;
+      border-radius: 10px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .agy-mcp-card-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .agy-mcp-card-title-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .agy-mcp-server-name {
+      font-size: 13.5px;
+      font-weight: 600;
+      color: #f3f5fa;
+    }
+    .agy-mcp-pill {
+      font-size: 10.5px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .agy-mcp-pill.ready {
+      background: rgba(16, 185, 129, 0.18);
+      color: #6ee7b7;
+      border: 1px solid rgba(16, 185, 129, 0.35);
+    }
+    .agy-mcp-pill.pending {
+      background: rgba(245, 158, 11, 0.18);
+      color: #fcd34d;
+      border: 1px solid rgba(245, 158, 11, 0.35);
+    }
+    .agy-mcp-pill.error {
+      background: rgba(239, 68, 68, 0.18);
+      color: #fca5a5;
+      border: 1px solid rgba(239, 68, 68, 0.35);
+    }
+    .agy-mcp-pill.disabled {
+      background: rgba(148, 163, 184, 0.15);
+      color: #94a3b8;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+    }
+    .agy-mcp-pill.source-custom {
+      background: rgba(99, 102, 241, 0.18);
+      color: #c7d2fe;
+      border: 1px solid rgba(99, 102, 241, 0.35);
+    }
+    .agy-mcp-pill.source-plugin {
+      background: rgba(14, 165, 233, 0.15);
+      color: #7dd3fc;
+      border: 1px solid rgba(14, 165, 233, 0.3);
+    }
+    .agy-mcp-cmd-preview {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11.5px;
+      color: #9aa2b8;
+      background: #141722;
+      padding: 5px 8px;
+      border-radius: 6px;
+      border: 1px solid #232838;
+      word-break: break-all;
+    }
+    .agy-mcp-tools-wrap {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 2px;
+    }
+    .agy-mcp-tool-chip {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: #252a3b;
+      color: #cbd5e1;
+      border: 1px solid #353c54;
+      cursor: pointer;
+    }
+    .agy-mcp-tool-chip.disabled {
+      opacity: 0.48;
+      text-decoration: line-through;
+      background: #191c27;
+    }
+    .agy-mcp-form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .agy-mcp-field {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .agy-mcp-field.full {
+      grid-column: 1 / -1;
+    }
+    .agy-mcp-label {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: #e2e8f0;
+    }
+    .agy-mcp-hint {
+      font-size: 11.5px;
+      color: #8b95b0;
+      line-height: 1.45;
+    }
+    .agy-mcp-input, .agy-mcp-textarea, .agy-mcp-select {
+      width: 100%;
+      background: #12151f;
+      border: 1px solid #2d3348;
+      border-radius: 8px;
+      padding: 8px 11px;
+      color: #f1f5f9;
+      font-size: 12.5px;
+      font-family: inherit;
+    }
+    .agy-mcp-textarea {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      min-height: 70px;
+      resize: vertical;
+    }
+    .agy-mcp-input:focus, .agy-mcp-textarea:focus, .agy-mcp-select:focus {
+      outline: none;
+      border-color: #6366f1;
+    }
+    .agy-mcp-segmented {
+      display: inline-flex;
+      align-items: center;
+      background: #11141d;
+      border: 1px solid #2b3147;
+      border-radius: 999px;
+      padding: 2px;
+      gap: 2px;
+    }
+    .agy-mcp-seg-btn {
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      font-size: 11.5px;
+      font-weight: 600;
+      padding: 4px 12px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: all 0.12s ease;
+    }
+    .agy-mcp-seg-btn.active {
+      background: #272d42;
+      color: #f8fafc;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+    }
+    .agy-mcp-adv-oauth-card {
+      background: #191d2b;
+      border: 1px solid #2d344d;
+      border-radius: 10px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .agy-mcp-adv-oauth-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .agy-mcp-risk-notice {
+      background: rgba(245, 158, 11, 0.08);
+      border: 1px solid rgba(245, 158, 11, 0.28);
+      border-radius: 10px;
+      padding: 10px 13px;
+      font-size: 11.5px;
+      color: #fcd34d;
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      line-height: 1.45;
+    }
+    .agy-mcp-templates-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .agy-mcp-template-chip {
+      font-size: 11.5px;
+      padding: 4px 9px;
+      border-radius: 6px;
+      background: #212638;
+      border: 1px solid #323954;
+      color: #d5dcf0;
+      cursor: pointer;
+    }
+    .agy-mcp-template-chip:hover {
+      background: #2b324a;
+      border-color: #4f5980;
+    }
+    .agy-mcp-injected-native-btn {
+      margin-left: 8px;
+      background: #4f46e5;
+      color: #ffffff;
+      border: 1px solid #6366f1;
+      border-radius: 6px;
+      padding: 5px 10px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .agy-mcp-injected-native-btn:hover {
+      background: #4338ca;
+    }
+    .agy-mcp-btn.auth {
+      background: rgba(99, 102, 241, 0.18);
+      border-color: rgba(99, 102, 241, 0.48);
+      color: #c7d2fe;
+    }
+    .agy-mcp-btn.auth:hover {
+      background: rgba(99, 102, 241, 0.3);
+      border-color: rgba(99, 102, 241, 0.7);
+    }
+    .agy-mcp-inline-row-btn {
+      background: #252a3d;
+      color: #e2e8f0;
+      border: 1px solid #3b425e;
+      border-radius: 5px;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      line-height: 1.4;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .agy-mcp-inline-row-btn:hover {
+      background: #323954;
+      border-color: #525d82;
+      color: #ffffff;
+    }
+    .agy-mcp-inline-row-btn.auth {
+      background: rgba(99, 102, 241, 0.18);
+      border-color: rgba(99, 102, 241, 0.48);
+      color: #c7d2fe;
+    }
+    .agy-mcp-inline-row-btn.auth:hover {
+      background: rgba(99, 102, 241, 0.32);
+      border-color: rgba(99, 102, 241, 0.75);
+    }
+    .agy-mcp-auth-box {
+      background: rgba(99, 102, 241, 0.06);
+      border: 1px solid rgba(99, 102, 241, 0.28);
+      border-radius: 10px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+  `.replace(/\s+/g, ' ').trim();
     function ensureModalStyles(doc) {
       if (!doc || !doc.head) return;
       let style = doc.getElementById(STYLE_ID);
@@ -3098,7 +3141,12 @@
             targetUrl = refreshedState?.authUrl || '';
           }
           if (targetUrl) {
-            bridge.openAuthUrl(targetUrl);
+            const opened = bridge.openAuthUrl(targetUrl);
+            if (!opened) {
+              statusLine.style.color = '#fca5a5';
+              statusLine.textContent = 'Blocked or invalid OAuth authorization URL (only http:// and https:// URLs are permitted).';
+              return;
+            }
             statusLine.style.color = '#6ee7b7';
             statusLine.textContent = 'Opened OAuth authorization window in your browser. It will connect automatically once signed in.';
             codeSection.style.display = 'flex';
@@ -3756,6 +3804,22 @@
           });
           connHeaderField.appendChild(urlInput);
           grid.appendChild(connHeaderField);
+          const headersField = doc.createElement('div');
+          headersField.className = 'agy-mcp-field full';
+          const headersLabel = doc.createElement('label');
+          headersLabel.className = 'agy-mcp-label';
+          headersLabel.textContent = 'Custom HTTP Headers (Optional, KEY: VALUE or KEY=VALUE per line)';
+          const headersArea = doc.createElement('textarea');
+          headersArea.className = 'agy-mcp-textarea';
+          headersArea.setAttribute('data-field', 'headersText');
+          headersArea.placeholder = 'X-Workspace-Id: my-workspace\nX-Custom-Region: ap-northeast-2';
+          headersArea.value = formObj.headersText || '';
+          headersArea.addEventListener('input', (e) => {
+            formObj.headersText = e.target.value;
+          });
+          headersField.appendChild(headersLabel);
+          headersField.appendChild(headersArea);
+          grid.appendChild(headersField);
         } else {
           grid.appendChild(connHeaderField);
           const cmdField = doc.createElement('div');
@@ -4845,7 +4909,7 @@
       ensureModalStyles,
       createModalController,
     } = require('./modal-ui');
-    const MCP_MANAGER_VERSION = 'v1.4.14';
+    const MCP_MANAGER_VERSION = 'v1.4.15';
     const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
     function getOrCreateTrustedTypesPolicy(win) {
       if (!win) return null;
@@ -5521,40 +5585,38 @@
         }
         if (!settingsModal.hasAttribute('data-agy-mcp-nav-bound')) {
           settingsModal.setAttribute('data-agy-mcp-nav-bound', 'true');
-          settingsModal.addEventListener(
-            'click',
-            (e) => {
-              const btn = e.target && typeof e.target.closest === 'function'
-                ? e.target.closest('button[data-testid^="settings-nav-item-"]')
-                : null;
-              if (!btn) return;
-              const testId = btn.getAttribute('data-testid') || '';
-              if (testId === 'settings-nav-item-McpManager') return;
-              const contentContainer = settingsModal.querySelector('.grow.w-full');
-              if (!contentContainer) return;
-              const pane = contentContainer.querySelector('#agy-mcp-settings-pane');
-              const wasMcpPaneVisible = Boolean(pane && pane.style.display !== 'none');
-              if (pane) {
-                pane.style.display = 'none';
-                pane.removeAttribute('data-agy-prev-display');
-              }
-              syncExclusiveNavHighlight(testId);
-              if (wasMcpPaneVisible && testId !== 'settings-nav-item-KoTranslator') {
-                Array.from(contentContainer.children).forEach((child) => {
-                  if (child.id !== 'agy-mcp-settings-pane' && child.id !== 'agy-ko-settings-pane') {
-                    const prev = child.getAttribute('data-agy-prev-display');
-                    if (prev !== null) {
-                      child.style.display = prev;
-                      child.removeAttribute('data-agy-prev-display');
-                    } else {
-                      child.style.display = '';
-                    }
+          const navClickHandler = (e) => {
+            const btn = e.target && typeof e.target.closest === 'function'
+              ? e.target.closest('button[data-testid^="settings-nav-item-"]')
+              : null;
+            if (!btn) return;
+            const testId = btn.getAttribute('data-testid') || '';
+            if (testId === 'settings-nav-item-McpManager') return;
+            const contentContainer = settingsModal.querySelector('.grow.w-full');
+            if (!contentContainer) return;
+            const pane = contentContainer.querySelector('#agy-mcp-settings-pane');
+            const wasMcpPaneVisible = Boolean(pane && pane.style.display !== 'none');
+            if (pane) {
+              pane.style.display = 'none';
+              pane.removeAttribute('data-agy-prev-display');
+            }
+            syncExclusiveNavHighlight(testId);
+            if (wasMcpPaneVisible && testId !== 'settings-nav-item-KoTranslator') {
+              Array.from(contentContainer.children).forEach((child) => {
+                if (child.id !== 'agy-mcp-settings-pane' && child.id !== 'agy-ko-settings-pane') {
+                  const prev = child.getAttribute('data-agy-prev-display');
+                  if (prev !== null) {
+                    child.style.display = prev;
+                    child.removeAttribute('data-agy-prev-display');
+                  } else {
+                    child.style.display = '';
                   }
-                });
-              }
-            },
-            true
-          );
+                }
+              });
+            }
+          };
+          settingsModal.__agyMcpNavClickHandler = navClickHandler;
+          settingsModal.addEventListener('click', navClickHandler, true);
         }
       }
       function buildQuickActionToolbar() {
@@ -5995,9 +6057,50 @@
           modal.closeEditPopup();
           modal.closeModal();
           cleanupLegacyStatusBarArtifacts(win, doc);
+          const settingsModals = doc.querySelectorAll ? doc.querySelectorAll('.settings-modal-container') : [];
+          Array.from(settingsModals).forEach((sm) => {
+            const contentContainer = sm.querySelector ? sm.querySelector('.grow.w-full') : null;
+            const pane = contentContainer && contentContainer.querySelector ? contentContainer.querySelector('#agy-mcp-settings-pane') : null;
+            const wasVisible = Boolean(pane && pane.style && pane.style.display !== 'none');
+            if (wasVisible && contentContainer && contentContainer.children) {
+              Array.from(contentContainer.children).forEach((child) => {
+                if (child.id !== 'agy-mcp-settings-pane' && child.id !== 'agy-ko-settings-pane') {
+                  const prev = child.getAttribute ? child.getAttribute('data-agy-prev-display') : null;
+                  if (prev !== null) {
+                    child.style.display = prev;
+                    if (typeof child.removeAttribute === 'function') child.removeAttribute('data-agy-prev-display');
+                  } else {
+                    child.style.display = '';
+                  }
+                }
+              });
+            }
+            if (sm.__agyMcpNavClickHandler && typeof sm.removeEventListener === 'function') {
+              sm.removeEventListener('click', sm.__agyMcpNavClickHandler, true);
+              delete sm.__agyMcpNavClickHandler;
+            }
+            if (typeof sm.removeAttribute === 'function') {
+              sm.removeAttribute('data-agy-mcp-nav-bound');
+            }
+          });
           doc.querySelectorAll(`[${NATIVE_BTN_ATTR}]`).forEach((el) => {
             if (el.parentNode) el.parentNode.removeChild(el);
           });
+          const styleEl = doc.getElementById ? doc.getElementById('agy-mcp-manager-styles') : null;
+          if (styleEl) {
+            if (typeof styleEl.remove === 'function') styleEl.remove();
+            else if (styleEl.parentNode) styleEl.parentNode.removeChild(styleEl);
+          }
+          if (doc.querySelectorAll) {
+            doc.querySelectorAll('ga-remote-control iframe').forEach((ifr) => {
+              try {
+                const childMgr = ifr?.contentWindow?.agyMcpManager;
+                if (childMgr && childMgr !== controller && typeof childMgr.destroy === 'function') {
+                  childMgr.destroy();
+                }
+              } catch {}
+            });
+          }
           if (win.agyMcpManager === controller) {
             delete win.agyMcpManager;
             delete win.__agyMcpManagerActive;

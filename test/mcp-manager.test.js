@@ -1770,3 +1770,495 @@ test('covers MCP-BUG-01..06 regressions: line-anchored marker extraction, 2-plug
     assert.deepEqual(extractedOauthSingle.extraHeaders, { 'X-Workspace': 'my-ws' });
   }
 });
+
+test('D-0017: mergeMcpManagerBlock and fetchHostInstalledPluginInfo ignore indented marker literals inside ko-thought-translator and preserve block-comment markers', async () => {
+  const vm = require('node:vm');
+  const existingWithKoLiterals = [
+    '(() => { function mountStatusBar() {} globalThis.__sbOk = 1; })();',
+    '',
+    '/* === BEGIN_AGY_KO_THOUGHT_LOCALIZER_V2 === */',
+    '(() => {',
+    '  const arr = [',
+    "    '// === BEGIN_AGY_MCP_MANAGER_V1 ===',",
+    "    '// === END_AGY_MCP_MANAGER_V1 ===',",
+    "    '// === BEGIN_AGY_KO_THOUGHT_LOCALIZER_V2 ===',",
+    '  ];',
+    '  // === BEGIN_AGY_MCP_MANAGER_V1 ===',
+    '  // === END_AGY_MCP_MANAGER_V1 ===',
+    '  globalThis.__koArrLen = arr.length;',
+    '})();',
+    '/* === END_AGY_KO_THOUGHT_LOCALIZER_V2 === */',
+    '',
+  ].join('\n');
+
+  const merged = mergeMcpManagerBlock(existingWithKoLiterals, '(() => { globalThis.__mcpOk = 2; })();');
+  assert.doesNotThrow(
+    () => new vm.Script(merged, { filename: 'merged_statusbar_autoinject.js' }),
+    'D-0017: mergeMcpManagerBlock must not slice or insert inside indented string literals causing SyntaxError'
+  );
+  const ctx = vm.createContext({});
+  ctx.globalThis = ctx;
+  new vm.Script(merged).runInContext(ctx);
+  assert.equal(ctx.__sbOk, 1);
+  assert.equal(ctx.__mcpOk, 2);
+  assert.equal(ctx.__koArrLen, 3, 'D-0017: ko-thought-translator array literals must remain intact');
+  assert.ok(
+    merged.indexOf('// === BEGIN_AGY_MCP_MANAGER_V1 ===') < merged.indexOf('/* === BEGIN_AGY_KO_THOUGHT_LOCALIZER_V2 === */'),
+    'D-0017: MCP block must be inserted before block-comment KO_THOUGHT_LOCALIZER_V2 marker'
+  );
+
+  // Verify host-mcp-bridge fetchHostInstalledPluginInfo does not misdetect indented markers and captures outer double-wrapped end marker
+  const doubleWrappedKoOnly = [
+    'function mountStatusBar() {}',
+    '// === BEGIN_AGY_KO_THOUGHT_LOCALIZER_V2 ===',
+    '/* === BEGIN_AGY_KO_THOUGHT_LOCALIZER_V2 === */',
+    'const x = [',
+    "  '// === BEGIN_AGY_MCP_MANAGER_V1 ===',",
+    "  '// === END_AGY_MCP_MANAGER_V1 ===',",
+    '];',
+    '  // === BEGIN_AGY_MCP_MANAGER_V1 ===',
+    '  // === END_AGY_MCP_MANAGER_V1 ===',
+    '/* === END_AGY_KO_THOUGHT_LOCALIZER_V2 === */',
+    '// === END_AGY_KO_THOUGHT_LOCALIZER_V2 ===',
+  ].join('\n');
+
+  const mockWin = {
+    __agyRemoteControlInstance: {
+      destroyed: false,
+      localUserInfo: { selectedGeminiDir: '/virtual/.gemini' },
+      async proxyCommand(rpcPath) {
+        if (rpcPath.endsWith('/GetCustomizationStates')) {
+          return { payload: new TextEncoder().encode(JSON.stringify({ states: [] })) };
+        }
+        if (rpcPath.endsWith('/ReadFile')) {
+          return {
+            payload: new TextEncoder().encode(
+              JSON.stringify({ contents: Buffer.from(doubleWrappedKoOnly, 'utf8').toString('base64') })
+            ),
+          };
+        }
+        return { payload: new TextEncoder().encode('{}') };
+      },
+    },
+  };
+  const bridge = createHostMcpBridge({ window: mockWin });
+  const info = await bridge.fetchHostInstalledPluginInfo();
+  assert.equal(info.hasStatusbar, true);
+  assert.equal(info.hasKoTranslator, true);
+  assert.equal(info.hasMcpManager, false, 'D-0017: indented MCP markers inside KO block must not set hasMcpManager=true');
+  assert.ok(
+    info.koBlock.endsWith('// === END_AGY_KO_THOUGHT_LOCALIZER_V2 ==='),
+    'D-0017: double-wrapped KO block must include the outer trailing end marker'
+  );
+});
+
+test('D-0018: validateAndBuildServerSpec preserves description on Stdio servers and modal-ui renders headersText field for HTTP servers', async () => {
+  const stdioBuilt = validateAndBuildServerSpec(
+    {
+      serverName: 'stdio-desc-srv',
+      description: 'Filesystem MCP local stdio tool',
+      transport: 'stdio',
+      command: 'npx',
+      argsText: '-y @modelcontextprotocol/server-filesystem D:/work',
+      envText: 'NODE_ENV=production',
+    },
+    { description: 'Old description', disabledTools: ['rm_file'] }
+  );
+  assert.equal(stdioBuilt.ok, true);
+  assert.equal(
+    stdioBuilt.spec.description,
+    'Filesystem MCP local stdio tool',
+    'D-0018: Stdio server spec must preserve non-empty description instead of deleting it'
+  );
+  assert.deepEqual(stdioBuilt.spec.disabledTools, ['rm_file']);
+
+  const { createModalController } = require('../src/modal-ui');
+  function makeEl(tag) {
+    const el = {
+      nodeType: 1,
+      tagName: String(tag).toUpperCase(),
+      id: '',
+      className: '',
+      textContent: '',
+      value: '',
+      type: '',
+      placeholder: '',
+      checked: false,
+      style: {},
+      attributes: new Map(),
+      children: [],
+      listeners: new Map(),
+      parentNode: null,
+      parentElement: null,
+      setAttribute(k, v) { this.attributes.set(k, String(v)); if (k === 'id') this.id = String(v); },
+      getAttribute(k) { return k === 'id' ? (this.id || null) : (this.attributes.get(k) ?? null); },
+      hasAttribute(k) { return k === 'id' ? Boolean(this.id) : this.attributes.has(k); },
+      removeAttribute(k) { this.attributes.delete(k); },
+      appendChild(c) { c.parentNode = this; c.parentElement = this; this.children.push(c); return c; },
+      removeChild(c) { const i = this.children.indexOf(c); if (i !== -1) this.children.splice(i, 1); return c; },
+      addEventListener(ev, fn) { if (!this.listeners.has(ev)) this.listeners.set(ev, []); this.listeners.get(ev).push(fn); },
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        const out = [];
+        const mAttr = /^\[([^=\]]+)="([^"]+)"\]$/.exec(sel);
+        const walk = (n) => {
+          for (const c of n.children) {
+            if (sel.startsWith('#') && c.id === sel.slice(1)) out.push(c);
+            else if (sel.startsWith('.') && (c.className || '').split(/\s+/).includes(sel.slice(1))) out.push(c);
+            else if (mAttr && c.getAttribute(mAttr[1]) === mAttr[2]) out.push(c);
+            walk(c);
+          }
+        };
+        walk(this);
+        return out;
+      },
+      classList: { add() {}, remove() {}, contains: () => false },
+    };
+    return el;
+  }
+  const doc = {
+    head: makeEl('head'),
+    body: makeEl('body'),
+    createElement: (t) => makeEl(t),
+    getElementById(id) { return this.head.querySelector(`#${id}`) || this.body.querySelector(`#${id}`); },
+  };
+  let savedSpec = null;
+  const mockBridge = {
+    readMcpConfig: async () => ({
+      ok: true,
+      uri: 'file:///mock/mcp_config.json',
+      rawText: '{}',
+      config: {
+        mcpServers: {
+          'http-hdr-srv': {
+            serverUrl: 'https://api.example.com/mcp',
+            headers: { 'X-Workspace-Id': 'ws-initial' },
+          },
+        },
+      },
+    }),
+    fetchServerStates: async () => ({ ok: true, states: [] }),
+    upsertCustomServer: async (_name, spec) => { savedSpec = spec; return { ok: true }; },
+  };
+  const modal = createModalController({ window: {}, document: doc, bridge: mockBridge });
+  await modal.reloadData();
+  await modal.openEditPopup('http-hdr-srv');
+  const headersInput = doc.body.querySelector('[data-field="headersText"]');
+  assert.ok(headersInput, 'D-0018: HTTP server editor must render [data-field="headersText"] input');
+  assert.ok(headersInput.value.includes('X-Workspace-Id: ws-initial'));
+  headersInput.value = 'X-Workspace-Id: ws-updated\nX-Env: staging';
+  for (const fn of headersInput.listeners.get('input') || []) {
+    fn({ target: headersInput });
+  }
+  const saveBtn = doc.body.querySelector('[data-testid="agy-mcp-popup-save-btn"]');
+  for (const fn of saveBtn.listeners.get('click') || []) {
+    await fn({ preventDefault() {}, stopPropagation() {} });
+  }
+  assert.deepEqual(savedSpec.headers, { 'X-Workspace-Id': 'ws-updated', 'X-Env': 'staging' });
+});
+
+test('D-0019: openAuthUrl blocks non-http(s) URI schemes (javascript:, file:, ms-msdt:) and allows valid https:/http: URLs', () => {
+  const openedUrls = [];
+  const bridge = createHostMcpBridge({
+    window: {
+      open(url, target, features) {
+        openedUrls.push({ url, target, features });
+      },
+    },
+  });
+
+  assert.equal(bridge.openAuthUrl('javascript:alert(document.cookie)'), false, 'D-0019: javascript: URL must be rejected');
+  assert.equal(bridge.openAuthUrl('file:///C:/Windows/System32/calc.exe'), false, 'D-0019: file: URL must be rejected');
+  assert.equal(bridge.openAuthUrl('ms-msdt:/id PCWDiagnostic'), false, 'D-0019: custom protocol handler URL must be rejected');
+  assert.equal(bridge.openAuthUrl('data:text/html,<script>alert(1)</script>'), false, 'D-0019: data: URL must be rejected');
+  assert.equal(openedUrls.length, 0, 'D-0019: window.open must never be invoked for disallowed schemes');
+
+  assert.equal(bridge.openAuthUrl('https://auth.example.com/oauth/authorize?client_id=abc'), true);
+  assert.equal(bridge.openAuthUrl('http://127.0.0.1:8787/oauth/start'), true);
+  assert.equal(openedUrls.length, 2);
+});
+
+test('D-0020: ensure_statusbar_patch configureTargetViaCdp rejects on Runtime.evaluate exceptionDetails and requires all bundled plugins active', async () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const vm = require('node:vm');
+  const patcherPath = path.join(__dirname, '..', 'scripts', 'ensure_statusbar_patch.js');
+  const patcherSrc = fs.readFileSync(patcherPath, 'utf8').replace(/^#!.*\n/, '');
+
+  let nextWsBehavior = null;
+  let lastSentPayload = null;
+  class FakeWebSocket {
+    constructor(url) {
+      this.url = url;
+      setImmediate(() => { if (typeof this.onopen === 'function') this.onopen(); });
+    }
+    send(raw) {
+      lastSentPayload = JSON.parse(raw);
+      if (nextWsBehavior) nextWsBehavior(this, lastSentPayload);
+    }
+    close() {}
+  }
+
+  const ctx = vm.createContext({
+    require,
+    module: { exports: {} },
+    exports: {},
+    __dirname: path.dirname(patcherPath),
+    __filename: patcherPath,
+    process: { ...process, argv: [process.execPath, patcherPath], exit() {} },
+    WebSocket: FakeWebSocket,
+    Buffer,
+    setTimeout,
+    clearTimeout,
+    console,
+  });
+  new vm.Script(patcherSrc + '\n;globalThis.__testConfigureCdp = configureTargetViaCdp;').runInContext(ctx);
+
+  nextWsBehavior = (ws) => {
+    setImmediate(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          id: 1,
+          result: {
+            result: { type: 'object', subtype: 'error' },
+            exceptionDetails: { text: 'Uncaught ReferenceError: brokenBundle is not defined' },
+          },
+        }),
+      });
+    });
+  };
+  await assert.rejects(
+    () => ctx.__testConfigureCdp('ws://127.0.0.1:9222/devtools/page/1', 'brokenBundle()', 'h1', 1000),
+    /ReferenceError/,
+    'D-0020: configureTargetViaCdp must reject on exceptionDetails'
+  );
+
+  const combinedCode = [
+    'function mountStatusBar() {}',
+    'function mountMcpManager() { window.agyMcpManager = { destroy() {} }; }',
+    'window.__ranCombined = (window.__ranCombined || 0) + 1;',
+    'mountMcpManager();',
+  ].join('\n');
+  nextWsBehavior = (ws) => {
+    setImmediate(() => {
+      ws.onmessage({ data: JSON.stringify({ id: 1, result: { result: { value: 'INJECTED_OK' } } }) });
+    });
+  };
+  await ctx.__testConfigureCdp('ws://127.0.0.1:9222/devtools/page/1', combinedCode, 'h-comb', 1000);
+  const expr = lastSentPayload.params.expression;
+
+  const onlyStatusbarWin = {
+    agyStatusBar: {},
+    __agyStatusBarCleanup: () => {},
+    __agyStatusBarHash: 'h-comb',
+    document: { querySelector: () => ({}) },
+  };
+  onlyStatusbarWin.window = onlyStatusbarWin;
+  assert.equal(
+    vm.runInNewContext(expr, onlyStatusbarWin),
+    'INJECTED_OK',
+    'D-0020: when MCP manager is missing from window, combined bundle must re-inject instead of returning ALREADY_ACTIVE'
+  );
+});
+
+test('D-0021: scripts/build.js preserves multiline template literals, package.json defines status script, and LICENSE/README are consistent', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const vm = require('node:vm');
+  const rootDir = path.join(__dirname, '..');
+  const buildPath = path.join(rootDir, 'scripts', 'build.js');
+  const buildSrc = fs.readFileSync(buildPath, 'utf8').replace(/^#!.*\n/, '');
+
+  const sampleTplModule = [
+    'const tpl = `line1',
+    '',
+    '// preserved-slash-line',
+    'col0-line`;',
+    '// comment to strip',
+    'module.exports = { tpl };',
+  ].join('\n');
+
+  const customRequire = (spec) => {
+    if (spec === 'fs') {
+      return {
+        readFileSync: (p) => {
+          if (String(p).endsWith('package.json')) return JSON.stringify({ version: '1.4.15' });
+          if (String(p).endsWith('index.js')) return "module.exports = require('./mcp-config-schema');\n";
+          if (String(p).endsWith('mcp-config-schema.js')) return sampleTplModule;
+          return 'module.exports = {};\n';
+        },
+        mkdirSync() {},
+        writeFileSync() {},
+      };
+    }
+    return require(spec);
+  };
+  const mod = { exports: {} };
+  const ctx = vm.createContext({
+    require: customRequire,
+    module: mod,
+    exports: mod.exports,
+    __dirname: path.dirname(buildPath),
+    __filename: buildPath,
+    process,
+    Buffer,
+    console,
+  });
+  new vm.Script(buildSrc).runInContext(ctx);
+  const { bundle } = mod.exports.buildBundle({ write: false });
+  const evalBox = vm.createContext({});
+  evalBox.globalThis = evalBox;
+  new vm.Script(bundle.replace("__require('.', './index');", "globalThis.__out = __require('.', './index');")).runInContext(evalBox);
+  assert.equal(
+    evalBox.__out.tpl,
+    'line1\n\n// preserved-slash-line\ncol0-line',
+    'D-0021: build.js must preserve multiline template literal blank lines, // lines, and column-0 indentation'
+  );
+
+  const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+  assert.equal(
+    pkg.scripts && pkg.scripts.status,
+    'node scripts/ensure_statusbar_patch.js --status',
+    'D-0021: package.json must define npm run status matching README instructions'
+  );
+  assert.equal(fs.existsSync(path.join(rootDir, 'LICENSE')), true, 'D-0021: MIT LICENSE file must exist at repository root');
+  const readmeEn = fs.readFileSync(path.join(rootDir, 'README.md'), 'utf8');
+  assert.equal(readmeEn.includes('StandaloneZero-Offset'), false, 'D-0021: README.md typo StandaloneZero-Offset must be fixed');
+});
+
+test('D-0022: destroy() removes injected style tag, restores hidden native settings pane display, and destroys same-origin remote iframe instance', () => {
+  function makeClassList(owner) {
+    return {
+      add(...t) { const s = new Set((owner.className || '').split(/\s+/).filter(Boolean)); t.forEach((x) => s.add(x)); owner.className = [...s].join(' '); },
+      remove(...t) { const s = new Set((owner.className || '').split(/\s+/).filter(Boolean)); t.forEach((x) => s.delete(x)); owner.className = [...s].join(' '); },
+      contains(t) { return (owner.className || '').split(/\s+/).includes(t); },
+    };
+  }
+  function makeEl(tag) {
+    const el = {
+      nodeType: 1,
+      tagName: String(tag).toUpperCase(),
+      id: '',
+      className: '',
+      textContent: '',
+      style: {},
+      attributes: new Map(),
+      children: [],
+      listeners: new Map(),
+      parentNode: null,
+      parentElement: null,
+      setAttribute(k, v) { this.attributes.set(k, String(v)); if (k === 'id') this.id = String(v); },
+      getAttribute(k) { return k === 'id' ? (this.id || null) : (this.attributes.get(k) ?? null); },
+      hasAttribute(k) { return k === 'id' ? Boolean(this.id) : this.attributes.has(k); },
+      removeAttribute(k) { this.attributes.delete(k); },
+      appendChild(c) { if (c.parentNode) c.parentNode.removeChild(c); c.parentNode = this; c.parentElement = this; this.children.push(c); return c; },
+      insertBefore(c, r) { if (c.parentNode) c.parentNode.removeChild(c); c.parentNode = this; c.parentElement = this; const i = r ? this.children.indexOf(r) : -1; if (i === -1) this.children.push(c); else this.children.splice(i, 0, c); return c; },
+      removeChild(c) { const i = this.children.indexOf(c); if (i !== -1) { this.children.splice(i, 1); c.parentNode = null; c.parentElement = null; } return c; },
+      remove() { if (this.parentNode) this.parentNode.removeChild(this); },
+      addEventListener(ev, fn) { if (!this.listeners.has(ev)) this.listeners.set(ev, []); this.listeners.get(ev).push(fn); },
+      removeEventListener(ev, fn) { if (this.listeners.has(ev)) this.listeners.set(ev, this.listeners.get(ev).filter((x) => x !== fn)); },
+      click() { const fns = this.listeners.get('click') || []; for (const fn of fns) fn({ target: this, preventDefault() {}, stopPropagation() {} }); },
+      closest(sel) {
+        let cur = this;
+        while (cur) {
+          if (sel === '.flex.flex-col.gap-0\\.5' && cur.className === 'flex flex-col gap-0.5') return cur;
+          cur = cur.parentElement;
+        }
+        return null;
+      },
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        const out = [];
+        const mHas = /^\[([^=\]]+)\]$/.exec(sel);
+        const mEq = /^(?:button)?\[([^=\]]+)="([^"]+)"\]$/i.exec(sel);
+        const mBtnPrefix = /^button\[data-testid\^="([^"]+)"\]$/i.exec(sel);
+        const walk = (n) => {
+          for (const c of n.children) {
+            if (sel === 'ga-remote-control iframe' && c.tagName === 'IFRAME') out.push(c);
+            else if (sel.startsWith('#') && c.id === sel.slice(1)) out.push(c);
+            else if (sel === '.settings-modal-container' && c.classList.contains('settings-modal-container')) out.push(c);
+            else if (sel === '.grow.w-full' && c.className === 'grow w-full') out.push(c);
+            else if (mBtnPrefix && c.tagName === 'BUTTON' && (c.getAttribute('data-testid') || '').startsWith(mBtnPrefix[1])) out.push(c);
+            else if (mEq && c.getAttribute(mEq[1]) === mEq[2]) out.push(c);
+            else if (mHas && c.hasAttribute(mHas[1])) out.push(c);
+            walk(c);
+          }
+        };
+        walk(this);
+        return out;
+      },
+    };
+    el.classList = makeClassList(el);
+    return el;
+  }
+  function makeDoc() {
+    return {
+      head: makeEl('head'),
+      body: makeEl('body'),
+      createElement: (t) => makeEl(t),
+      getElementById(id) { return this.head.querySelector(`#${id}`) || this.body.querySelector(`#${id}`); },
+      querySelector(sel) { return this.head.querySelector(sel) || this.body.querySelector(sel); },
+      querySelectorAll(sel) { return [...this.head.querySelectorAll(sel), ...this.body.querySelectorAll(sel)]; },
+    };
+  }
+
+  const doc = makeDoc();
+  const settingsModal = makeEl('div');
+  settingsModal.className = 'settings-modal-container';
+  const navList = makeEl('div');
+  navList.className = 'flex flex-col gap-0.5';
+  const modelsBtn = makeEl('button');
+  modelsBtn.setAttribute('data-testid', 'settings-nav-item-Models');
+  navList.appendChild(modelsBtn);
+  const contentContainer = makeEl('div');
+  contentContainer.className = 'grow w-full';
+  const nativeModelsPane = makeEl('div');
+  nativeModelsPane.id = 'native-models-pane';
+  nativeModelsPane.style.display = 'flex';
+  contentContainer.appendChild(nativeModelsPane);
+  settingsModal.appendChild(navList);
+  settingsModal.appendChild(contentContainer);
+  doc.body.appendChild(settingsModal);
+
+  const iframeDoc = makeDoc();
+  const iframeWin = {
+    addEventListener() {},
+    removeEventListener() {},
+    setTimeout,
+    clearTimeout,
+  };
+  iframeWin.parent = null; // filled below
+  const gaRemote = makeEl('ga-remote-control');
+  const iframe = makeEl('iframe');
+  iframe.contentWindow = iframeWin;
+  iframe.contentDocument = iframeDoc;
+  gaRemote.appendChild(iframe);
+  doc.body.appendChild(gaRemote);
+
+  const win = {
+    addEventListener() {},
+    removeEventListener() {},
+    setTimeout,
+    clearTimeout,
+  };
+  iframeWin.parent = win;
+
+  const mockBridge = {
+    readMcpConfig: async () => ({ ok: true, config: { mcpServers: {} } }),
+    fetchServerStates: async () => ({ ok: true, states: [] }),
+  };
+
+  const ctrl = mountMcpManager({ window: win, document: doc, bridge: mockBridge });
+  const mcpNavBtn = doc.querySelector('[data-testid="settings-nav-item-McpManager"]');
+  assert.ok(mcpNavBtn, 'MCP Servers nav button should be injected');
+  mcpNavBtn.click();
+  assert.equal(nativeModelsPane.style.display, 'none', 'native pane should be hidden while MCP Servers tab is active');
+  assert.ok(doc.getElementById('agy-mcp-manager-styles'), 'style tag should be injected');
+  assert.ok(iframeWin.agyMcpManager, 'child remote iframe should have mounted agyMcpManager');
+
+  ctrl.destroy();
+
+  assert.equal(doc.getElementById('agy-mcp-manager-styles'), null, 'D-0022: destroy() must remove #agy-mcp-manager-styles');
+  assert.equal(nativeModelsPane.style.display, 'flex', 'D-0022: destroy() must restore hidden native settings pane display');
+  assert.equal(iframeWin.agyMcpManager, undefined, 'D-0022: destroy() must also destroy same-origin remote iframe instance');
+});

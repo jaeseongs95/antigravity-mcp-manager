@@ -1,4 +1,4 @@
-# Antigravity Custom MCP Server Manager (`antigravity-mcp-manager` `v1.4.14`)
+# Antigravity Custom MCP Server Manager (`antigravity-mcp-manager` `v1.4.15`)
 
 **Languages:** **English ([README.md](./README.md))** | **[한국어 (README.ko.md)](./README.ko.md)**
 
@@ -33,7 +33,7 @@ Add, edit, authenticate (`OAuth` / `Bearer` / `API Key` / `Basic`), toggle, and 
   - Resolves `~/.gemini/config/mcp_config.json` via live server states, React Fiber `selectedGeminiDir`, `GetLocalUserInfo` (`homeDirUri`), and `GetCustomizationStates` fallbacks so even fresh zero-server installations persist reliably via `LanguageServerService.writeFile`.
 - **100% English Default UI + Automatic Korean Localization via `ko-thought-translator`**:
   - Ships with clean English UI defaults (`MCP Servers`, `Add Custom MCP Server`, `Connect <ServerName> ↗`, `Advanced OAuth Settings`, etc.) and automatically localizes into Korean when `ko-thought-translator` is active.
-- **StandaloneZero-Offset `app.asar` Patcher & Host-Aware Remote Companion Loader**:
+- **Standalone Zero-Offset `app.asar` Patcher & Host-Aware Remote Companion Loader**:
   - Includes its own `scripts/ensure_statusbar_patch.js` so it works standalone (1 plugin only) or alongside `antigravity-statusbar` and `ko-thought-translator` (2 or 3 plugins).
 
 ---

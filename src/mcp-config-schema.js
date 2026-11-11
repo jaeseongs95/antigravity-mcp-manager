@@ -762,7 +762,7 @@ function validateAndBuildServerSpec({
   basicPass,
   disabled,
   existingSpec,
-}) {
+}, externalExistingSpec) {
   let cleanName = typeof serverName === 'string' ? serverName.trim() : '';
   const rawCmd = typeof command === 'string' ? command.trim() : '';
   const rawUrl = typeof url === 'string' ? url.trim() : '';
@@ -814,7 +814,8 @@ function validateAndBuildServerSpec({
     };
   }
 
-  const base = existingSpec && typeof existingSpec === 'object' ? { ...existingSpec } : {};
+  const resolvedExisting = existingSpec || externalExistingSpec;
+  const base = resolvedExisting && typeof resolvedExisting === 'object' ? { ...resolvedExisting } : {};
   delete base.command;
   delete base.args;
   delete base.env;
@@ -919,6 +920,9 @@ function validateAndBuildServerSpec({
     ...base,
     command: cleanCmd,
   };
+  if (cleanDesc) {
+    spec.description = cleanDesc;
+  }
   if (parsedArgs.length > 0) {
     spec.args = parsedArgs;
   }

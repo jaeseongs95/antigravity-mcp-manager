@@ -492,8 +492,9 @@ function createHostMcpBridge(opts = {}) {
             async readFile(req) {
               const uri = typeof req === 'string' ? req : req?.uri;
               const r = await callRpc('/exa.language_server_pb.LanguageServerService/ReadFile', { uri });
-              if (r && typeof r.content === 'string') {
-                return { content: decodeBase64ToBytes(r.content) };
+              const b64 = typeof r?.content === 'string' ? r.content : (typeof r?.contents === 'string' ? r.contents : null);
+              if (b64 !== null) {
+                return { content: decodeBase64ToBytes(b64) };
               }
               return r;
             },
@@ -901,9 +902,20 @@ function createHostMcpBridge(opts = {}) {
 
   function openAuthUrl(url) {
     if (!url || typeof url !== 'string') return false;
+    const trimmed = url.trim();
+    if (!trimmed) return false;
+    let parsed;
+    try {
+      parsed = new URL(trimmed);
+    } catch {
+      return false;
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return false;
+    }
     try {
       if (win && typeof win.open === 'function') {
-        win.open(url, '_blank', 'noopener,noreferrer');
+        win.open(parsed.href, '_blank', 'noopener,noreferrer');
         return true;
       }
     } catch {}
@@ -1129,7 +1141,7 @@ function createHostMcpBridge(opts = {}) {
   let cachedHostPluginInfo = null;
   async function fetchHostInstalledPluginInfo(forceRefresh = false) {
     if (cachedHostPluginInfo && !forceRefresh) return cachedHostPluginInfo;
-    const svc = scanFiberTree();
+    const svc = scanFiberTree() || getRemoteControlProxyAdapter();
     if (!svc) return null;
 
     let geminiRoot = null;
@@ -1137,9 +1149,10 @@ function createHostMcpBridge(opts = {}) {
       if (!rawPath || typeof rawPath !== 'string') return null;
       const fsPath = toFsPathFromFileUri(rawPath);
       const norm = fsPath.replace(/\\/g, '/');
-      const idx = norm.indexOf('/.gemini/');
+      const normWithSlash = norm.endsWith('/') ? norm : `${norm}/`;
+      const idx = normWithSlash.indexOf('/.gemini/');
       if (idx === -1) return null;
-      return norm.slice(0, idx + '/.gemini'.length);
+      return normWithSlash.slice(0, idx + '/.gemini'.length);
     };
 
     try {
@@ -1200,6 +1213,13 @@ function createHostMcpBridge(opts = {}) {
     }
 
     if (!geminiRoot) {
+      const rcSelected = svc?.rcInst?.localUserInfo?.selectedGeminiDir || '';
+      if (rcSelected) {
+        geminiRoot = extractRoot(rcSelected);
+      }
+    }
+
+    if (!geminiRoot) {
       if (pluginNames.size > 0) {
         return {
           resolved: false,
@@ -1257,22 +1277,42 @@ function createHostMcpBridge(opts = {}) {
     const koBeginStr = ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_');
     const koEndStr = ['END_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_');
 
-    const mcpBeginRe = new RegExp(`^[ \\t]*(?:\\/\\/ === ${mcpBeginStr}(?:_V1)? ===|\\/\\* === ${mcpBeginStr}(?:_V1)? === \\*\\/)[ \\t]*$`, 'm');
-    const mcpEndRe = new RegExp(`^[ \\t]*(?:\\/\\/ === ${mcpEndStr}(?:_V1)? ===|\\/\\* === ${mcpEndStr}(?:_V1)? === \\*\\/)[ \\t]*$`, 'm');
-    const koBeginRe = new RegExp(`^[ \\t]*(?:\\/\\/ === ${koBeginStr} ===|\\/\\* === ${koBeginStr} === \\*\\/)[ \\t]*$`, 'm');
-    const koEndRe = new RegExp(`^[ \\t]*(?:\\/\\/ === ${koEndStr} ===|\\/\\* === ${koEndStr} === \\*\\/)[ \\t]*$`, 'm');
+    const mcpBeginRe = new RegExp(`^(?:\\/\\/ === ${mcpBeginStr}(?:_V1)? ===|\\/\\* === ${mcpBeginStr}(?:_V1)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
+    const mcpEndRe = new RegExp(`^(?:\\/\\/ === ${mcpEndStr}(?:_V1)? ===|\\/\\* === ${mcpEndStr}(?:_V1)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
+    const koBeginRe = new RegExp(`^(?:\\/\\/ === ${koBeginStr} ===|\\/\\* === ${koBeginStr} === \\*\\/)[ \\t]*\\r?$`, 'gm');
+    const koEndRe = new RegExp(`^(?:\\/\\/ === ${koEndStr} ===|\\/\\* === ${koEndStr} === \\*\\/)[ \\t]*\\r?$`, 'gm');
 
-    const mcpBeginMatch = mcpBeginRe.exec(text);
-    const mcpEndMatch = mcpBeginMatch ? mcpEndRe.exec(text.slice(mcpBeginMatch.index)) : null;
-    const mcpB = mcpBeginMatch ? mcpBeginMatch.index : -1;
-    const mcpE = mcpEndMatch ? mcpBeginMatch.index + mcpEndMatch.index : -1;
-    const mcpEndLen = mcpEndMatch ? mcpEndMatch[0].length : 0;
+    const findAnchoredSpan = (srcText, beginRe, endRe) => {
+      beginRe.lastIndex = 0;
+      const bMatch = beginRe.exec(srcText);
+      if (!bMatch) return { start: -1, end: -1 };
+      const start = bMatch.index;
+      endRe.lastIndex = bMatch.index + bMatch[0].length;
+      const eMatch = endRe.exec(srcText);
+      if (!eMatch) return { start, end: -1 };
+      let end = eMatch.index + eMatch[0].length;
+      while (true) {
+        const afterEnd = srcText.slice(end);
+        const nlMatch = /^(?:\r?\n)+/.exec(afterEnd);
+        if (!nlMatch) break;
+        const nextLineIdx = end + nlMatch[0].length;
+        endRe.lastIndex = nextLineIdx;
+        const nextEnd = endRe.exec(srcText);
+        if (nextEnd && nextEnd.index === nextLineIdx) {
+          end = nextEnd.index + nextEnd[0].length;
+        } else {
+          break;
+        }
+      }
+      return { start, end };
+    };
 
-    const koBeginMatch = koBeginRe.exec(text);
-    const koEndMatch = koBeginMatch ? koEndRe.exec(text.slice(koBeginMatch.index)) : null;
-    const koB = koBeginMatch ? koBeginMatch.index : -1;
-    const koE = koEndMatch ? koBeginMatch.index + koEndMatch.index : -1;
-    const koEndLen = koEndMatch ? koEndMatch[0].length : 0;
+    const mcpSpan = findAnchoredSpan(text, mcpBeginRe, mcpEndRe);
+    const koSpan = findAnchoredSpan(text, koBeginRe, koEndRe);
+    const mcpB = mcpSpan.start;
+    const mcpE = mcpSpan.end;
+    const koB = koSpan.start;
+    const koE = koSpan.end;
 
     const firstMarkerIdx = [mcpB, koB].filter((i) => i !== -1).sort((a, b) => a - b)[0] ?? text.length;
     const baseSegment = text.slice(0, firstMarkerIdx).trim();
@@ -1296,8 +1336,8 @@ function createHostMcpBridge(opts = {}) {
       hasMcpManager,
       hasKoTranslator,
       statusbarBlock: isBaseStatusbar ? baseSegment : '',
-      mcpBlock: mcpB !== -1 && mcpE > mcpB ? text.slice(mcpB, mcpE + mcpEndLen) : '',
-      koBlock: koB !== -1 && koE > koB ? text.slice(koB, koE + koEndLen) : '',
+      mcpBlock: mcpB !== -1 && mcpE > mcpB ? text.slice(mcpB, mcpE).trim() : '',
+      koBlock: koB !== -1 && koE > koB ? text.slice(koB, koE).trim() : '',
     };
     return cachedHostPluginInfo;
   }

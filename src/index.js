@@ -10,7 +10,7 @@ const {
   createModalController,
 } = require('./modal-ui');
 
-const MCP_MANAGER_VERSION = 'v1.4.14';
+const MCP_MANAGER_VERSION = 'v1.4.15';
 const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
 function getOrCreateTrustedTypesPolicy(win) {
@@ -752,47 +752,45 @@ function mountMcpManager(env = {}) {
 
     if (!settingsModal.hasAttribute('data-agy-mcp-nav-bound')) {
       settingsModal.setAttribute('data-agy-mcp-nav-bound', 'true');
-      settingsModal.addEventListener(
-        'click',
-        (e) => {
-          const btn = e.target && typeof e.target.closest === 'function'
-            ? e.target.closest('button[data-testid^="settings-nav-item-"]')
-            : null;
-          if (!btn) return;
-          const testId = btn.getAttribute('data-testid') || '';
-          if (testId === 'settings-nav-item-McpManager') return;
+      const navClickHandler = (e) => {
+        const btn = e.target && typeof e.target.closest === 'function'
+          ? e.target.closest('button[data-testid^="settings-nav-item-"]')
+          : null;
+        if (!btn) return;
+        const testId = btn.getAttribute('data-testid') || '';
+        if (testId === 'settings-nav-item-McpManager') return;
 
-          const contentContainer = settingsModal.querySelector('.grow.w-full');
-          if (!contentContainer) return;
+        const contentContainer = settingsModal.querySelector('.grow.w-full');
+        if (!contentContainer) return;
 
-          const pane = contentContainer.querySelector('#agy-mcp-settings-pane');
-          const wasMcpPaneVisible = Boolean(pane && pane.style.display !== 'none');
-          if (pane) {
-            pane.style.display = 'none';
-            pane.removeAttribute('data-agy-prev-display');
-          }
+        const pane = contentContainer.querySelector('#agy-mcp-settings-pane');
+        const wasMcpPaneVisible = Boolean(pane && pane.style.display !== 'none');
+        if (pane) {
+          pane.style.display = 'none';
+          pane.removeAttribute('data-agy-prev-display');
+        }
 
-          // Exclusively highlight the clicked tab (whether native like "Models" or "KoTranslator")
-          // and clear highlight on all other tabs so two tabs never look pressed simultaneously
-          syncExclusiveNavHighlight(testId);
+        // Exclusively highlight the clicked tab (whether native like "Models" or "KoTranslator")
+        // and clear highlight on all other tabs so two tabs never look pressed simultaneously
+        syncExclusiveNavHighlight(testId);
 
-          // Restore native children if switching from MCP pane to a native tab (not KoTranslator)
-          if (wasMcpPaneVisible && testId !== 'settings-nav-item-KoTranslator') {
-            Array.from(contentContainer.children).forEach((child) => {
-              if (child.id !== 'agy-mcp-settings-pane' && child.id !== 'agy-ko-settings-pane') {
-                const prev = child.getAttribute('data-agy-prev-display');
-                if (prev !== null) {
-                  child.style.display = prev;
-                  child.removeAttribute('data-agy-prev-display');
-                } else {
-                  child.style.display = '';
-                }
+        // Restore native children if switching from MCP pane to a native tab (not KoTranslator)
+        if (wasMcpPaneVisible && testId !== 'settings-nav-item-KoTranslator') {
+          Array.from(contentContainer.children).forEach((child) => {
+            if (child.id !== 'agy-mcp-settings-pane' && child.id !== 'agy-ko-settings-pane') {
+              const prev = child.getAttribute('data-agy-prev-display');
+              if (prev !== null) {
+                child.style.display = prev;
+                child.removeAttribute('data-agy-prev-display');
+              } else {
+                child.style.display = '';
               }
-            });
-          }
-        },
-        true
-      );
+            }
+          });
+        }
+      };
+      settingsModal.__agyMcpNavClickHandler = navClickHandler;
+      settingsModal.addEventListener('click', navClickHandler, true);
     }
   }
 
@@ -1282,9 +1280,50 @@ function mountMcpManager(env = {}) {
       modal.closeEditPopup();
       modal.closeModal();
       cleanupLegacyStatusBarArtifacts(win, doc);
+      const settingsModals = doc.querySelectorAll ? doc.querySelectorAll('.settings-modal-container') : [];
+      Array.from(settingsModals).forEach((sm) => {
+        const contentContainer = sm.querySelector ? sm.querySelector('.grow.w-full') : null;
+        const pane = contentContainer && contentContainer.querySelector ? contentContainer.querySelector('#agy-mcp-settings-pane') : null;
+        const wasVisible = Boolean(pane && pane.style && pane.style.display !== 'none');
+        if (wasVisible && contentContainer && contentContainer.children) {
+          Array.from(contentContainer.children).forEach((child) => {
+            if (child.id !== 'agy-mcp-settings-pane' && child.id !== 'agy-ko-settings-pane') {
+              const prev = child.getAttribute ? child.getAttribute('data-agy-prev-display') : null;
+              if (prev !== null) {
+                child.style.display = prev;
+                if (typeof child.removeAttribute === 'function') child.removeAttribute('data-agy-prev-display');
+              } else {
+                child.style.display = '';
+              }
+            }
+          });
+        }
+        if (sm.__agyMcpNavClickHandler && typeof sm.removeEventListener === 'function') {
+          sm.removeEventListener('click', sm.__agyMcpNavClickHandler, true);
+          delete sm.__agyMcpNavClickHandler;
+        }
+        if (typeof sm.removeAttribute === 'function') {
+          sm.removeAttribute('data-agy-mcp-nav-bound');
+        }
+      });
       doc.querySelectorAll(`[${NATIVE_BTN_ATTR}]`).forEach((el) => {
         if (el.parentNode) el.parentNode.removeChild(el);
       });
+      const styleEl = doc.getElementById ? doc.getElementById('agy-mcp-manager-styles') : null;
+      if (styleEl) {
+        if (typeof styleEl.remove === 'function') styleEl.remove();
+        else if (styleEl.parentNode) styleEl.parentNode.removeChild(styleEl);
+      }
+      if (doc.querySelectorAll) {
+        doc.querySelectorAll('ga-remote-control iframe').forEach((ifr) => {
+          try {
+            const childMgr = ifr?.contentWindow?.agyMcpManager;
+            if (childMgr && childMgr !== controller && typeof childMgr.destroy === 'function') {
+              childMgr.destroy();
+            }
+          } catch {}
+        });
+      }
       if (win.agyMcpManager === controller) {
         delete win.agyMcpManager;
         delete win.__agyMcpManagerActive;

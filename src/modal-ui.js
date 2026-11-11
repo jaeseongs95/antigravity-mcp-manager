@@ -933,7 +933,12 @@ function createModalController({ doc: docArg, document: documentArg, bridge, onS
         targetUrl = refreshedState?.authUrl || '';
       }
       if (targetUrl) {
-        bridge.openAuthUrl(targetUrl);
+        const opened = bridge.openAuthUrl(targetUrl);
+        if (!opened) {
+          statusLine.style.color = '#fca5a5';
+          statusLine.textContent = 'Blocked or invalid OAuth authorization URL (only http:// and https:// URLs are permitted).';
+          return;
+        }
         statusLine.style.color = '#6ee7b7';
         statusLine.textContent = 'Opened OAuth authorization window in your browser. It will connect automatically once signed in.';
         codeSection.style.display = 'flex';
@@ -1667,6 +1672,23 @@ function createModalController({ doc: docArg, document: documentArg, bridge, onS
       });
       connHeaderField.appendChild(urlInput);
       grid.appendChild(connHeaderField);
+
+      const headersField = doc.createElement('div');
+      headersField.className = 'agy-mcp-field full';
+      const headersLabel = doc.createElement('label');
+      headersLabel.className = 'agy-mcp-label';
+      headersLabel.textContent = 'Custom HTTP Headers (Optional, KEY: VALUE or KEY=VALUE per line)';
+      const headersArea = doc.createElement('textarea');
+      headersArea.className = 'agy-mcp-textarea';
+      headersArea.setAttribute('data-field', 'headersText');
+      headersArea.placeholder = 'X-Workspace-Id: my-workspace\nX-Custom-Region: ap-northeast-2';
+      headersArea.value = formObj.headersText || '';
+      headersArea.addEventListener('input', (e) => {
+        formObj.headersText = e.target.value;
+      });
+      headersField.appendChild(headersLabel);
+      headersField.appendChild(headersArea);
+      grid.appendChild(headersField);
     } else {
       grid.appendChild(connHeaderField);
 
