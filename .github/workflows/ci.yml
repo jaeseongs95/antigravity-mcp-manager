@@ -4,7 +4,14 @@ on:
   push:
     branches:
       - main
+      - develop
+      - 'feature/**'
+      - 'fix/**'
+      - 'bugfix/**'
+      - 'release/**'
+      - 'hotfix/**'
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:

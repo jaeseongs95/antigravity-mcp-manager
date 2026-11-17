@@ -659,6 +659,8 @@ function createModalController({ doc: docArg, document: documentArg, bridge, onS
   let bannerState = { type: '', message: '' };
   let popupBannerState = { type: '', message: '' };
   let oauthPollTimer = null;
+  let oauthModalOpenSeq = 0;
+  let editPopupOpenSeq = 0;
 
   function setBanner(type, message) {
     bannerState = { type, message };
@@ -721,7 +723,13 @@ function createModalController({ doc: docArg, document: documentArg, bridge, onS
         bridge.readMcpConfig(),
         bridge.fetchServerStates(),
       ]);
-      cachedConfig = cfgResult && cfgResult.config ? cfgResult : { uri: '', config: { mcpServers: {} } };
+      if (cfgResult && cfgResult.ok === false) {
+        if (cfgResult.error) {
+          setBanner('error', cfgResult.error);
+        }
+      } else {
+        cachedConfig = cfgResult && cfgResult.config ? cfgResult : { uri: '', config: { mcpServers: {} } };
+      }
       const statesList = Array.isArray(statesResult)
         ? statesResult
         : (statesResult && Array.isArray(statesResult.states) ? statesResult.states : []);
@@ -755,12 +763,7 @@ function createModalController({ doc: docArg, document: documentArg, bridge, onS
       envText: formatKeyValueForEditor(effectiveSpec && effectiveSpec.env, '='),
       cwd: effectiveSpec && effectiveSpec.cwd ? effectiveSpec.cwd : '',
       url: (effectiveSpec && (effectiveSpec.url || effectiveSpec.serverUrl)) || '',
-      headersText: formatKeyValueForEditor(
-        (authMode === 'none' || authMode === 'oauth' || authMode === 'oauth_or_none')
-          ? extractedAuth.extraHeaders
-          : extractedAuth.extraHeaders,
-        ': '
-      ),
+      headersText: formatKeyValueForEditor(extractedAuth.extraHeaders, ': '),
       authMode,
       oauthClientMode: extractedAuth.oauthClientMode || 'auto',
       oauthClientId: extractedAuth.oauthClientId || '',
@@ -788,9 +791,20 @@ function createModalController({ doc: docArg, document: documentArg, bridge, onS
   }
 
   function closeOAuthConnectModal() {
+    oauthModalOpenSeq += 1;
     if (oauthPollTimer) {
       clearInterval(oauthPollTimer);
       oauthPollTimer = null;
+    }
+    const existingList =
+      doc.body && typeof doc.body.querySelectorAll === 'function'
+        ? doc.body.querySelectorAll(`#${OAUTH_MODAL_ID}`)
+        : [];
+    if (existingList && existingList.length > 0) {
+      Array.from(existingList).forEach((el) => {
+        if (el && el.parentNode) el.parentNode.removeChild(el);
+      });
+      return;
     }
     const backdrop = doc.getElementById(OAUTH_MODAL_ID);
     if (backdrop && backdrop.parentNode) {
@@ -805,12 +819,16 @@ function createModalController({ doc: docArg, document: documentArg, bridge, onS
   async function openOAuthConnectModal(serverName, initialAuthUrl = '') {
     ensureModalStyles(doc);
     closeOAuthConnectModal();
+    const mySeq = ++oauthModalOpenSeq;
     await reloadData();
+    if (mySeq !== oauthModalOpenSeq) return;
 
     let st = findRuntimeState(serverName);
     if (!initialAuthUrl && (!st || (!st.authUrl && !st.hasAuthToken)) && typeof bridge.waitForServerOAuthOrReady === 'function') {
       st = await bridge.waitForServerOAuthOrReady(serverName, 2500);
+      if (mySeq !== oauthModalOpenSeq) return;
       await reloadData();
+      if (mySeq !== oauthModalOpenSeq) return;
     }
     const authUrl = initialAuthUrl || st?.authUrl || '';
 
@@ -944,22 +962,29 @@ function createModalController({ doc: docArg, document: documentArg, bridge, onS
         codeSection.style.display = 'flex';
         if (oauthPollTimer) clearInterval(oauthPollTimer);
         let ticks = 0;
+        let pollInFlight = false;
         oauthPollTimer = setInterval(async () => {
+          if (pollInFlight) return;
           ticks++;
           if (ticks > 60 || !isOAuthConnectModalOpen()) {
             clearInterval(oauthPollTimer);
             oauthPollTimer = null;
             return;
           }
-          await reloadData();
-          const cur = findRuntimeState(serverName);
-          if (cur && (cur.hasAuthToken || cur.status === 2)) {
-            clearInterval(oauthPollTimer);
-            oauthPollTimer = null;
-            closeOAuthConnectModal();
-            setBanner('success', `OAuth authentication and connection completed for "${serverName}".`);
-            if (isOpen()) renderModalContent();
-            if (isEditPopupOpen()) renderEditPopupBody();
+          pollInFlight = true;
+          try {
+            await reloadData();
+            const cur = findRuntimeState(serverName);
+            if (cur && (cur.hasAuthToken || cur.status === 2)) {
+              clearInterval(oauthPollTimer);
+              oauthPollTimer = null;
+              closeOAuthConnectModal();
+              setBanner('success', `OAuth authentication and connection completed for "${serverName}".`);
+              if (isOpen()) renderModalContent();
+              if (isEditPopupOpen()) renderEditPopupBody();
+            }
+          } finally {
+            pollInFlight = false;
           }
         }, 1200);
       } else {
@@ -1017,17 +1042,26 @@ function createModalController({ doc: docArg, document: documentArg, bridge, onS
         if (parsed.multipleServers) {
           const names = Object.keys(parsed.multipleServers);
           setBanner('info', `Saving ${names.length} MCP servers (${names.join(', ')})...`);
+          const latestCfgRes = typeof bridge.readMcpConfig === 'function' ? await bridge.readMcpConfig() : null;
+          if (latestCfgRes && latestCfgRes.ok === false) {
+            setBanner('error', latestCfgRes.error || 'Failed to read mcp_config.json.');
+            return;
+          }
+          const baseCfg = (latestCfgRes && latestCfgRes.config) || cachedConfig.config || {};
           const nextServers = {
-            ...((cachedConfig.config && cachedConfig.config.mcpServers) || {}),
+            ...(baseCfg.mcpServers || {}),
             ...parsed.multipleServers,
           };
           const writeRes = await bridge.writeMcpConfig({
-            ...(cachedConfig.config || {}),
+            ...baseCfg,
             mcpServers: nextServers,
           });
           if (writeRes && writeRes.ok === false) {
             setBanner('error', writeRes.error);
             return;
+          }
+          if (typeof bridge.refreshServers === 'function') {
+            await bridge.refreshServers();
           }
           await reloadData();
           setBanner('success', `Automatically configured and connected ${names.length} servers: ${names.join(', ')}.`);
@@ -1084,14 +1118,21 @@ function createModalController({ doc: docArg, document: documentArg, bridge, onS
         setBanner('error', parsed.error);
         return;
       }
-      populateFormFromSpec(parsed.serverName, parsed.spec, { isPrefill: true });
+      const multiNames = parsed.multipleServers ? Object.keys(parsed.multipleServers) : [];
+      const targetName = parsed.serverName || multiNames[0] || 'custom-mcp';
+      const targetSpec = parsed.spec || (parsed.multipleServers ? parsed.multipleServers[targetName] : null);
+      const bannerMsg =
+        multiNames.length > 1
+          ? `Auto-filled form for "${targetName}" (${multiNames.length} servers detected; click Auto-Add & Connect to register all at once).`
+          : `Auto-filled form for "${targetName}". Review OAuth / connection settings below.`;
+      populateFormFromSpec(targetName, targetSpec, { isPrefill: true });
       activeTab = 'editor';
-      setBanner('info', `Auto-filled form for "${parsed.serverName}". Review OAuth / connection settings below.`);
+      setBanner('info', bannerMsg);
       if (isOpen()) {
         renderModalContent();
       } else {
-        openEditPopup(parsed.serverName, { prefillSpec: parsed.spec, isPrefill: true });
-        setPopupBanner('info', `Auto-filled form for "${parsed.serverName}". Review OAuth / connection settings below.`);
+        openEditPopup(targetName, { prefillSpec: targetSpec, isPrefill: true });
+        setPopupBanner('info', bannerMsg);
       }
     });
 
@@ -2319,6 +2360,9 @@ function createModalController({ doc: docArg, document: documentArg, bridge, onS
         setBanner('error', res.error);
         return;
       }
+      if (typeof bridge.refreshServers === 'function') {
+        await bridge.refreshServers();
+      }
       await reloadData();
       setBanner('success', 'Saved mcp_config.json and refreshed MCP servers.');
       renderBody();
@@ -2592,7 +2636,9 @@ function createModalController({ doc: docArg, document: documentArg, bridge, onS
   async function openEditPopup(serverName = '', options = {}) {
     ensureModalStyles(doc);
     popupBannerState = { type: '', message: '' };
+    const mySeq = ++editPopupOpenSeq;
     await reloadData();
+    if (mySeq !== editPopupOpenSeq) return;
 
     const customMap = (cachedConfig.config && cachedConfig.config.mcpServers) || {};
     const customNames = Object.keys(customMap);
@@ -2660,6 +2706,7 @@ function createModalController({ doc: docArg, document: documentArg, bridge, onS
   }
 
   function closeEditPopup() {
+    editPopupOpenSeq += 1;
     const backdrop = doc.getElementById(EDIT_POPUP_ID);
     if (backdrop && backdrop.parentNode) {
       backdrop.parentNode.removeChild(backdrop);

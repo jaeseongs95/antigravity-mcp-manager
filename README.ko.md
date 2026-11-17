@@ -1,4 +1,4 @@
-# Antigravity 커스텀 MCP 서버 매니저 (`antigravity-mcp-manager` `v1.4.14`)
+# Antigravity 커스텀 MCP 서버 매니저 (`antigravity-mcp-manager` `v1.4.16`)
 
 **언어 (Languages):** **[English (README.md)](./README.md)** | **한국어 ([README.ko.md](./README.ko.md))**
 
@@ -26,15 +26,18 @@
    - 탭 클릭 시 설정창 내부에서 실시간 상태 알림 배너(`.agy-mcp-status-banner`), `⚡ 빠른 자동 추가(Quick Auto-Add)`, `+ 커스텀 MCP 서버 추가`, 서버별 `⚙️ 설정 수정`, `🔗 <서버이름> 연결 ↗`, 개별 도구(Tools) ON/OFF 토글, `{ } mcp_config.json 직접 편집`을 모두 바로 수행할 수 있습니다.
 2. **OAuth 중심 사용자 지정 MCP 서버 등록 & 자동 `<서버이름> 연결 ↗` 모달**
    - 원격 MCP 포털/서버 URL만 입력하면 안티그래비티 호스트(`language_server.exe`)의 RFC 9728 / RFC 8414 OAuth Discovery(`/.well-known/oauth-protected-resource` 및 `/.well-known/oauth-authorization-server`)를 통해 `authUrl`을 자동 감지하고 즉시 **`Connect <ServerName>` (`<서버이름> 연결`) 모달**을 띄웁니다.
-   - 브라우저 자동 콜백은 물론, 원격 환경에서 인가 코드(Authorization Code)나 콜백 URL 전체를 직접 붙여넣어 제출하는 수동 완료(`completeMcpOAuth(serverName, code)`)도 완벽히 지원합니다.
+   - 브라우저 자동 콜백뿐 아니라 원격 환경에서 인가 코드(Authorization Code) 또는 콜백 URL 전체를 직접 붙여넣어 제출하는 수동 완료(`completeMcpOAuth(serverName, code)`)를 함께 지원합니다.
 3. **스마트 자동 파서 (`⚡ Quick Auto-Add`)**
    - 원격 MCP URL 한 줄, `curl -H "Authorization: ..."` 명령어, `mcp_config.json` JSON 조각, 또는 로컬 `Stdio` 실행 명령어(`npx`, `uvx`, `node`, `python`, `docker`, `deno`, `bun`, `pnpx` 등 — URL 인자가 포함된 Stdio 명령 포함)를 붙여넣고 **`자동 추가 및 연결`** 또는 **`양식 자동 채우기`**를 누르면 형식을 자동으로 판별해 등록·프리필합니다.
-4. **호스트 `mcp_config.json` 영구 저장을 검증하여 보장**
-   - 기존 등록된 서버가 0개인 초기 설치 환경에서도 React Fiber `selectedGeminiDir`, `GetLocalUserInfo`(`homeDirUri`), `GetCustomizationStates` 폴백을 통해 `~/.gemini/config/mcp_config.json` 경로를 정확히 찾아 기록하며, 호스트 파일 쓰기 실패 시 거짓 성공을 반환하지 않고 정확한 오류 배너를 표시합니다.
-5. **영어(English) 기본 UI + `ko-thought-translator` 한글 번역 패치 자동 연동**
-   - 기본 UI는 깔끔한 영어로 제공되며, `ko-thought-translator` 한글 패치가 활성화되어 있으면 모든 버튼·모달·배너가 자연스러운 한국어로 자동 변환됩니다.
-6. **단독 설치(1개) 및 다중 설치(2~3개) 완벽 호환**
-   - 자체 패처(`scripts/ensure_statusbar_patch.js`)를 내장하여 `antigravity-mcp-manager` 단독 설치 시에도 데스크톱 앱과 원격 웹에서 독립적으로 작동하며, `antigravity-statusbar` 및 `ko-thought-translator`와 함께 설치된 경우에도 충돌 없이 결합됩니다.
+4. **호스트 `mcp_config.json` 무결성 보호 및 변경 직렬화**
+   - 기존 등록된 서버가 없는 초기 설치 환경에서도 React Fiber `selectedGeminiDir`, `GetLocalUserInfo`(`homeDirUri`), `GetCustomizationStates` 폴백으로 `~/.gemini/config/mcp_config.json` 경로를 정확히 탐색합니다.
+   - 파일 미존재(`ENOENT`)와 권한·RPC·구문 오류를 구분하여 읽기 실패 시 기존 설정 덮어쓰기를 차단하고, 연속적인 서버·도구 토글을 직렬화하여 변경 유실(Lost Update)을 방지합니다.
+5. **호스트 어댑터 설정 분리 (`src/host-adapter-config.js`)**
+   - RPC 서비스 접두사, 원격 도메인, 정적 CDN 오리진, 동반 스크립트 URL을 `resolveHostAdapterConfig`(`window.__AGY_HOST_ADAPTER_CONFIG__`)로 분리해 호스트 구성 변화에 유연하게 대응합니다.
+6. **영어(English) 기본 UI + `ko-thought-translator` 한글 번역 패치 자동 연동**
+   - 기본 UI는 영어로 제공되며, `ko-thought-translator` 한글 패치가 활성화되어 있으면 모든 버튼·모달·배너가 한국어로 자동 변환됩니다.
+7. **단독 설치(1개) 및 다중 설치(2~3개) 호환**
+   - 어휘 문맥 인식 주석 제거기를 갖춘 패처(`scripts/ensure_statusbar_patch.js`, `v2.26.x` – `v2.32.x+`)를 내장하여 `antigravity-mcp-manager` 단독 설치 시에도 데스크톱 앱과 원격 웹에서 독립적으로 동작하며, `antigravity-statusbar` 및 `ko-thought-translator`와 함께 설치된 환경에서도 충돌 없이 결합됩니다.
 
 ---
 
@@ -44,7 +47,7 @@
 git clone https://github.com/jaeseongs95/antigravity-mcp-manager.git
 cd antigravity-mcp-manager
 
-# 1. 단위 테스트 및 번들 통합 회귀 테스트 실행 (16/16 통과)
+# 1. 단위 테스트 및 번들 통합 회귀 테스트 실행 (29/29 통과)
 npm test
 
 # 2. dist/mcp_manager_autoinject.js 빌드, ~/.gemini/antigravity 설치, app.asar 패치 및 CDP 즉시 주입
@@ -132,20 +135,26 @@ javascript:(()=>{fetch('https://raw.githubusercontent.com/jaeseongs95/antigravit
 ```text
 antigravity-mcp-manager/
 ├── src/
+│   ├── host-adapter-config.js     # RPC 접두사·원격 도메인·정적 CDN·동반 스크립트 URL 설정 경계
 │   ├── index.js                   # Settings 사이드바 탭, Customizations 버튼 주입, Ctrl+Alt+M 및 동반 플러그인 로더
-│   ├── host-mcp-bridge.js         # React Fiber & 원격 proxyCommand RPC 브릿지, OAuth Discovery 및 mcp_config.json 입출력
+│   ├── host-mcp-bridge.js         # React Fiber & 원격 proxyCommand RPC 브릿지, OAuth Discovery 및 직렬화된 설정 입출력
 │   ├── modal-ui.js                # TrustedTypes 안전 모달 UI (서버 추가/수정, OAuth 연결, Settings 탭 화면, JSON 편집기)
 │   └── mcp-config-schema.js       # 프리셋 템플릿, 스마트 자동 파서(URL/curl/JSON/Stdio), OAuth 및 설정 스키마 검증
 ├── dist/
 │   └── mcp_manager_autoinject.js  # Electron / CDP / UserScript 겸용 단일 파일 런타임 번들 산출물
 ├── scripts/
 │   ├── build.js                   # 무의존성 CommonJS 번들러 (src/ -> dist/mcp_manager_autoinject.js)
-│   ├── ensure_statusbar_patch.js  # 오프셋 보존 ASAR 패처 + app_storage 동기화 + 실시간 CDP 주입기
+│   ├── ensure_statusbar_patch.js  # 오프셋 보존 ASAR 패처 + 원자적 app_storage 동기화 + 실시간 CDP 주입기
 │   └── install.js                 # 번들 빌드 후 ~/.gemini/antigravity 설치 및 패처 실행
+├── docs/
+│   ├── TEST_CASES.md              # 사전 테스트케이스 명세서
+│   └── templates/                 # 한·영 공개 문서 및 통합 릴리즈노트 템플릿
 ├── test/
-│   └── mcp-manager.test.js        # 개별 모듈 단위 테스트 + 런타임 번들 통합·회귀 테스트
-├── README.md                      # 영문 안내 문서 (English)
+│   └── mcp-manager.test.js        # 개별 모듈 단위 테스트 + 런타임 번들 통합·회귀 테스트 (29/29)
+├── .gitattributes                 # 운영체제 간 LF 줄바꿈 정규화 설정
+├── README.md                      # 기본 영문 안내 문서 (English)
 ├── README.ko.md                   # 국문 안내 문서 (Korean)
+├── LICENSE                        # MIT 라이선스
 └── package.json
 ```
 
@@ -154,7 +163,7 @@ antigravity-mcp-manager/
 ## 검증 및 테스트
 
 ```bash
-# dist/mcp_manager_autoinject.js 빌드 및 16개 단위·통합 회귀 테스트 실행
+# dist/mcp_manager_autoinject.js 빌드 및 29/29개 단위·통합 회귀 테스트 실행
 npm test
 ```
 

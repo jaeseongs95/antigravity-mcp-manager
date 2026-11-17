@@ -1,9 +1,19 @@
 'use strict';
 
 const { normalizeMcpConfigObject } = require('./mcp-config-schema');
+const { resolveHostAdapterConfig } = require('./host-adapter-config');
 
 const STORAGE_FALLBACK_KEY = 'agy-custom-mcp-config-backup-v1';
 const STORAGE_URI_OVERRIDE_KEY = 'agy-custom-mcp-config-uri-v1';
+
+function isMissingFileError(err) {
+  const msg = String(err?.message || err || '');
+  const code = String(err?.code || '');
+  if (code.toUpperCase() === 'ENOENT') return true;
+  return /enoent|file\s*not\s*found|not\s*found|does\s*not\s*exist|no\s*such\s*file|cannot\s*find\s*the\s*file|filenotfound|\b404\b/i.test(
+    msg
+  );
+}
 
 function toFileUriFromFsPath(fsPath) {
   if (!fsPath || typeof fsPath !== 'string') return null;
@@ -103,6 +113,7 @@ function bytesIsUint8(v) {
 function createHostMcpBridge(opts = {}) {
   const win = opts.window || opts.win || (typeof window !== 'undefined' ? window : null);
   const doc = opts.document || opts.doc || (win && win.document ? win.document : null);
+  const resolvedHostConfig = resolveHostAdapterConfig(opts.hostConfig, win);
   let ls = opts.localStorage || null;
   if (!ls && win) {
     try {
@@ -118,6 +129,14 @@ function createHostMcpBridge(opts = {}) {
   let lastKnownStates = [];
   let sharedTextEncoder = null;
   let sharedTextDecoder = null;
+  // ceiling: 브릿지 인스턴스 내 비동기 직렬 잠금, 다중 프로세스 동시 편집이 필요하면 호스트 파일 잠금으로 확장
+  let configMutationChain = Promise.resolve();
+
+  function withConfigMutationLock(fn) {
+    const next = configMutationChain.then(fn, fn);
+    configMutationChain = next.catch(() => {});
+    return next;
+  }
 
   function encodeUtf8(str) {
     if (!sharedTextEncoder && typeof TextEncoder === 'function') {
@@ -128,6 +147,8 @@ function createHostMcpBridge(opts = {}) {
   }
 
   function decodeUtf8(bytes) {
+    if (typeof bytes === 'string') return bytes;
+    if (!bytes) return '';
     if (!sharedTextDecoder && typeof TextDecoder === 'function') {
       sharedTextDecoder = new TextDecoder('utf-8');
     }
@@ -399,16 +420,19 @@ function createHostMcpBridge(opts = {}) {
           const iframeWin = iframeEl?.contentWindow || null;
           const rawIframeSrc = iframeEl?.getAttribute?.('src') || iframeEl?.src || '';
           const candidateOrigins = [];
+          const defaultRemoteOrigin = `https://${resolvedHostConfig.remoteHostDomains[0] || 'antigravity.google.com'}`;
           try {
             if (rawIframeSrc) {
-              candidateOrigins.push(new URL(rawIframeSrc, w.location?.href || 'https://antigravity.google.com').origin);
+              candidateOrigins.push(new URL(rawIframeSrc, w.location?.href || defaultRemoteOrigin).origin);
             }
           } catch {}
           if (w.location?.origin && !candidateOrigins.includes(w.location.origin)) {
             candidateOrigins.push(w.location.origin);
           }
-          if (!candidateOrigins.includes('https://antigravity.static.usercontent.goog')) {
-            candidateOrigins.push('https://antigravity.static.usercontent.goog');
+          for (const cdnOrig of resolvedHostConfig.staticCdnOrigins) {
+            if (cdnOrig && !candidateOrigins.includes(cdnOrig)) {
+              candidateOrigins.push(cdnOrig);
+            }
           }
           for (const orig of candidateOrigins) {
             if (w.__agyRemoteControlInstance) break;
@@ -454,44 +478,44 @@ function createHostMcpBridge(opts = {}) {
             __isRcProxyAdapter: true,
             rcInst,
             async getMcpServerStates() {
-              return await callRpc('/exa.language_server_pb.LanguageServerService/GetMcpServerStates', {});
+              return await callRpc(resolvedHostConfig.buildRpcPath('GetMcpServerStates'), {});
             },
             async refreshMcpServers(req) {
-              return await callRpc('/exa.language_server_pb.LanguageServerService/RefreshMcpServers', req || {});
+              return await callRpc(resolvedHostConfig.buildRpcPath('RefreshMcpServers'), req || {});
             },
             async toggleMcpServer(req) {
-              return await callRpc('/exa.language_server_pb.LanguageServerService/ToggleMcpServer', req || {});
+              return await callRpc(resolvedHostConfig.buildRpcPath('ToggleMcpServer'), req || {});
             },
             async completeMcpOAuth(serverName, authorizationCode) {
-              return await callRpc('/exa.language_server_pb.LanguageServerService/CompleteMcpOAuth', {
+              return await callRpc(resolvedHostConfig.buildRpcPath('CompleteMcpOAuth'), {
                 serverName: String(serverName),
                 authorizationCode: String(authorizationCode),
               });
             },
             async disconnectMcpOAuth(serverName, account) {
-              return await callRpc('/exa.language_server_pb.LanguageServerService/DisconnectMcpOAuth', {
+              return await callRpc(resolvedHostConfig.buildRpcPath('DisconnectMcpOAuth'), {
                 serverName: String(serverName),
                 account: String(account || ''),
               });
             },
             async getStandaloneDir() {
-              return await callRpc('/exa.language_server_pb.LanguageServerService/GetStandaloneDir', {});
+              return await callRpc(resolvedHostConfig.buildRpcPath('GetStandaloneDir'), {});
             },
             async getCustomizationStates() {
-              return await callRpc('/exa.language_server_pb.LanguageServerService/GetCustomizationStates', {});
+              return await callRpc(resolvedHostConfig.buildRpcPath('GetCustomizationStates'), {});
             },
             async getAllPlugins() {
-              return await callRpc('/exa.language_server_pb.LanguageServerService/GetAllPlugins', {});
+              return await callRpc(resolvedHostConfig.buildRpcPath('GetAllPlugins'), {});
             },
             async getAllSkills() {
-              return await callRpc('/exa.language_server_pb.LanguageServerService/GetAllSkills', {});
+              return await callRpc(resolvedHostConfig.buildRpcPath('GetAllSkills'), {});
             },
             async getLocalUserInfo() {
-              return await callRpc('/exa.language_server_pb.LanguageServerService/GetLocalUserInfo', {});
+              return await callRpc(resolvedHostConfig.buildRpcPath('GetLocalUserInfo'), {});
             },
             async readFile(req) {
               const uri = typeof req === 'string' ? req : req?.uri;
-              const r = await callRpc('/exa.language_server_pb.LanguageServerService/ReadFile', { uri });
+              const r = await callRpc(resolvedHostConfig.buildRpcPath('ReadFile'), { uri });
               const b64 = typeof r?.content === 'string' ? r.content : (typeof r?.contents === 'string' ? r.contents : null);
               if (b64 !== null) {
                 return { content: decodeBase64ToBytes(b64) };
@@ -500,7 +524,7 @@ function createHostMcpBridge(opts = {}) {
             },
             async writeFile(req) {
               const contentB64 = bytesIsUint8(req?.content) ? encodeBytesToBase64(req.content) : (req?.content || '');
-              return await callRpc('/exa.language_server_pb.LanguageServerService/WriteFile', {
+              return await callRpc(resolvedHostConfig.buildRpcPath('WriteFile'), {
                 uri: req?.uri,
                 content: contentB64,
                 overwrite: Boolean(req?.overwrite),
@@ -714,28 +738,38 @@ function createHostMcpBridge(opts = {}) {
     if (svc && typeof svc.readFile === 'function' && uri) {
       try {
         const res = await svc.readFile({ uri });
-        if (res?.content && res.content.length > 0) {
-          const text = decodeUtf8(res.content);
+        const rawPayload = typeof res === 'string' ? res : res?.content;
+        if (rawPayload && rawPayload.length > 0) {
+          const text = decodeUtf8(rawPayload);
           if (text.trim()) {
             const norm = normalizeMcpConfigObject(text);
             if (norm.ok) {
               try {
                 ls?.setItem?.(STORAGE_FALLBACK_KEY, JSON.stringify(norm.config));
               } catch {}
-              return { config: norm.config, uri, fsPath: toFsPathFromFileUri(uri), error: null };
+              return { ok: true, config: norm.config, uri, fsPath: toFsPathFromFileUri(uri), error: null };
             }
             return {
-              config: { mcpServers: {} },
+              ok: false,
+              config: null,
               uri,
               fsPath: toFsPathFromFileUri(uri),
               error: norm.error,
             };
           }
         }
-        return { config: { mcpServers: {} }, uri, fsPath: toFsPathFromFileUri(uri), error: null };
-      } catch {
-        // File might not exist yet — treat as empty `{ mcpServers: {} }`
-        return { config: { mcpServers: {} }, uri, fsPath: toFsPathFromFileUri(uri), error: null };
+        return { ok: true, config: { mcpServers: {} }, uri, fsPath: toFsPathFromFileUri(uri), error: null };
+      } catch (err) {
+        if (isMissingFileError(err)) {
+          return { ok: true, config: { mcpServers: {} }, uri, fsPath: toFsPathFromFileUri(uri), error: null };
+        }
+        return {
+          ok: false,
+          config: null,
+          uri,
+          fsPath: toFsPathFromFileUri(uri),
+          error: `Failed to read mcp_config.json: ${err?.message || String(err)}`,
+        };
       }
     }
 
@@ -746,6 +780,7 @@ function createHostMcpBridge(opts = {}) {
         const norm = normalizeMcpConfigObject(raw);
         if (norm.ok) {
           return {
+            ok: true,
             config: norm.config,
             uri: uri || 'localStorage://mcp_config.json',
             fsPath: toFsPathFromFileUri(uri) || '~/.gemini/config/mcp_config.json',
@@ -756,6 +791,7 @@ function createHostMcpBridge(opts = {}) {
     } catch {}
 
     return {
+      ok: true,
       config: { mcpServers: {} },
       uri: uri || 'file:///~/.gemini/config/mcp_config.json',
       fsPath: toFsPathFromFileUri(uri) || '~/.gemini/config/mcp_config.json',
@@ -945,32 +981,38 @@ function createHostMcpBridge(opts = {}) {
   }
 
   async function applyAuthHeadersToServers(serverNames, authHeaders) {
-    const { config } = await readMcpConfig();
-    const nextServers = { ...(config.mcpServers || {}) };
-    const names = Array.isArray(serverNames) && serverNames.length > 0
-      ? serverNames
-      : Object.keys(nextServers).filter((k) => Boolean(nextServers[k]?.url || nextServers[k]?.serverUrl));
-
-    let updatedCount = 0;
-    for (const name of names) {
-      const current = nextServers[name];
-      if (!current || typeof current !== 'object') continue;
-      if (current.url || current.serverUrl) {
-        const mergedHeaders = { ...(current.headers || {}), ...(authHeaders || {}) };
-        nextServers[name] = {
-          ...current,
-          headers: mergedHeaders,
-        };
-        updatedCount++;
+    return withConfigMutationLock(async () => {
+      const readRes = await readMcpConfig();
+      if (readRes.ok === false || !readRes.config) {
+        return { ok: false, persisted: false, error: readRes.error || 'Failed to read mcp_config.json.' };
       }
-    }
+      const { config } = readRes;
+      const nextServers = { ...(config.mcpServers || {}) };
+      const names = Array.isArray(serverNames) && serverNames.length > 0
+        ? serverNames
+        : Object.keys(nextServers).filter((k) => Boolean(nextServers[k]?.url || nextServers[k]?.serverUrl));
 
-    if (updatedCount === 0) {
-      return { ok: false, error: 'No matching HTTP custom servers found to update authentication.' };
-    }
+      let updatedCount = 0;
+      for (const name of names) {
+        const current = nextServers[name];
+        if (!current || typeof current !== 'object') continue;
+        if (current.url || current.serverUrl) {
+          const mergedHeaders = { ...(current.headers || {}), ...(authHeaders || {}) };
+          nextServers[name] = {
+            ...current,
+            headers: mergedHeaders,
+          };
+          updatedCount++;
+        }
+      }
 
-    const res = await writeMcpConfig({ ...config, mcpServers: nextServers });
-    return { ...res, updatedCount };
+      if (updatedCount === 0) {
+        return { ok: false, error: 'No matching HTTP custom servers found to update authentication.' };
+      }
+
+      const res = await writeMcpConfig({ ...config, mcpServers: nextServers });
+      return { ...res, updatedCount };
+    });
   }
 
   async function refreshServers(serverName) {
@@ -989,119 +1031,143 @@ function createHostMcpBridge(opts = {}) {
   }
 
   async function toggleServerEnabled(serverName, enabled) {
-    const svc = scanFiberTree();
-    if (svc && typeof svc.toggleMcpServer === 'function') {
-      try {
-        await svc.toggleMcpServer({ serverName, enabled: Boolean(enabled) });
-      } catch (e) {
-        return { ok: false, error: e?.message || `Failed to toggle MCP server "${serverName}".` };
+    return withConfigMutationLock(async () => {
+      const svc = scanFiberTree();
+      if (svc && typeof svc.toggleMcpServer === 'function') {
+        try {
+          await svc.toggleMcpServer({ serverName, enabled: Boolean(enabled) });
+        } catch (e) {
+          return { ok: false, error: e?.message || `Failed to toggle MCP server "${serverName}".` };
+        }
       }
-    }
-    // Also persist `disabled` flag in mcp_config.json if this server is a custom server
-    const { config } = await readMcpConfig();
-    if (config.mcpServers && config.mcpServers[serverName]) {
+      // Also persist `disabled` flag in mcp_config.json if this server is a custom server
+      const readRes = await readMcpConfig();
+      if (readRes.ok === false || !readRes.config) {
+        return { ok: false, persisted: false, error: readRes.error || 'Failed to read mcp_config.json.' };
+      }
+      const { config } = readRes;
+      if (config.mcpServers && config.mcpServers[serverName]) {
+        const nextConfig = {
+          ...config,
+          mcpServers: {
+            ...config.mcpServers,
+            [serverName]: {
+              ...config.mcpServers[serverName],
+            },
+          },
+        };
+        if (enabled) {
+          delete nextConfig.mcpServers[serverName].disabled;
+        } else {
+          nextConfig.mcpServers[serverName].disabled = true;
+        }
+        const writeRes = await writeMcpConfig(nextConfig, serverName);
+        if (writeRes && writeRes.ok === false) {
+          return writeRes;
+        }
+      }
+      return fetchServerStates();
+    });
+  }
+
+  async function upsertCustomServer(serverName, spec, previousName = null) {
+    return withConfigMutationLock(async () => {
+      const readRes = await readMcpConfig();
+      if (readRes.ok === false || !readRes.config) {
+        return { ok: false, persisted: false, error: readRes.error || 'Failed to read mcp_config.json.' };
+      }
+      const { config } = readRes;
+      const nextServers = { ...(config.mcpServers || {}) };
+      if (previousName && previousName !== serverName && nextServers[previousName]) {
+        delete nextServers[previousName];
+      }
+      nextServers[serverName] = spec;
+      return writeMcpConfig({ ...config, mcpServers: nextServers }, serverName);
+    });
+  }
+
+  async function deleteCustomServer(serverName) {
+    return withConfigMutationLock(async () => {
+      const readRes = await readMcpConfig();
+      if (readRes.ok === false || !readRes.config) {
+        return { ok: false, persisted: false, error: readRes.error || 'Failed to read mcp_config.json.' };
+      }
+      const { config } = readRes;
+      const nextServers = { ...(config.mcpServers || {}) };
+      if (!(serverName in nextServers)) {
+        return { ok: false, error: `Custom server "${serverName}" was not found in mcp_config.json.` };
+      }
+      delete nextServers[serverName];
+      return writeMcpConfig({ ...config, mcpServers: nextServers }, serverName);
+    });
+  }
+
+  async function toggleServerTool(serverName, toolName, enabled) {
+    return withConfigMutationLock(async () => {
+      const readRes = await readMcpConfig();
+      if (readRes.ok === false || !readRes.config) {
+        return { ok: false, persisted: false, error: readRes.error || 'Failed to read mcp_config.json.' };
+      }
+      const { config } = readRes;
+      if (!config.mcpServers || !config.mcpServers[serverName]) {
+        return {
+          ok: false,
+          error: `Tool toggling via mcp_config.json is only supported for custom servers in mcp_config.json ("${serverName}").`,
+        };
+      }
+      const currentServer = { ...config.mcpServers[serverName] };
+      let disabledTools = Array.isArray(currentServer.disabledTools)
+        ? [...currentServer.disabledTools]
+        : [];
+      if (enabled) {
+        disabledTools = disabledTools.filter((t) => t !== toolName);
+      } else if (!disabledTools.includes(toolName)) {
+        disabledTools.push(toolName);
+      }
+      if (disabledTools.length > 0) {
+        currentServer.disabledTools = disabledTools;
+      } else {
+        delete currentServer.disabledTools;
+      }
       const nextConfig = {
         ...config,
         mcpServers: {
           ...config.mcpServers,
-          [serverName]: {
-            ...config.mcpServers[serverName],
-          },
+          [serverName]: currentServer,
         },
       };
-      if (enabled) {
-        delete nextConfig.mcpServers[serverName].disabled;
-      } else {
-        nextConfig.mcpServers[serverName].disabled = true;
+      const serialized = JSON.stringify(nextConfig, null, 2) + '\n';
+      const svc = scanFiberTree();
+      const uri = await resolveMcpConfigUri();
+      let persisted = false;
+      if (svc && typeof svc.writeFile === 'function' && uri) {
+        const bytes = encodeUtf8(serialized);
+        const writeRes = await writeFileToHost(svc, uri, bytes);
+        if (!writeRes.ok) {
+          return { ok: false, persisted: false, error: writeRes.error };
+        }
+        persisted = true;
+      } else if (svc) {
+        return {
+          ok: false,
+          persisted: false,
+          error: !uri
+            ? 'Could not resolve ~/.gemini/config/mcp_config.json path from host.'
+            : 'Host file writer (writeFile) is not available in this session.',
+        };
       }
-      const writeRes = await writeMcpConfig(nextConfig, serverName);
-      if (writeRes && writeRes.ok === false) {
-        return writeRes;
-      }
-    }
-    return fetchServerStates();
-  }
-
-  async function upsertCustomServer(serverName, spec, previousName = null) {
-    const { config } = await readMcpConfig();
-    const nextServers = { ...(config.mcpServers || {}) };
-    if (previousName && previousName !== serverName && nextServers[previousName]) {
-      delete nextServers[previousName];
-    }
-    nextServers[serverName] = spec;
-    return writeMcpConfig({ ...config, mcpServers: nextServers }, serverName);
-  }
-
-  async function deleteCustomServer(serverName) {
-    const { config } = await readMcpConfig();
-    const nextServers = { ...(config.mcpServers || {}) };
-    if (!(serverName in nextServers)) {
-      return { ok: false, error: `Custom server "${serverName}" was not found in mcp_config.json.` };
-    }
-    delete nextServers[serverName];
-    return writeMcpConfig({ ...config, mcpServers: nextServers }, serverName);
-  }
-
-  async function toggleServerTool(serverName, toolName, enabled) {
-    const { config } = await readMcpConfig();
-    if (!config.mcpServers || !config.mcpServers[serverName]) {
-      return {
-        ok: false,
-        error: `Tool toggling via mcp_config.json is only supported for custom servers in mcp_config.json ("${serverName}").`,
-      };
-    }
-    const currentServer = { ...config.mcpServers[serverName] };
-    let disabledTools = Array.isArray(currentServer.disabledTools)
-      ? [...currentServer.disabledTools]
-      : [];
-    if (enabled) {
-      disabledTools = disabledTools.filter((t) => t !== toolName);
-    } else if (!disabledTools.includes(toolName)) {
-      disabledTools.push(toolName);
-    }
-    if (disabledTools.length > 0) {
-      currentServer.disabledTools = disabledTools;
-    } else {
-      delete currentServer.disabledTools;
-    }
-    const nextConfig = {
-      ...config,
-      mcpServers: {
-        ...config.mcpServers,
-        [serverName]: currentServer,
-      },
-    };
-    const serialized = JSON.stringify(nextConfig, null, 2) + '\n';
-    const svc = scanFiberTree();
-    const uri = await resolveMcpConfigUri();
-    let persisted = false;
-    if (svc && typeof svc.writeFile === 'function' && uri) {
-      const bytes = encodeUtf8(serialized);
-      const writeRes = await writeFileToHost(svc, uri, bytes);
-      if (!writeRes.ok) {
-        return { ok: false, persisted: false, error: writeRes.error };
-      }
-      persisted = true;
-    } else if (svc) {
-      return {
-        ok: false,
-        persisted: false,
-        error: !uri
-          ? 'Could not resolve ~/.gemini/config/mcp_config.json path from host.'
-          : 'Host file writer (writeFile) is not available in this session.',
-      };
-    }
-    try {
-      ls?.setItem?.(STORAGE_FALLBACK_KEY, serialized);
-      if (!svc) persisted = true;
-    } catch {}
-    if (svc && typeof svc.refreshMcpServers === 'function') {
       try {
-        await svc.refreshMcpServers({ shallow: true, serverName });
+        ls?.setItem?.(STORAGE_FALLBACK_KEY, serialized);
+        if (!svc) persisted = true;
       } catch {}
-    }
-    await fetchServerStates();
-    return { ok: true, persisted, config: nextConfig };
+      if (svc && typeof svc.refreshMcpServers === 'function') {
+        try {
+          await svc.refreshMcpServers({ shallow: true, serverName });
+        } catch {}
+      }
+      await fetchServerStates();
+      return { ok: true, persisted, config: nextConfig };
+    });
   }
 
   async function revealConfigInExplorer() {
@@ -1274,13 +1340,13 @@ function createHostMcpBridge(opts = {}) {
 
     const mcpBeginStr = ['BEGIN_AGY_MCP', 'MANAGER'].join('_');
     const mcpEndStr = ['END_AGY_MCP', 'MANAGER'].join('_');
-    const koBeginStr = ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_');
-    const koEndStr = ['END_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_');
+    const koBeginStr = ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER'].join('_');
+    const koEndStr = ['END_AGY_KO', 'THOUGHT_LOCALIZER'].join('_');
 
-    const mcpBeginRe = new RegExp(`^(?:\\/\\/ === ${mcpBeginStr}(?:_V1)? ===|\\/\\* === ${mcpBeginStr}(?:_V1)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
-    const mcpEndRe = new RegExp(`^(?:\\/\\/ === ${mcpEndStr}(?:_V1)? ===|\\/\\* === ${mcpEndStr}(?:_V1)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
-    const koBeginRe = new RegExp(`^(?:\\/\\/ === ${koBeginStr} ===|\\/\\* === ${koBeginStr} === \\*\\/)[ \\t]*\\r?$`, 'gm');
-    const koEndRe = new RegExp(`^(?:\\/\\/ === ${koEndStr} ===|\\/\\* === ${koEndStr} === \\*\\/)[ \\t]*\\r?$`, 'gm');
+    const mcpBeginRe = new RegExp(`^(?:\\/\\/ === ${mcpBeginStr}(?:_V\\d+)? ===|\\/\\* === ${mcpBeginStr}(?:_V\\d+)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
+    const mcpEndRe = new RegExp(`^(?:\\/\\/ === ${mcpEndStr}(?:_V\\d+)? ===|\\/\\* === ${mcpEndStr}(?:_V\\d+)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
+    const koBeginRe = new RegExp(`^(?:\\/\\/ === ${koBeginStr}(?:_V\\d+)? ===|\\/\\* === ${koBeginStr}(?:_V\\d+)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
+    const koEndRe = new RegExp(`^(?:\\/\\/ === ${koEndStr}(?:_V\\d+)? ===|\\/\\* === ${koEndStr}(?:_V\\d+)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
 
     const findAnchoredSpan = (srcText, beginRe, endRe) => {
       beginRe.lastIndex = 0;
@@ -1365,6 +1431,7 @@ function createHostMcpBridge(opts = {}) {
     fetchHostInstalledPluginInfo,
     resolveRemoteControlInstance,
     toFsPathFromFileUri,
+    hostConfig: resolvedHostConfig,
   };
 }
 

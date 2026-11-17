@@ -1,4 +1,4 @@
-# Antigravity Custom MCP Server Manager (`antigravity-mcp-manager` `v1.4.15`)
+# Antigravity Custom MCP Server Manager (`antigravity-mcp-manager` `v1.4.16`)
 
 **Languages:** **English ([README.md](./README.md))** | **[한국어 (README.ko.md)](./README.ko.md)**
 
@@ -29,12 +29,15 @@ Add, edit, authenticate (`OAuth` / `Bearer` / `API Key` / `Basic`), toggle, and 
   - As soon as `state.authUrl` is detected, `antigravity-mcp-manager` automatically opens the **`Connect <ServerName>` OAuth Connect Modal** (`Connect <ServerName> ↗` button) and supports both automatic browser callback and manual authorization code / callback URL submission (`completeMcpOAuth(serverName, code)`).
 - **Smart Auto-Parser (`⚡ Quick Auto-Add`)**:
   - Paste a remote MCP URL, a `curl -H "Authorization: ..."` command, a full `mcp_config.json` snippet, or a local `Stdio` command (`npx`, `uvx`, `node`, `python`, `docker`, `deno`, `bun`, `pnpx`, etc.—including Stdio commands with URL arguments) and click **`Auto-Add & Connect`** or **`Auto-Fill Form`**.
-- **Verified Host `mcp_config.json` Persistence**:
-  - Resolves `~/.gemini/config/mcp_config.json` via live server states, React Fiber `selectedGeminiDir`, `GetLocalUserInfo` (`homeDirUri`), and `GetCustomizationStates` fallbacks so even fresh zero-server installations persist reliably via `LanguageServerService.writeFile`.
-- **100% English Default UI + Automatic Korean Localization via `ko-thought-translator`**:
-  - Ships with clean English UI defaults (`MCP Servers`, `Add Custom MCP Server`, `Connect <ServerName> ↗`, `Advanced OAuth Settings`, etc.) and automatically localizes into Korean when `ko-thought-translator` is active.
+- **Verified Host `mcp_config.json` Persistence & Serialized Mutation Queue**:
+  - Resolves `~/.gemini/config/mcp_config.json` via live server states, React Fiber `selectedGeminiDir`, `GetLocalUserInfo` (`homeDirUri`), and `GetCustomizationStates` fallbacks so fresh zero-server installations persist reliably via `LanguageServerService.writeFile`.
+  - Distinguishes missing config (`ENOENT`) from permission/RPC/JSON parse errors and serializes concurrent server/tool mutations so existing servers are never overwritten or lost.
+- **Configurable Host Adapter Boundary (`src/host-adapter-config.js`)**:
+  - Centralizes RPC service prefix, remote host domains, static CDN origins, and companion script URLs behind `resolveHostAdapterConfig` (`window.__AGY_HOST_ADAPTER_CONFIG__` overrideable).
+- **English Default UI + Automatic Korean Localization via `ko-thought-translator`**:
+  - Ships with English UI defaults (`MCP Servers`, `Add Custom MCP Server`, `Connect <ServerName> ↗`, `Advanced OAuth Settings`, etc.) and localizes into Korean when `ko-thought-translator` is active.
 - **Standalone Zero-Offset `app.asar` Patcher & Host-Aware Remote Companion Loader**:
-  - Includes its own `scripts/ensure_statusbar_patch.js` so it works standalone (1 plugin only) or alongside `antigravity-statusbar` and `ko-thought-translator` (2 or 3 plugins).
+  - Includes its own lexical-context-aware `scripts/ensure_statusbar_patch.js` (`v2.26.x` – `v2.32.x+`) so it runs standalone (1 plugin only) or alongside `antigravity-statusbar` and `ko-thought-translator` (2 or 3 plugins).
 
 ---
 
@@ -44,7 +47,7 @@ Add, edit, authenticate (`OAuth` / `Bearer` / `API Key` / `Basic`), toggle, and 
 git clone https://github.com/jaeseongs95/antigravity-mcp-manager.git
 cd antigravity-mcp-manager
 
-# 1. Run unit & bundle integration tests (16/16 tests)
+# 1. Run unit & bundle integration tests (29/29 tests)
 npm test
 
 # 2. Build dist/mcp_manager_autoinject.js, install to ~/.gemini/antigravity, patch app.asar & live-inject via CDP
@@ -132,20 +135,26 @@ When you run the `antigravity-mcp-manager` bookmarklet on Remote Control web (`h
 ```text
 antigravity-mcp-manager/
 ├── src/
+│   ├── host-adapter-config.js     # Configurable RPC prefix, remote domains, CDN origins & companion URLs
 │   ├── index.js                   # Settings sidebar tab, Customizations button injection, Ctrl+Alt+M & companion loader
-│   ├── host-mcp-bridge.js         # React Fiber & Remote proxyCommand RPC bridge, OAuth discovery & mcp_config.json I/O
+│   ├── host-mcp-bridge.js         # React Fiber & Remote proxyCommand RPC bridge, OAuth discovery & serialized config I/O
 │   ├── modal-ui.js                # Trusted-Types-safe modals (Add/Edit Server, OAuth Connect, Settings pane, Raw JSON)
 │   └── mcp-config-schema.js       # Presets, Smart Auto-Parser (URL/curl/JSON/Stdio), OAuth & mcp_config.json schema
 ├── dist/
 │   └── mcp_manager_autoinject.js  # Built single-file runtime bundle (with ==UserScript== header)
 ├── scripts/
 │   ├── build.js                   # Zero-dependency CommonJS bundler (src/ -> dist/mcp_manager_autoinject.js)
-│   ├── ensure_statusbar_patch.js  # Zero-offset ASAR patcher + app_storage sync + live CDP injector
+│   ├── ensure_statusbar_patch.js  # Zero-offset ASAR patcher + atomic app_storage sync + live CDP injector
 │   └── install.js                 # Builds bundle, installs to ~/.gemini/antigravity & runs patcher
+├── docs/
+│   ├── TEST_CASES.md              # Pre-test verification specification & test matrix
+│   └── templates/                 # Bilingual README & Release Notes templates
 ├── test/
-│   └── mcp-manager.test.js        # Module unit tests + runtime bundle integration & regression tests
-├── README.md                      # English documentation
+│   └── mcp-manager.test.js        # Module unit tests + runtime bundle integration & regression tests (29/29)
+├── .gitattributes                 # LF line-ending normalization across OS checkouts
+├── README.md                      # Primary English documentation
 ├── README.ko.md                   # Korean documentation
+├── LICENSE                        # MIT License
 └── package.json
 ```
 
@@ -154,7 +163,7 @@ antigravity-mcp-manager/
 ## Verification & Testing
 
 ```bash
-# Build dist/mcp_manager_autoinject.js and run all 16 unit + integration test suites
+# Build dist/mcp_manager_autoinject.js and run all 29/29 unit + integration tests
 npm test
 ```
 

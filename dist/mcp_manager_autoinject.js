@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Antigravity Custom MCP Server Manager
 // @namespace    https://github.com/jaeseongs95/antigravity-mcp-manager
-// @version      1.4.15
+// @version      1.4.16
 // @description  Add, edit, toggle, and manage custom Stdio & HTTP MCP servers (mcp_config.json) directly inside the Antigravity 2.0 native app and Remote Control web.
 // @match        https://antigravity.google.com/*
 // @match        https://*.antigravity.google.com/*
@@ -12,6 +12,65 @@
 (() => {
   'use strict';
   const __modules = {
+  "./host-adapter-config": function(module, exports, __require) {
+    const require = (spec) => __require(".", spec);
+    'use strict';
+    const DEFAULT_HOST_ADAPTER_CONFIG = Object.freeze({
+      rpcServicePrefix: '/exa.language_server_pb.LanguageServerService',
+      remoteHostDomains: Object.freeze(['antigravity.google.com']),
+      staticCdnOrigins: Object.freeze(['https://antigravity.static.usercontent.goog']),
+      companionScripts: Object.freeze({
+        statusbarUrl:
+          'https://raw.githubusercontent.com/jaeseongs95/antigravity-statusbar/main/dist/statusbar_autoinject.js',
+        koTranslatorUrl:
+          'https://raw.githubusercontent.com/jaeseongs95/antigravity-ko-translator/main/plugins/ko-thought-translator/scripts/ko_thought_autoinject.js',
+      }),
+    });
+    function resolveHostAdapterConfig(overrides, win) {
+      if (overrides && typeof overrides.buildRpcPath === 'function' && typeof overrides.isRemoteHost === 'function') {
+        return overrides;
+      }
+      const winCfg = win && typeof win.__AGY_HOST_ADAPTER_CONFIG__ === 'object' ? win.__AGY_HOST_ADAPTER_CONFIG__ : null;
+      const src = {
+        ...(winCfg || {}),
+        ...(overrides && typeof overrides === 'object' ? overrides : {}),
+      };
+      const rpcServicePrefix = String(src.rpcServicePrefix || DEFAULT_HOST_ADAPTER_CONFIG.rpcServicePrefix).replace(
+        /\/+$/,
+        ''
+      );
+      const remoteHostDomains = Array.isArray(src.remoteHostDomains) && src.remoteHostDomains.length > 0
+        ? src.remoteHostDomains.map((d) => String(d).trim().toLowerCase()).filter(Boolean)
+        : [...DEFAULT_HOST_ADAPTER_CONFIG.remoteHostDomains];
+      const staticCdnOrigins = Array.isArray(src.staticCdnOrigins) && src.staticCdnOrigins.length > 0
+        ? src.staticCdnOrigins.map((o) => String(o).trim()).filter(Boolean)
+        : [...DEFAULT_HOST_ADAPTER_CONFIG.staticCdnOrigins];
+      const companionScripts = {
+        ...DEFAULT_HOST_ADAPTER_CONFIG.companionScripts,
+        ...(winCfg?.companionScripts || {}),
+        ...(src.companionScripts && typeof src.companionScripts === 'object' ? src.companionScripts : {}),
+      };
+      return {
+        rpcServicePrefix,
+        remoteHostDomains,
+        staticCdnOrigins,
+        companionScripts,
+        buildRpcPath(methodName) {
+          const clean = String(methodName || '').replace(/^\/+/, '');
+          return `${rpcServicePrefix}/${clean}`;
+        },
+        isRemoteHost(hostname) {
+          const host = String(hostname || '').trim().toLowerCase();
+          if (!host) return false;
+          return remoteHostDomains.some((d) => host === d || host.endsWith(`.${d}`) || host.includes(d));
+        },
+      };
+    }
+    module.exports = {
+      DEFAULT_HOST_ADAPTER_CONFIG,
+      resolveHostAdapterConfig,
+    };
+  },
   "./mcp-config-schema": function(module, exports, __require) {
     const require = (spec) => __require(".", spec);
     'use strict';
@@ -100,7 +159,7 @@
     ];
     function parseArgsInput(raw) {
       if (Array.isArray(raw)) {
-        return raw.map((x) => String(x)).filter((x) => x.length > 0);
+        return raw.filter((x) => x !== null && x !== undefined).map((x) => String(x));
       }
       if (typeof raw !== 'string') return [];
       const trimmed = raw.trim();
@@ -109,7 +168,7 @@
         try {
           const parsed = JSON.parse(trimmed);
           if (Array.isArray(parsed)) {
-            return parsed.map((x) => String(x));
+            return parsed.filter((x) => x !== null && x !== undefined).map((x) => String(x));
           }
         } catch {}
       }
@@ -123,7 +182,13 @@
       const re = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|(\S+)/g;
       let match;
       while ((match = re.exec(trimmed)) !== null) {
-        tokens.push(match[1] ?? match[2] ?? match[3]);
+        if (match[1] !== undefined) {
+          tokens.push(match[1].replace(/\\(["\\])/g, '$1'));
+        } else if (match[2] !== undefined) {
+          tokens.push(match[2].replace(/\\(['\\])/g, '$1'));
+        } else {
+          tokens.push(match[3]);
+        }
       }
       return tokens;
     }
@@ -195,21 +260,33 @@
       return 'stdio';
     }
     function encodeBase64(str) {
+      const input = String(str);
       if (typeof Buffer !== 'undefined') {
-        return Buffer.from(String(str), 'utf8').toString('base64');
+        return Buffer.from(input, 'utf8').toString('base64');
       }
-      if (typeof btoa === 'function') {
-        return btoa(unescape(encodeURIComponent(String(str))));
+      if (typeof btoa === 'function' && typeof TextEncoder === 'function') {
+        const bytes = new TextEncoder().encode(input);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        return btoa(binary);
       }
-      return String(str);
+      return input;
     }
     function decodeBase64(b64) {
       try {
+        const input = String(b64);
         if (typeof Buffer !== 'undefined') {
-          return Buffer.from(String(b64), 'base64').toString('utf8');
+          return Buffer.from(input, 'base64').toString('utf8');
         }
-        if (typeof atob === 'function') {
-          return decodeURIComponent(escape(atob(String(b64))));
+        if (typeof atob === 'function' && typeof TextDecoder === 'function') {
+          const bin = atob(input);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) {
+            bytes[i] = bin.charCodeAt(i);
+          }
+          return new TextDecoder('utf-8').decode(bytes);
         }
       } catch {}
       return '';
@@ -971,8 +1048,17 @@
     const require = (spec) => __require(".", spec);
     'use strict';
     const { normalizeMcpConfigObject } = require('./mcp-config-schema');
+    const { resolveHostAdapterConfig } = require('./host-adapter-config');
     const STORAGE_FALLBACK_KEY = 'agy-custom-mcp-config-backup-v1';
     const STORAGE_URI_OVERRIDE_KEY = 'agy-custom-mcp-config-uri-v1';
+    function isMissingFileError(err) {
+      const msg = String(err?.message || err || '');
+      const code = String(err?.code || '');
+      if (code.toUpperCase() === 'ENOENT') return true;
+      return /enoent|file\s*not\s*found|not\s*found|does\s*not\s*exist|no\s*such\s*file|cannot\s*find\s*the\s*file|filenotfound|\b404\b/i.test(
+        msg
+      );
+    }
     function toFileUriFromFsPath(fsPath) {
       if (!fsPath || typeof fsPath !== 'string') return null;
       const trimmed = fsPath.trim();
@@ -1064,6 +1150,7 @@
     function createHostMcpBridge(opts = {}) {
       const win = opts.window || opts.win || (typeof window !== 'undefined' ? window : null);
       const doc = opts.document || opts.doc || (win && win.document ? win.document : null);
+      const resolvedHostConfig = resolveHostAdapterConfig(opts.hostConfig, win);
       let ls = opts.localStorage || null;
       if (!ls && win) {
         try {
@@ -1079,6 +1166,12 @@
       let lastKnownStates = [];
       let sharedTextEncoder = null;
       let sharedTextDecoder = null;
+      let configMutationChain = Promise.resolve();
+      function withConfigMutationLock(fn) {
+        const next = configMutationChain.then(fn, fn);
+        configMutationChain = next.catch(() => {});
+        return next;
+      }
       function encodeUtf8(str) {
         if (!sharedTextEncoder && typeof TextEncoder === 'function') {
           sharedTextEncoder = new TextEncoder();
@@ -1087,6 +1180,8 @@
         return Uint8Array.from(String(str).split('').map((c) => c.charCodeAt(0) & 0xff));
       }
       function decodeUtf8(bytes) {
+        if (typeof bytes === 'string') return bytes;
+        if (!bytes) return '';
         if (!sharedTextDecoder && typeof TextDecoder === 'function') {
           sharedTextDecoder = new TextDecoder('utf-8');
         }
@@ -1345,16 +1440,19 @@
               const iframeWin = iframeEl?.contentWindow || null;
               const rawIframeSrc = iframeEl?.getAttribute?.('src') || iframeEl?.src || '';
               const candidateOrigins = [];
+              const defaultRemoteOrigin = `https://${resolvedHostConfig.remoteHostDomains[0] || 'antigravity.google.com'}`;
               try {
                 if (rawIframeSrc) {
-                  candidateOrigins.push(new URL(rawIframeSrc, w.location?.href || 'https://antigravity.google.com').origin);
+                  candidateOrigins.push(new URL(rawIframeSrc, w.location?.href || defaultRemoteOrigin).origin);
                 }
               } catch {}
               if (w.location?.origin && !candidateOrigins.includes(w.location.origin)) {
                 candidateOrigins.push(w.location.origin);
               }
-              if (!candidateOrigins.includes('https://antigravity.static.usercontent.goog')) {
-                candidateOrigins.push('https://antigravity.static.usercontent.goog');
+              for (const cdnOrig of resolvedHostConfig.staticCdnOrigins) {
+                if (cdnOrig && !candidateOrigins.includes(cdnOrig)) {
+                  candidateOrigins.push(cdnOrig);
+                }
               }
               for (const orig of candidateOrigins) {
                 if (w.__agyRemoteControlInstance) break;
@@ -1398,44 +1496,44 @@
                 __isRcProxyAdapter: true,
                 rcInst,
                 async getMcpServerStates() {
-                  return await callRpc('/exa.language_server_pb.LanguageServerService/GetMcpServerStates', {});
+                  return await callRpc(resolvedHostConfig.buildRpcPath('GetMcpServerStates'), {});
                 },
                 async refreshMcpServers(req) {
-                  return await callRpc('/exa.language_server_pb.LanguageServerService/RefreshMcpServers', req || {});
+                  return await callRpc(resolvedHostConfig.buildRpcPath('RefreshMcpServers'), req || {});
                 },
                 async toggleMcpServer(req) {
-                  return await callRpc('/exa.language_server_pb.LanguageServerService/ToggleMcpServer', req || {});
+                  return await callRpc(resolvedHostConfig.buildRpcPath('ToggleMcpServer'), req || {});
                 },
                 async completeMcpOAuth(serverName, authorizationCode) {
-                  return await callRpc('/exa.language_server_pb.LanguageServerService/CompleteMcpOAuth', {
+                  return await callRpc(resolvedHostConfig.buildRpcPath('CompleteMcpOAuth'), {
                     serverName: String(serverName),
                     authorizationCode: String(authorizationCode),
                   });
                 },
                 async disconnectMcpOAuth(serverName, account) {
-                  return await callRpc('/exa.language_server_pb.LanguageServerService/DisconnectMcpOAuth', {
+                  return await callRpc(resolvedHostConfig.buildRpcPath('DisconnectMcpOAuth'), {
                     serverName: String(serverName),
                     account: String(account || ''),
                   });
                 },
                 async getStandaloneDir() {
-                  return await callRpc('/exa.language_server_pb.LanguageServerService/GetStandaloneDir', {});
+                  return await callRpc(resolvedHostConfig.buildRpcPath('GetStandaloneDir'), {});
                 },
                 async getCustomizationStates() {
-                  return await callRpc('/exa.language_server_pb.LanguageServerService/GetCustomizationStates', {});
+                  return await callRpc(resolvedHostConfig.buildRpcPath('GetCustomizationStates'), {});
                 },
                 async getAllPlugins() {
-                  return await callRpc('/exa.language_server_pb.LanguageServerService/GetAllPlugins', {});
+                  return await callRpc(resolvedHostConfig.buildRpcPath('GetAllPlugins'), {});
                 },
                 async getAllSkills() {
-                  return await callRpc('/exa.language_server_pb.LanguageServerService/GetAllSkills', {});
+                  return await callRpc(resolvedHostConfig.buildRpcPath('GetAllSkills'), {});
                 },
                 async getLocalUserInfo() {
-                  return await callRpc('/exa.language_server_pb.LanguageServerService/GetLocalUserInfo', {});
+                  return await callRpc(resolvedHostConfig.buildRpcPath('GetLocalUserInfo'), {});
                 },
                 async readFile(req) {
                   const uri = typeof req === 'string' ? req : req?.uri;
-                  const r = await callRpc('/exa.language_server_pb.LanguageServerService/ReadFile', { uri });
+                  const r = await callRpc(resolvedHostConfig.buildRpcPath('ReadFile'), { uri });
                   const b64 = typeof r?.content === 'string' ? r.content : (typeof r?.contents === 'string' ? r.contents : null);
                   if (b64 !== null) {
                     return { content: decodeBase64ToBytes(b64) };
@@ -1444,7 +1542,7 @@
                 },
                 async writeFile(req) {
                   const contentB64 = bytesIsUint8(req?.content) ? encodeBytesToBase64(req.content) : (req?.content || '');
-                  return await callRpc('/exa.language_server_pb.LanguageServerService/WriteFile', {
+                  return await callRpc(resolvedHostConfig.buildRpcPath('WriteFile'), {
                     uri: req?.uri,
                     content: contentB64,
                     overwrite: Boolean(req?.overwrite),
@@ -1633,27 +1731,38 @@
         if (svc && typeof svc.readFile === 'function' && uri) {
           try {
             const res = await svc.readFile({ uri });
-            if (res?.content && res.content.length > 0) {
-              const text = decodeUtf8(res.content);
+            const rawPayload = typeof res === 'string' ? res : res?.content;
+            if (rawPayload && rawPayload.length > 0) {
+              const text = decodeUtf8(rawPayload);
               if (text.trim()) {
                 const norm = normalizeMcpConfigObject(text);
                 if (norm.ok) {
                   try {
                     ls?.setItem?.(STORAGE_FALLBACK_KEY, JSON.stringify(norm.config));
                   } catch {}
-                  return { config: norm.config, uri, fsPath: toFsPathFromFileUri(uri), error: null };
+                  return { ok: true, config: norm.config, uri, fsPath: toFsPathFromFileUri(uri), error: null };
                 }
                 return {
-                  config: { mcpServers: {} },
+                  ok: false,
+                  config: null,
                   uri,
                   fsPath: toFsPathFromFileUri(uri),
                   error: norm.error,
                 };
               }
             }
-            return { config: { mcpServers: {} }, uri, fsPath: toFsPathFromFileUri(uri), error: null };
-          } catch {
-            return { config: { mcpServers: {} }, uri, fsPath: toFsPathFromFileUri(uri), error: null };
+            return { ok: true, config: { mcpServers: {} }, uri, fsPath: toFsPathFromFileUri(uri), error: null };
+          } catch (err) {
+            if (isMissingFileError(err)) {
+              return { ok: true, config: { mcpServers: {} }, uri, fsPath: toFsPathFromFileUri(uri), error: null };
+            }
+            return {
+              ok: false,
+              config: null,
+              uri,
+              fsPath: toFsPathFromFileUri(uri),
+              error: `Failed to read mcp_config.json: ${err?.message || String(err)}`,
+            };
           }
         }
         try {
@@ -1662,6 +1771,7 @@
             const norm = normalizeMcpConfigObject(raw);
             if (norm.ok) {
               return {
+                ok: true,
                 config: norm.config,
                 uri: uri || 'localStorage://mcp_config.json',
                 fsPath: toFsPathFromFileUri(uri) || '~/.gemini/config/mcp_config.json',
@@ -1671,6 +1781,7 @@
           }
         } catch {}
         return {
+          ok: true,
           config: { mcpServers: {} },
           uri: uri || 'file:///~/.gemini/config/mcp_config.json',
           fsPath: toFsPathFromFileUri(uri) || '~/.gemini/config/mcp_config.json',
@@ -1844,29 +1955,35 @@
         return latestState;
       }
       async function applyAuthHeadersToServers(serverNames, authHeaders) {
-        const { config } = await readMcpConfig();
-        const nextServers = { ...(config.mcpServers || {}) };
-        const names = Array.isArray(serverNames) && serverNames.length > 0
-          ? serverNames
-          : Object.keys(nextServers).filter((k) => Boolean(nextServers[k]?.url || nextServers[k]?.serverUrl));
-        let updatedCount = 0;
-        for (const name of names) {
-          const current = nextServers[name];
-          if (!current || typeof current !== 'object') continue;
-          if (current.url || current.serverUrl) {
-            const mergedHeaders = { ...(current.headers || {}), ...(authHeaders || {}) };
-            nextServers[name] = {
-              ...current,
-              headers: mergedHeaders,
-            };
-            updatedCount++;
+        return withConfigMutationLock(async () => {
+          const readRes = await readMcpConfig();
+          if (readRes.ok === false || !readRes.config) {
+            return { ok: false, persisted: false, error: readRes.error || 'Failed to read mcp_config.json.' };
           }
-        }
-        if (updatedCount === 0) {
-          return { ok: false, error: 'No matching HTTP custom servers found to update authentication.' };
-        }
-        const res = await writeMcpConfig({ ...config, mcpServers: nextServers });
-        return { ...res, updatedCount };
+          const { config } = readRes;
+          const nextServers = { ...(config.mcpServers || {}) };
+          const names = Array.isArray(serverNames) && serverNames.length > 0
+            ? serverNames
+            : Object.keys(nextServers).filter((k) => Boolean(nextServers[k]?.url || nextServers[k]?.serverUrl));
+          let updatedCount = 0;
+          for (const name of names) {
+            const current = nextServers[name];
+            if (!current || typeof current !== 'object') continue;
+            if (current.url || current.serverUrl) {
+              const mergedHeaders = { ...(current.headers || {}), ...(authHeaders || {}) };
+              nextServers[name] = {
+                ...current,
+                headers: mergedHeaders,
+              };
+              updatedCount++;
+            }
+          }
+          if (updatedCount === 0) {
+            return { ok: false, error: 'No matching HTTP custom servers found to update authentication.' };
+          }
+          const res = await writeMcpConfig({ ...config, mcpServers: nextServers });
+          return { ...res, updatedCount };
+        });
       }
       async function refreshServers(serverName) {
         const svc = scanFiberTree();
@@ -1883,115 +2000,139 @@
         return fetchServerStates();
       }
       async function toggleServerEnabled(serverName, enabled) {
-        const svc = scanFiberTree();
-        if (svc && typeof svc.toggleMcpServer === 'function') {
-          try {
-            await svc.toggleMcpServer({ serverName, enabled: Boolean(enabled) });
-          } catch (e) {
-            return { ok: false, error: e?.message || `Failed to toggle MCP server "${serverName}".` };
+        return withConfigMutationLock(async () => {
+          const svc = scanFiberTree();
+          if (svc && typeof svc.toggleMcpServer === 'function') {
+            try {
+              await svc.toggleMcpServer({ serverName, enabled: Boolean(enabled) });
+            } catch (e) {
+              return { ok: false, error: e?.message || `Failed to toggle MCP server "${serverName}".` };
+            }
           }
-        }
-        const { config } = await readMcpConfig();
-        if (config.mcpServers && config.mcpServers[serverName]) {
+          const readRes = await readMcpConfig();
+          if (readRes.ok === false || !readRes.config) {
+            return { ok: false, persisted: false, error: readRes.error || 'Failed to read mcp_config.json.' };
+          }
+          const { config } = readRes;
+          if (config.mcpServers && config.mcpServers[serverName]) {
+            const nextConfig = {
+              ...config,
+              mcpServers: {
+                ...config.mcpServers,
+                [serverName]: {
+                  ...config.mcpServers[serverName],
+                },
+              },
+            };
+            if (enabled) {
+              delete nextConfig.mcpServers[serverName].disabled;
+            } else {
+              nextConfig.mcpServers[serverName].disabled = true;
+            }
+            const writeRes = await writeMcpConfig(nextConfig, serverName);
+            if (writeRes && writeRes.ok === false) {
+              return writeRes;
+            }
+          }
+          return fetchServerStates();
+        });
+      }
+      async function upsertCustomServer(serverName, spec, previousName = null) {
+        return withConfigMutationLock(async () => {
+          const readRes = await readMcpConfig();
+          if (readRes.ok === false || !readRes.config) {
+            return { ok: false, persisted: false, error: readRes.error || 'Failed to read mcp_config.json.' };
+          }
+          const { config } = readRes;
+          const nextServers = { ...(config.mcpServers || {}) };
+          if (previousName && previousName !== serverName && nextServers[previousName]) {
+            delete nextServers[previousName];
+          }
+          nextServers[serverName] = spec;
+          return writeMcpConfig({ ...config, mcpServers: nextServers }, serverName);
+        });
+      }
+      async function deleteCustomServer(serverName) {
+        return withConfigMutationLock(async () => {
+          const readRes = await readMcpConfig();
+          if (readRes.ok === false || !readRes.config) {
+            return { ok: false, persisted: false, error: readRes.error || 'Failed to read mcp_config.json.' };
+          }
+          const { config } = readRes;
+          const nextServers = { ...(config.mcpServers || {}) };
+          if (!(serverName in nextServers)) {
+            return { ok: false, error: `Custom server "${serverName}" was not found in mcp_config.json.` };
+          }
+          delete nextServers[serverName];
+          return writeMcpConfig({ ...config, mcpServers: nextServers }, serverName);
+        });
+      }
+      async function toggleServerTool(serverName, toolName, enabled) {
+        return withConfigMutationLock(async () => {
+          const readRes = await readMcpConfig();
+          if (readRes.ok === false || !readRes.config) {
+            return { ok: false, persisted: false, error: readRes.error || 'Failed to read mcp_config.json.' };
+          }
+          const { config } = readRes;
+          if (!config.mcpServers || !config.mcpServers[serverName]) {
+            return {
+              ok: false,
+              error: `Tool toggling via mcp_config.json is only supported for custom servers in mcp_config.json ("${serverName}").`,
+            };
+          }
+          const currentServer = { ...config.mcpServers[serverName] };
+          let disabledTools = Array.isArray(currentServer.disabledTools)
+            ? [...currentServer.disabledTools]
+            : [];
+          if (enabled) {
+            disabledTools = disabledTools.filter((t) => t !== toolName);
+          } else if (!disabledTools.includes(toolName)) {
+            disabledTools.push(toolName);
+          }
+          if (disabledTools.length > 0) {
+            currentServer.disabledTools = disabledTools;
+          } else {
+            delete currentServer.disabledTools;
+          }
           const nextConfig = {
             ...config,
             mcpServers: {
               ...config.mcpServers,
-              [serverName]: {
-                ...config.mcpServers[serverName],
-              },
+              [serverName]: currentServer,
             },
           };
-          if (enabled) {
-            delete nextConfig.mcpServers[serverName].disabled;
-          } else {
-            nextConfig.mcpServers[serverName].disabled = true;
+          const serialized = JSON.stringify(nextConfig, null, 2) + '\n';
+          const svc = scanFiberTree();
+          const uri = await resolveMcpConfigUri();
+          let persisted = false;
+          if (svc && typeof svc.writeFile === 'function' && uri) {
+            const bytes = encodeUtf8(serialized);
+            const writeRes = await writeFileToHost(svc, uri, bytes);
+            if (!writeRes.ok) {
+              return { ok: false, persisted: false, error: writeRes.error };
+            }
+            persisted = true;
+          } else if (svc) {
+            return {
+              ok: false,
+              persisted: false,
+              error: !uri
+                ? 'Could not resolve ~/.gemini/config/mcp_config.json path from host.'
+                : 'Host file writer (writeFile) is not available in this session.',
+            };
           }
-          const writeRes = await writeMcpConfig(nextConfig, serverName);
-          if (writeRes && writeRes.ok === false) {
-            return writeRes;
-          }
-        }
-        return fetchServerStates();
-      }
-      async function upsertCustomServer(serverName, spec, previousName = null) {
-        const { config } = await readMcpConfig();
-        const nextServers = { ...(config.mcpServers || {}) };
-        if (previousName && previousName !== serverName && nextServers[previousName]) {
-          delete nextServers[previousName];
-        }
-        nextServers[serverName] = spec;
-        return writeMcpConfig({ ...config, mcpServers: nextServers }, serverName);
-      }
-      async function deleteCustomServer(serverName) {
-        const { config } = await readMcpConfig();
-        const nextServers = { ...(config.mcpServers || {}) };
-        if (!(serverName in nextServers)) {
-          return { ok: false, error: `Custom server "${serverName}" was not found in mcp_config.json.` };
-        }
-        delete nextServers[serverName];
-        return writeMcpConfig({ ...config, mcpServers: nextServers }, serverName);
-      }
-      async function toggleServerTool(serverName, toolName, enabled) {
-        const { config } = await readMcpConfig();
-        if (!config.mcpServers || !config.mcpServers[serverName]) {
-          return {
-            ok: false,
-            error: `Tool toggling via mcp_config.json is only supported for custom servers in mcp_config.json ("${serverName}").`,
-          };
-        }
-        const currentServer = { ...config.mcpServers[serverName] };
-        let disabledTools = Array.isArray(currentServer.disabledTools)
-          ? [...currentServer.disabledTools]
-          : [];
-        if (enabled) {
-          disabledTools = disabledTools.filter((t) => t !== toolName);
-        } else if (!disabledTools.includes(toolName)) {
-          disabledTools.push(toolName);
-        }
-        if (disabledTools.length > 0) {
-          currentServer.disabledTools = disabledTools;
-        } else {
-          delete currentServer.disabledTools;
-        }
-        const nextConfig = {
-          ...config,
-          mcpServers: {
-            ...config.mcpServers,
-            [serverName]: currentServer,
-          },
-        };
-        const serialized = JSON.stringify(nextConfig, null, 2) + '\n';
-        const svc = scanFiberTree();
-        const uri = await resolveMcpConfigUri();
-        let persisted = false;
-        if (svc && typeof svc.writeFile === 'function' && uri) {
-          const bytes = encodeUtf8(serialized);
-          const writeRes = await writeFileToHost(svc, uri, bytes);
-          if (!writeRes.ok) {
-            return { ok: false, persisted: false, error: writeRes.error };
-          }
-          persisted = true;
-        } else if (svc) {
-          return {
-            ok: false,
-            persisted: false,
-            error: !uri
-              ? 'Could not resolve ~/.gemini/config/mcp_config.json path from host.'
-              : 'Host file writer (writeFile) is not available in this session.',
-          };
-        }
-        try {
-          ls?.setItem?.(STORAGE_FALLBACK_KEY, serialized);
-          if (!svc) persisted = true;
-        } catch {}
-        if (svc && typeof svc.refreshMcpServers === 'function') {
           try {
-            await svc.refreshMcpServers({ shallow: true, serverName });
+            ls?.setItem?.(STORAGE_FALLBACK_KEY, serialized);
+            if (!svc) persisted = true;
           } catch {}
-        }
-        await fetchServerStates();
-        return { ok: true, persisted, config: nextConfig };
+          if (svc && typeof svc.refreshMcpServers === 'function') {
+            try {
+              await svc.refreshMcpServers({ shallow: true, serverName });
+            } catch {}
+          }
+          await fetchServerStates();
+          return { ok: true, persisted, config: nextConfig };
+        });
       }
       async function revealConfigInExplorer() {
         scanFiberTree();
@@ -2149,12 +2290,12 @@
         }
         const mcpBeginStr = ['BEGIN_AGY_MCP', 'MANAGER'].join('_');
         const mcpEndStr = ['END_AGY_MCP', 'MANAGER'].join('_');
-        const koBeginStr = ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_');
-        const koEndStr = ['END_AGY_KO', 'THOUGHT_LOCALIZER_V2'].join('_');
-        const mcpBeginRe = new RegExp(`^(?:\\/\\/ === ${mcpBeginStr}(?:_V1)? ===|\\/\\* === ${mcpBeginStr}(?:_V1)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
-        const mcpEndRe = new RegExp(`^(?:\\/\\/ === ${mcpEndStr}(?:_V1)? ===|\\/\\* === ${mcpEndStr}(?:_V1)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
-        const koBeginRe = new RegExp(`^(?:\\/\\/ === ${koBeginStr} ===|\\/\\* === ${koBeginStr} === \\*\\/)[ \\t]*\\r?$`, 'gm');
-        const koEndRe = new RegExp(`^(?:\\/\\/ === ${koEndStr} ===|\\/\\* === ${koEndStr} === \\*\\/)[ \\t]*\\r?$`, 'gm');
+        const koBeginStr = ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER'].join('_');
+        const koEndStr = ['END_AGY_KO', 'THOUGHT_LOCALIZER'].join('_');
+        const mcpBeginRe = new RegExp(`^(?:\\/\\/ === ${mcpBeginStr}(?:_V\\d+)? ===|\\/\\* === ${mcpBeginStr}(?:_V\\d+)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
+        const mcpEndRe = new RegExp(`^(?:\\/\\/ === ${mcpEndStr}(?:_V\\d+)? ===|\\/\\* === ${mcpEndStr}(?:_V\\d+)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
+        const koBeginRe = new RegExp(`^(?:\\/\\/ === ${koBeginStr}(?:_V\\d+)? ===|\\/\\* === ${koBeginStr}(?:_V\\d+)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
+        const koEndRe = new RegExp(`^(?:\\/\\/ === ${koEndStr}(?:_V\\d+)? ===|\\/\\* === ${koEndStr}(?:_V\\d+)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
         const findAnchoredSpan = (srcText, beginRe, endRe) => {
           beginRe.lastIndex = 0;
           const bMatch = beginRe.exec(srcText);
@@ -2231,6 +2372,7 @@
         fetchHostInstalledPluginInfo,
         resolveRemoteControlInstance,
         toFsPathFromFileUri,
+        hostConfig: resolvedHostConfig,
       };
     }
     module.exports = {
@@ -2895,6 +3037,8 @@
       let bannerState = { type: '', message: '' };
       let popupBannerState = { type: '', message: '' };
       let oauthPollTimer = null;
+      let oauthModalOpenSeq = 0;
+      let editPopupOpenSeq = 0;
       function setBanner(type, message) {
         bannerState = { type, message };
         renderBanner();
@@ -2950,7 +3094,13 @@
             bridge.readMcpConfig(),
             bridge.fetchServerStates(),
           ]);
-          cachedConfig = cfgResult && cfgResult.config ? cfgResult : { uri: '', config: { mcpServers: {} } };
+          if (cfgResult && cfgResult.ok === false) {
+            if (cfgResult.error) {
+              setBanner('error', cfgResult.error);
+            }
+          } else {
+            cachedConfig = cfgResult && cfgResult.config ? cfgResult : { uri: '', config: { mcpServers: {} } };
+          }
           const statesList = Array.isArray(statesResult)
             ? statesResult
             : (statesResult && Array.isArray(statesResult.states) ? statesResult.states : []);
@@ -2982,12 +3132,7 @@
           envText: formatKeyValueForEditor(effectiveSpec && effectiveSpec.env, '='),
           cwd: effectiveSpec && effectiveSpec.cwd ? effectiveSpec.cwd : '',
           url: (effectiveSpec && (effectiveSpec.url || effectiveSpec.serverUrl)) || '',
-          headersText: formatKeyValueForEditor(
-            (authMode === 'none' || authMode === 'oauth' || authMode === 'oauth_or_none')
-              ? extractedAuth.extraHeaders
-              : extractedAuth.extraHeaders,
-            ': '
-          ),
+          headersText: formatKeyValueForEditor(extractedAuth.extraHeaders, ': '),
           authMode,
           oauthClientMode: extractedAuth.oauthClientMode || 'auto',
           oauthClientId: extractedAuth.oauthClientId || '',
@@ -3012,9 +3157,20 @@
         editingForm = createDefaultFormState();
       }
       function closeOAuthConnectModal() {
+        oauthModalOpenSeq += 1;
         if (oauthPollTimer) {
           clearInterval(oauthPollTimer);
           oauthPollTimer = null;
+        }
+        const existingList =
+          doc.body && typeof doc.body.querySelectorAll === 'function'
+            ? doc.body.querySelectorAll(`#${OAUTH_MODAL_ID}`)
+            : [];
+        if (existingList && existingList.length > 0) {
+          Array.from(existingList).forEach((el) => {
+            if (el && el.parentNode) el.parentNode.removeChild(el);
+          });
+          return;
         }
         const backdrop = doc.getElementById(OAUTH_MODAL_ID);
         if (backdrop && backdrop.parentNode) {
@@ -3027,11 +3183,15 @@
       async function openOAuthConnectModal(serverName, initialAuthUrl = '') {
         ensureModalStyles(doc);
         closeOAuthConnectModal();
+        const mySeq = ++oauthModalOpenSeq;
         await reloadData();
+        if (mySeq !== oauthModalOpenSeq) return;
         let st = findRuntimeState(serverName);
         if (!initialAuthUrl && (!st || (!st.authUrl && !st.hasAuthToken)) && typeof bridge.waitForServerOAuthOrReady === 'function') {
           st = await bridge.waitForServerOAuthOrReady(serverName, 2500);
+          if (mySeq !== oauthModalOpenSeq) return;
           await reloadData();
+          if (mySeq !== oauthModalOpenSeq) return;
         }
         const authUrl = initialAuthUrl || st?.authUrl || '';
         const backdrop = doc.createElement('div');
@@ -3152,22 +3312,29 @@
             codeSection.style.display = 'flex';
             if (oauthPollTimer) clearInterval(oauthPollTimer);
             let ticks = 0;
+            let pollInFlight = false;
             oauthPollTimer = setInterval(async () => {
+              if (pollInFlight) return;
               ticks++;
               if (ticks > 60 || !isOAuthConnectModalOpen()) {
                 clearInterval(oauthPollTimer);
                 oauthPollTimer = null;
                 return;
               }
-              await reloadData();
-              const cur = findRuntimeState(serverName);
-              if (cur && (cur.hasAuthToken || cur.status === 2)) {
-                clearInterval(oauthPollTimer);
-                oauthPollTimer = null;
-                closeOAuthConnectModal();
-                setBanner('success', `OAuth authentication and connection completed for "${serverName}".`);
-                if (isOpen()) renderModalContent();
-                if (isEditPopupOpen()) renderEditPopupBody();
+              pollInFlight = true;
+              try {
+                await reloadData();
+                const cur = findRuntimeState(serverName);
+                if (cur && (cur.hasAuthToken || cur.status === 2)) {
+                  clearInterval(oauthPollTimer);
+                  oauthPollTimer = null;
+                  closeOAuthConnectModal();
+                  setBanner('success', `OAuth authentication and connection completed for "${serverName}".`);
+                  if (isOpen()) renderModalContent();
+                  if (isEditPopupOpen()) renderEditPopupBody();
+                }
+              } finally {
+                pollInFlight = false;
               }
             }, 1200);
           } else {
@@ -3218,17 +3385,26 @@
             if (parsed.multipleServers) {
               const names = Object.keys(parsed.multipleServers);
               setBanner('info', `Saving ${names.length} MCP servers (${names.join(', ')})...`);
+              const latestCfgRes = typeof bridge.readMcpConfig === 'function' ? await bridge.readMcpConfig() : null;
+              if (latestCfgRes && latestCfgRes.ok === false) {
+                setBanner('error', latestCfgRes.error || 'Failed to read mcp_config.json.');
+                return;
+              }
+              const baseCfg = (latestCfgRes && latestCfgRes.config) || cachedConfig.config || {};
               const nextServers = {
-                ...((cachedConfig.config && cachedConfig.config.mcpServers) || {}),
+                ...(baseCfg.mcpServers || {}),
                 ...parsed.multipleServers,
               };
               const writeRes = await bridge.writeMcpConfig({
-                ...(cachedConfig.config || {}),
+                ...baseCfg,
                 mcpServers: nextServers,
               });
               if (writeRes && writeRes.ok === false) {
                 setBanner('error', writeRes.error);
                 return;
+              }
+              if (typeof bridge.refreshServers === 'function') {
+                await bridge.refreshServers();
               }
               await reloadData();
               setBanner('success', `Automatically configured and connected ${names.length} servers: ${names.join(', ')}.`);
@@ -3282,14 +3458,21 @@
             setBanner('error', parsed.error);
             return;
           }
-          populateFormFromSpec(parsed.serverName, parsed.spec, { isPrefill: true });
+          const multiNames = parsed.multipleServers ? Object.keys(parsed.multipleServers) : [];
+          const targetName = parsed.serverName || multiNames[0] || 'custom-mcp';
+          const targetSpec = parsed.spec || (parsed.multipleServers ? parsed.multipleServers[targetName] : null);
+          const bannerMsg =
+            multiNames.length > 1
+              ? `Auto-filled form for "${targetName}" (${multiNames.length} servers detected; click Auto-Add & Connect to register all at once).`
+              : `Auto-filled form for "${targetName}". Review OAuth / connection settings below.`;
+          populateFormFromSpec(targetName, targetSpec, { isPrefill: true });
           activeTab = 'editor';
-          setBanner('info', `Auto-filled form for "${parsed.serverName}". Review OAuth / connection settings below.`);
+          setBanner('info', bannerMsg);
           if (isOpen()) {
             renderModalContent();
           } else {
-            openEditPopup(parsed.serverName, { prefillSpec: parsed.spec, isPrefill: true });
-            setPopupBanner('info', `Auto-filled form for "${parsed.serverName}". Review OAuth / connection settings below.`);
+            openEditPopup(targetName, { prefillSpec: targetSpec, isPrefill: true });
+            setPopupBanner('info', bannerMsg);
           }
         });
         row.appendChild(input);
@@ -4383,6 +4566,9 @@
             setBanner('error', res.error);
             return;
           }
+          if (typeof bridge.refreshServers === 'function') {
+            await bridge.refreshServers();
+          }
           await reloadData();
           setBanner('success', 'Saved mcp_config.json and refreshed MCP servers.');
           renderBody();
@@ -4625,7 +4811,9 @@
       async function openEditPopup(serverName = '', options = {}) {
         ensureModalStyles(doc);
         popupBannerState = { type: '', message: '' };
+        const mySeq = ++editPopupOpenSeq;
         await reloadData();
+        if (mySeq !== editPopupOpenSeq) return;
         const customMap = (cachedConfig.config && cachedConfig.config.mcpServers) || {};
         const customNames = Object.keys(customMap);
         const targetName = serverName !== undefined && serverName !== null && serverName !== ''
@@ -4682,6 +4870,7 @@
         renderEditPopupBody();
       }
       function closeEditPopup() {
+        editPopupOpenSeq += 1;
         const backdrop = doc.getElementById(EDIT_POPUP_ID);
         if (backdrop && backdrop.parentNode) {
           backdrop.parentNode.removeChild(backdrop);
@@ -4900,6 +5089,7 @@
   "./index": function(module, exports, __require) {
     const require = (spec) => __require(".", spec);
     'use strict';
+    const { resolveHostAdapterConfig } = require('./host-adapter-config');
     const schema = require('./mcp-config-schema');
     const { createHostMcpBridge } = require('./host-mcp-bridge');
     const {
@@ -4909,8 +5099,16 @@
       ensureModalStyles,
       createModalController,
     } = require('./modal-ui');
-    const MCP_MANAGER_VERSION = 'v1.4.15';
+    const MCP_MANAGER_VERSION = 'v1.4.16';
     const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
+    function escAttr(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
     function getOrCreateTrustedTypesPolicy(win) {
       if (!win) return null;
       if (win.__agyTrustedTypesPolicy) return win.__agyTrustedTypesPolicy;
@@ -5060,15 +5258,16 @@
       }
       return false;
     }
-    function ensureRemoteCompanionScripts(win, doc, bridge) {
+    function ensureRemoteCompanionScripts(win, doc, bridge, hostConfig) {
       try {
         let isChildFrame = false;
         try {
           isChildFrame = Boolean(win && win.parent && win.parent !== win);
         } catch (_e) {}
         if (isChildFrame) return Promise.resolve({ loaded: [] });
+        const resolvedHostCfg = resolveHostAdapterConfig(hostConfig || bridge?.hostConfig, win);
         const isRemoteWeb =
-          Boolean(win?.location?.hostname && String(win.location.hostname).includes('antigravity.google.com')) ||
+          resolvedHostCfg.isRemoteHost(win?.location?.hostname) ||
           Boolean(doc?.querySelector?.('ga-remote-control'));
         if (!isRemoteWeb || !doc?.head) return Promise.resolve({ loaded: [] });
         const execScriptText = (code) => {
@@ -5148,7 +5347,7 @@
           if (info.hasStatusbar && !win.agyStatusBar) {
             const ok = await injectRemoteOrHostFallback(
               '__agyLoadingStatusBarCompanion',
-              'https://raw.githubusercontent.com/jaeseongs95/antigravity-statusbar/main/dist/statusbar_autoinject.js',
+              resolvedHostCfg.companionScripts.statusbarUrl,
               info.statusbarBlock
             );
             if (ok) loaded.push('antigravity-statusbar');
@@ -5156,7 +5355,7 @@
           if (info.hasKoTranslator && !win.__agyKoLocalizerActive && !win.__agyKoThoughtCleanup) {
             const ok = await injectRemoteOrHostFallback(
               '__agyLoadingKoThoughtCompanion',
-              'https://raw.githubusercontent.com/jaeseongs95/antigravity-ko-translator/main/plugins/ko-thought-translator/scripts/ko_thought_autoinject.js',
+              resolvedHostCfg.companionScripts.koTranslatorUrl,
               info.koBlock
             );
             if (ok) loaded.push('ko-thought-translator');
@@ -5189,6 +5388,9 @@
       try {
         parsedUrl = new URL(rawSrc, win.location?.href || 'https://antigravity.google.com');
       } catch (_e) {
+        return false;
+      }
+      if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') {
         return false;
       }
       const basePath = parsedUrl.pathname.replace(/^\/antigravity/, '').replace(/\/+$/, '');
@@ -5245,12 +5447,13 @@
           const cd = iframe.contentDocument || cw?.document;
           if (!cw || !cd) return;
           const nonce = doc.querySelector?.('script[nonce]')?.nonce || '';
-          const nonceAttr = nonce ? ` nonce="${nonce}"` : '';
+          const nonceAttr = nonce ? ` nonce="${escAttr(nonce)}"` : '';
+          const safeCdnBaseUrl = escAttr(cdnBaseUrl);
           const ttPolicy = getOrCreateTrustedTypesPolicy(win);
           const shellHtml =
             `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">` +
-            `<link rel="stylesheet" href="${cdnBaseUrl}/jetbox.css"${nonceAttr}>` +
-            `<link rel="stylesheet" href="${cdnBaseUrl}/compiled_tailwind.css"${nonceAttr}>` +
+            `<link rel="stylesheet" href="${safeCdnBaseUrl}/jetbox.css"${nonceAttr}>` +
+            `<link rel="stylesheet" href="${safeCdnBaseUrl}/compiled_tailwind.css"${nonceAttr}>` +
             `<style>html,body,#root{height:100%;height:100dvh;max-height:100dvh;margin:0;overflow:hidden;background-color:transparent;overscroll-behavior:none;-webkit-text-size-adjust:100%;}</style>` +
             `</head><body><div id="root"></div></body></html>`;
           cd.open();
@@ -5463,7 +5666,8 @@
         }
       }
       ensureModalStyles(doc);
-      const bridge = env.bridge || createHostMcpBridge({ window: win, document: doc });
+      const resolvedHostCfg = resolveHostAdapterConfig(env.hostConfig || env.bridge?.hostConfig, win);
+      const bridge = env.bridge || createHostMcpBridge({ window: win, document: doc, hostConfig: resolvedHostCfg });
       const modal = createModalController({
         doc,
         bridge,
@@ -5551,6 +5755,25 @@
           const activateMcpPane = () => {
             const contentContainer = settingsModal.querySelector('.grow.w-full');
             if (!contentContainer) return;
+            const existingPane = contentContainer.querySelector('#agy-mcp-settings-pane');
+            const alreadyActive = Boolean(existingPane && existingPane.style.display !== 'none');
+            if (!alreadyActive) {
+              let prevTid = '';
+              const allNavBtns = settingsModal.querySelectorAll('button[data-testid^="settings-nav-item-"]');
+              allNavBtns.forEach((b) => {
+                const tid = b.getAttribute?.('data-testid') || '';
+                if (
+                  tid &&
+                  tid !== 'settings-nav-item-McpManager' &&
+                  tid !== 'settings-nav-item-KoTranslator' &&
+                  b.classList?.contains?.('bg-sidebar-secondary')
+                ) {
+                  prevTid = tid;
+                }
+              });
+              const fallbackTid = settingsModal.getAttribute?.('data-agy-mcp-prev-nav') || 'settings-nav-item-Models';
+              settingsModal.setAttribute('data-agy-mcp-prev-nav', prevTid || fallbackTid);
+            }
             Array.from(contentContainer.children).forEach((child) => {
               if (child.id === 'agy-mcp-settings-pane') return;
               if (child.id === 'agy-ko-settings-pane') {
@@ -5562,7 +5785,7 @@
               }
               child.style.display = 'none';
             });
-            let pane = contentContainer.querySelector('#agy-mcp-settings-pane');
+            let pane = existingPane;
             if (!pane) {
               pane = doc.createElement('div');
               pane.id = 'agy-mcp-settings-pane';
@@ -5592,6 +5815,9 @@
             if (!btn) return;
             const testId = btn.getAttribute('data-testid') || '';
             if (testId === 'settings-nav-item-McpManager') return;
+            if (testId && testId !== 'settings-nav-item-KoTranslator') {
+              settingsModal.setAttribute('data-agy-mcp-prev-nav', testId);
+            }
             const contentContainer = settingsModal.querySelector('.grow.w-full');
             if (!contentContainer) return;
             const pane = contentContainer.querySelector('#agy-mcp-settings-pane');
@@ -5680,19 +5906,26 @@
       } catch (_e) {}
       const isRemoteHostPage =
         !isChildFrame &&
-        (Boolean(win?.location?.hostname && String(win.location.hostname).includes('antigravity.google.com')) ||
+        (resolvedHostCfg.isRemoteHost(win?.location?.hostname) ||
           Boolean(doc?.querySelector?.('ga-remote-control'))) &&
         Boolean(doc?.head);
       let companionCheckDone = !(isRemoteHostPage && bridge && typeof bridge.fetchHostInstalledPluginInfo === 'function');
       let hostHasKoTranslator = false;
+      let destroyed = false;
+      const boundRemoteIframes = new Set();
       function ensureRemoteIframeMounted() {
+        if (destroyed) return false;
         const iframe = doc.querySelector?.('ga-remote-control iframe');
         if (!iframe) return false;
         if (!iframe.__agyMcpLoadBound && typeof iframe.addEventListener === 'function') {
-          iframe.__agyMcpLoadBound = true;
-          iframe.addEventListener('load', () => {
+          const onIframeLoad = () => {
+            if (destroyed) return;
             ensureRemoteIframeMounted();
-          });
+          };
+          iframe.__agyMcpLoadBound = true;
+          iframe.__agyMcpLoadHandler = onIframeLoad;
+          boundRemoteIframes.add(iframe);
+          iframe.addEventListener('load', onIframeLoad);
         }
         try {
           const iframeWin = iframe.contentWindow;
@@ -5703,6 +5936,7 @@
                 window: iframeWin,
                 document: iframeDoc,
                 bridge,
+                hostConfig: resolvedHostCfg,
               });
             } else if (typeof iframeWin.agyMcpManager.__rebindIfBodyReplaced === 'function') {
               iframeWin.agyMcpManager.__rebindIfBodyReplaced();
@@ -5718,15 +5952,16 @@
             !win.__agyKoThoughtCleanup
           ) {
             promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, () => {
-              ensureRemoteIframeMounted();
+              if (!destroyed) ensureRemoteIframeMounted();
             });
           }
         }
         return false;
       }
       if (!isChildFrame) {
-        ensureRemoteCompanionScripts(win, doc, bridge)
+        ensureRemoteCompanionScripts(win, doc, bridge, resolvedHostCfg)
           .then((res) => {
+            if (destroyed) return;
             if (
               res?.hostInfo?.hasKoTranslator ||
               (Array.isArray(res?.loaded) && res.loaded.includes('ko-thought-translator'))
@@ -5737,6 +5972,7 @@
             ensureRemoteIframeMounted();
           })
           .catch(() => {
+            if (destroyed) return;
             companionCheckDone = true;
             ensureRemoteIframeMounted();
           });
@@ -5747,9 +5983,10 @@
         const setTimer = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : (typeof setTimeout === 'function' ? setTimeout : null);
         const pollIframe = () => {
           remoteIframePollTimer = null;
+          if (destroyed) return;
           pollCount += 1;
           ensureRemoteIframeMounted();
-          if (pollCount >= 12 || !setTimer) return;
+          if (pollCount >= 12 || !setTimer || destroyed) return;
           remoteIframePollTimer = setTimer(pollIframe, 1000);
           if (remoteIframePollTimer && typeof remoteIframePollTimer.unref === 'function') {
             remoteIframePollTimer.unref();
@@ -5763,7 +6000,7 @@
         }
       }
       function injectIntoNativeMcpScreens() {
-        if (!doc.body) return;
+        if (destroyed || !doc.body) return;
         ensureRemoteIframeMounted();
         ensureNativeSettingsModalIntegration();
         const addMcpBtns = doc.querySelectorAll('[data-testid="add-mcp-button"]');
@@ -6038,6 +6275,13 @@
         bridge,
         schema,
         destroy() {
+          destroyed = true;
+          if (win.__agyMcpDomReadyHandler) {
+            if (typeof doc.removeEventListener === 'function') {
+              doc.removeEventListener('DOMContentLoaded', win.__agyMcpDomReadyHandler);
+            }
+            delete win.__agyMcpDomReadyHandler;
+          }
           if (injectTimer) {
             const clr = typeof win.clearTimeout === 'function' ? win.clearTimeout.bind(win) : clearTimeout;
             clr(injectTimer);
@@ -6074,6 +6318,26 @@
                   }
                 }
               });
+              const prevNavTid =
+                (typeof sm.getAttribute === 'function' && sm.getAttribute('data-agy-mcp-prev-nav')) ||
+                'settings-nav-item-Models';
+              const navCandidates = sm.querySelectorAll
+                ? Array.from(sm.querySelectorAll('button[data-testid^="settings-nav-item-"]'))
+                : [];
+              const restoreBtn =
+                navCandidates.find((b) => (b.getAttribute ? b.getAttribute('data-testid') : '') === prevNavTid) ||
+                navCandidates.find(
+                  (b) => (b.getAttribute ? b.getAttribute('data-testid') : '') === 'settings-nav-item-Models'
+                ) ||
+                (sm.querySelector ? sm.querySelector('button[data-testid="settings-nav-item-Models"]') : null);
+              if (restoreBtn) {
+                restoreBtn.classList?.add?.('bg-sidebar-secondary');
+                const sp = restoreBtn.querySelector ? restoreBtn.querySelector('span') : null;
+                if (sp) {
+                  sp.classList?.remove?.('text-secondary-foreground');
+                  sp.classList?.add?.('text-foreground', 'font-medium');
+                }
+              }
             }
             if (sm.__agyMcpNavClickHandler && typeof sm.removeEventListener === 'function') {
               sm.removeEventListener('click', sm.__agyMcpNavClickHandler, true);
@@ -6081,6 +6345,7 @@
             }
             if (typeof sm.removeAttribute === 'function') {
               sm.removeAttribute('data-agy-mcp-nav-bound');
+              sm.removeAttribute('data-agy-mcp-prev-nav');
             }
           });
           doc.querySelectorAll(`[${NATIVE_BTN_ATTR}]`).forEach((el) => {
@@ -6091,16 +6356,28 @@
             if (typeof styleEl.remove === 'function') styleEl.remove();
             else if (styleEl.parentNode) styleEl.parentNode.removeChild(styleEl);
           }
+          const iframesToClean = new Set(boundRemoteIframes);
+          boundRemoteIframes.clear();
           if (doc.querySelectorAll) {
             doc.querySelectorAll('ga-remote-control iframe').forEach((ifr) => {
-              try {
-                const childMgr = ifr?.contentWindow?.agyMcpManager;
-                if (childMgr && childMgr !== controller && typeof childMgr.destroy === 'function') {
-                  childMgr.destroy();
-                }
-              } catch {}
+              if (ifr) iframesToClean.add(ifr);
             });
           }
+          iframesToClean.forEach((ifr) => {
+            try {
+              if (ifr.__agyMcpLoadHandler && typeof ifr.removeEventListener === 'function') {
+                ifr.removeEventListener('load', ifr.__agyMcpLoadHandler);
+              }
+              delete ifr.__agyMcpLoadHandler;
+              delete ifr.__agyMcpLoadBound;
+            } catch {}
+            try {
+              const childMgr = ifr?.contentWindow?.agyMcpManager;
+              if (childMgr && childMgr !== controller && typeof childMgr.destroy === 'function') {
+                childMgr.destroy();
+              }
+            } catch {}
+          });
           if (win.agyMcpManager === controller) {
             delete win.agyMcpManager;
             delete win.__agyMcpManagerActive;
@@ -6112,8 +6389,19 @@
       return controller;
     }
     if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+      if (window.__agyMcpDomReadyHandler && typeof document.removeEventListener === 'function') {
+        document.removeEventListener('DOMContentLoaded', window.__agyMcpDomReadyHandler);
+        delete window.__agyMcpDomReadyHandler;
+      }
       if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => mountMcpManager());
+        const onDomReady = () => {
+          if (window.__agyMcpDomReadyHandler === onDomReady) {
+            delete window.__agyMcpDomReadyHandler;
+          }
+          mountMcpManager();
+        };
+        window.__agyMcpDomReadyHandler = onDomReady;
+        document.addEventListener('DOMContentLoaded', onDomReady, { once: true });
       } else {
         mountMcpManager();
       }

@@ -30,9 +30,9 @@ const MCP_BEGIN = '// === BEGIN_AGY_MCP_MANAGER_V1 ===';
 const MCP_END = '// === END_AGY_MCP_MANAGER_V1 ===';
 const KO_BEGIN = '// === BEGIN_AGY_KO_THOUGHT_LOCALIZER_V2 ===';
 
-const MCP_BEGIN_RE = /^(?:\/\/ === BEGIN_AGY_MCP_MANAGER(?:_V1)? ===|\/\* === BEGIN_AGY_MCP_MANAGER(?:_V1)? === \*\/)[ \t]*$/gm;
-const MCP_END_RE = /^(?:\/\/ === END_AGY_MCP_MANAGER(?:_V1)? ===|\/\* === END_AGY_MCP_MANAGER(?:_V1)? === \*\/)[ \t]*$/gm;
-const KO_BEGIN_RE = /^(?:\/\/ === BEGIN_AGY_KO_THOUGHT_LOCALIZER_V2 ===|\/\* === BEGIN_AGY_KO_THOUGHT_LOCALIZER_V2 === \*\/)[ \t]*$/gm;
+const MCP_BEGIN_RE = /^(?:\/\/ === BEGIN_AGY_MCP_MANAGER(?:_V\d+)? ===|\/\* === BEGIN_AGY_MCP_MANAGER(?:_V\d+)? === \*\/)[ \t]*$/gm;
+const MCP_END_RE = /^(?:\/\/ === END_AGY_MCP_MANAGER(?:_V\d+)? ===|\/\* === END_AGY_MCP_MANAGER(?:_V\d+)? === \*\/)[ \t]*$/gm;
+const KO_BEGIN_RE = /^(?:\/\/ === BEGIN_AGY_KO_THOUGHT_LOCALIZER(?:_V\d+)? ===|\/\* === BEGIN_AGY_KO_THOUGHT_LOCALIZER(?:_V\d+)? === \*\/)[ \t]*$/gm;
 
 function findAnchoredSpan(text, beginRe, endRe) {
   beginRe.lastIndex = 0;
@@ -60,10 +60,10 @@ function findAnchoredSpan(text, beginRe, endRe) {
 }
 
 function mergeMcpManagerBlock(existingContent, mcpBundleText) {
-  const cleanMcp = mcpBundleText.replace(/\r\n/g, '\n').trim();
+  const cleanMcp = mcpBundleText.replace(/\r\n?/g, '\n').trim();
   const wrappedBlock = `${MCP_BEGIN}\n${cleanMcp}\n${MCP_END}`;
 
-  let text = (existingContent || '').replace(/\r\n/g, '\n');
+  let text = (existingContent || '').replace(/\r\n?/g, '\n');
 
   // Remove any previous column-0 anchored MCP_MANAGER block(s)
   let mcpSpan = findAnchoredSpan(text, MCP_BEGIN_RE, MCP_END_RE);
@@ -72,6 +72,17 @@ function mergeMcpManagerBlock(existingContent, mcpBundleText) {
     const after = text.slice(mcpSpan.end).trimStart();
     text = before && after ? `${before}\n\n${after}` : (before || after);
     mcpSpan = findAnchoredSpan(text, MCP_BEGIN_RE, MCP_END_RE);
+  }
+
+  // Also clean up any corrupted orphan BEGIN_AGY_MCP_MANAGER marker missing an END marker
+  MCP_BEGIN_RE.lastIndex = 0;
+  const orphanBegin = MCP_BEGIN_RE.exec(text);
+  if (orphanBegin) {
+    KO_BEGIN_RE.lastIndex = orphanBegin.index + orphanBegin[0].length;
+    const nextKo = KO_BEGIN_RE.exec(text);
+    const before = text.slice(0, orphanBegin.index).trimEnd();
+    const after = nextKo ? text.slice(nextKo.index).trimStart() : '';
+    text = before && after ? `${before}\n\n${after}` : (before || after);
   }
 
   // Insert before column-0 anchored KO_BEGIN if present so ko-thought-translator's baseCode preservation keeps MCP Manager too

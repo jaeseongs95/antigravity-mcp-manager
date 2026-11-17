@@ -86,7 +86,7 @@ const QUICK_TEMPLATES = [
 
 function parseArgsInput(raw) {
   if (Array.isArray(raw)) {
-    return raw.map((x) => String(x)).filter((x) => x.length > 0);
+    return raw.filter((x) => x !== null && x !== undefined).map((x) => String(x));
   }
   if (typeof raw !== 'string') return [];
   const trimmed = raw.trim();
@@ -95,7 +95,7 @@ function parseArgsInput(raw) {
     try {
       const parsed = JSON.parse(trimmed);
       if (Array.isArray(parsed)) {
-        return parsed.map((x) => String(x));
+        return parsed.filter((x) => x !== null && x !== undefined).map((x) => String(x));
       }
     } catch {}
   }
@@ -105,12 +105,18 @@ function parseArgsInput(raw) {
       .map((line) => line.trim())
       .filter(Boolean);
   }
-  // Tokenize respecting single/double quotes
+  // Tokenize respecting single/double quotes and unescaping \" and \\ inside double quotes
   const tokens = [];
   const re = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|(\S+)/g;
   let match;
   while ((match = re.exec(trimmed)) !== null) {
-    tokens.push(match[1] ?? match[2] ?? match[3]);
+    if (match[1] !== undefined) {
+      tokens.push(match[1].replace(/\\(["\\])/g, '$1'));
+    } else if (match[2] !== undefined) {
+      tokens.push(match[2].replace(/\\(['\\])/g, '$1'));
+    } else {
+      tokens.push(match[3]);
+    }
   }
   return tokens;
 }
@@ -187,22 +193,34 @@ function detectTransport(spec) {
 }
 
 function encodeBase64(str) {
+  const input = String(str);
   if (typeof Buffer !== 'undefined') {
-    return Buffer.from(String(str), 'utf8').toString('base64');
+    return Buffer.from(input, 'utf8').toString('base64');
   }
-  if (typeof btoa === 'function') {
-    return btoa(unescape(encodeURIComponent(String(str))));
+  if (typeof btoa === 'function' && typeof TextEncoder === 'function') {
+    const bytes = new TextEncoder().encode(input);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
   }
-  return String(str);
+  return input;
 }
 
 function decodeBase64(b64) {
   try {
+    const input = String(b64);
     if (typeof Buffer !== 'undefined') {
-      return Buffer.from(String(b64), 'base64').toString('utf8');
+      return Buffer.from(input, 'base64').toString('utf8');
     }
-    if (typeof atob === 'function') {
-      return decodeURIComponent(escape(atob(String(b64))));
+    if (typeof atob === 'function' && typeof TextDecoder === 'function') {
+      const bin = atob(input);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) {
+        bytes[i] = bin.charCodeAt(i);
+      }
+      return new TextDecoder('utf-8').decode(bytes);
     }
   } catch {}
   return '';

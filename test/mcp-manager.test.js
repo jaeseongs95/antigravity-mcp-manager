@@ -1850,6 +1850,36 @@ test('D-0017: mergeMcpManagerBlock and fetchHostInstalledPluginInfo ignore inden
     info.koBlock.endsWith('// === END_AGY_KO_THOUGHT_LOCALIZER_V2 ==='),
     'D-0017: double-wrapped KO block must include the outer trailing end marker'
   );
+
+  // Also verify (?:_V\d+)? future/versionless marker support in mergeMcpManagerBlock and fetchHostInstalledPluginInfo
+  const v3Existing = [
+    'function mountStatusBar() {}',
+    '// === BEGIN_AGY_MCP_MANAGER_V2 ===',
+    'window.__oldMcpV2 = 1;',
+    '// === END_AGY_MCP_MANAGER_V2 ===',
+    '// === BEGIN_AGY_KO_THOUGHT_LOCALIZER_V3 ===',
+    'window.__agyKoThoughtCleanup = () => {};',
+    '// === END_AGY_KO_THOUGHT_LOCALIZER_V3 ===',
+  ].join('\n');
+  const mergedV3 = mergeMcpManagerBlock(v3Existing, 'window.__newMcp = 2;');
+  assert.equal(mergedV3.includes('__oldMcpV2'), false, 'D-0017: mergeMcpManagerBlock must replace prior MCP_MANAGER_V2+ block via (?:_V\\d+)?');
+  assert.ok(
+    mergedV3.indexOf(MCP_BEGIN) < mergedV3.indexOf('// === BEGIN_AGY_KO_THOUGHT_LOCALIZER_V3 ==='),
+    'D-0017: mergeMcpManagerBlock must insert before KO_THOUGHT_LOCALIZER_V3+ via (?:_V\\d+)?'
+  );
+  mockWin.__agyRemoteControlInstance.proxyCommand = async (rpcPath) => {
+    if (rpcPath.endsWith('/GetCustomizationStates')) {
+      return { payload: new TextEncoder().encode(JSON.stringify({ states: [] })) };
+    }
+    if (rpcPath.endsWith('/ReadFile')) {
+      return { payload: new TextEncoder().encode(JSON.stringify({ contents: Buffer.from(v3Existing, 'utf8').toString('base64') })) };
+    }
+    return { payload: new TextEncoder().encode('{}') };
+  };
+  const bridgeV3 = createHostMcpBridge({ window: mockWin });
+  const infoV3 = await bridgeV3.fetchHostInstalledPluginInfo();
+  assert.equal(infoV3.hasMcpManager, true, 'D-0017: host-mcp-bridge must support MCP_MANAGER_V2+ via (?:_V\\d+)?');
+  assert.equal(infoV3.hasKoTranslator, true, 'D-0017: host-mcp-bridge must support KO_THOUGHT_LOCALIZER_V3+ via (?:_V\\d+)?');
 });
 
 test('D-0018: validateAndBuildServerSpec preserves description on Stdio servers and modal-ui renders headersText field for HTTP servers', async () => {
@@ -1978,10 +2008,13 @@ test('D-0019: openAuthUrl blocks non-http(s) URI schemes (javascript:, file:, ms
   assert.equal(openedUrls.length, 2);
 });
 
-test('D-0020: ensure_statusbar_patch configureTargetViaCdp rejects on Runtime.evaluate exceptionDetails and requires all bundled plugins active', async () => {
+test('D-0020: ensure_statusbar_patch rejects on exceptionDetails, avoids expectsKo/expectsMcp false positives, and falls back to Electron 35+ Browser CDP WS', async () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const vm = require('node:vm');
+  const http = require('node:http');
+  const crypto = require('node:crypto');
+  const { buildBundle } = require('../scripts/build');
   const patcherPath = path.join(__dirname, '..', 'scripts', 'ensure_statusbar_patch.js');
   const patcherSrc = fs.readFileSync(patcherPath, 'utf8').replace(/^#!.*\n/, '');
 
@@ -2059,9 +2092,148 @@ test('D-0020: ensure_statusbar_patch configureTargetViaCdp rejects on Runtime.ev
     'INJECTED_OK',
     'D-0020: when MCP manager is missing from window, combined bundle must re-inject instead of returning ALREADY_ACTIVE'
   );
+
+  // Standalone dist/mcp_manager_autoinject.js contains !win.__agyKoThoughtCleanup reference;
+  // in a 1-plugin solo installation (no KO installed), guard MUST return ALREADY_ACTIVE!
+  const { bundle: soloMcpBundle } = buildBundle({ write: false });
+  await ctx.__testConfigureCdp('ws://127.0.0.1:9222/devtools/page/1', soloMcpBundle, 'h-solo-mcp', 1000);
+  const soloMcpGuardOnly = lastSentPayload.params.expression.replace(soloMcpBundle, 'window.__soloMcpReinjected = true;');
+  const soloMcpActiveWin = {
+    agyMcpManager: { destroy() {} },
+    __agyStatusBarHash: 'h-solo-mcp',
+    document: { querySelector: () => null },
+  };
+  soloMcpActiveWin.window = soloMcpActiveWin;
+  assert.equal(
+    vm.runInNewContext(soloMcpGuardOnly, soloMcpActiveWin),
+    'ALREADY_ACTIVE',
+    'D-0020: standalone mcp_manager_autoinject.js must NOT falsely set expectsKo=true from !win.__agyKoThoughtCleanup reference'
+  );
+
+  // Electron 35+ Browser CDP WS fallback when /json/list returns []
+  const cdpMethodsSeen = [];
+  const sendWsFrame = (socket, obj) => {
+    const payload = Buffer.from(JSON.stringify(obj), 'utf8');
+    const hdr = payload.length < 126
+      ? Buffer.from([0x81, payload.length])
+      : (() => { const b = Buffer.alloc(4); b[0] = 0x81; b[1] = 126; b.writeUInt16BE(payload.length, 2); return b; })();
+    socket.write(Buffer.concat([hdr, payload]));
+  };
+  const server = http.createServer((req, res) => {
+    if (req.url === '/json/list') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('[]');
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  server.on('upgrade', (req, socket) => {
+    if (req.url !== '/devtools/browser/mcp-browser-id') {
+      socket.destroy();
+      return;
+    }
+    const key = req.headers['sec-websocket-key'];
+    const accept = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+    socket.write(
+      'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +
+      `Sec-WebSocket-Accept: ${accept}\r\n\r\n`
+    );
+    let recvBuf = Buffer.alloc(0);
+    socket.on('data', (chunk) => {
+      recvBuf = Buffer.concat([recvBuf, chunk]);
+      while (recvBuf.length >= 2) {
+        const opcode = recvBuf[0] & 0x0f;
+        if (opcode === 0x08) { socket.end(); return; }
+        const masked = (recvBuf[1] & 0x80) !== 0;
+        let len = recvBuf[1] & 0x7f;
+        let offset = 2;
+        if (len === 126) {
+          if (recvBuf.length < 4) return;
+          len = recvBuf.readUInt16BE(2);
+          offset = 4;
+        }
+        const maskLen = masked ? 4 : 0;
+        if (recvBuf.length < offset + maskLen + len) return;
+        const body = Buffer.from(recvBuf.subarray(offset + maskLen, offset + maskLen + len));
+        if (masked) {
+          const mask = recvBuf.subarray(offset, offset + 4);
+          for (let i = 0; i < body.length; i++) body[i] ^= mask[i & 3];
+        }
+        recvBuf = recvBuf.subarray(offset + maskLen + len);
+        const msg = JSON.parse(body.toString('utf8'));
+        cdpMethodsSeen.push(msg.method);
+        if (msg.method === 'Target.getTargets') {
+          sendWsFrame(socket, {
+            id: msg.id,
+            result: { targetInfos: [{ targetId: 'mcp-p1', type: 'page', url: 'https://127.0.0.1:51234/workbench.html' }] },
+          });
+        } else if (msg.method === 'Target.attachToTarget') {
+          sendWsFrame(socket, { id: msg.id, result: { sessionId: 'mcp-sess-1' } });
+        } else if (msg.method === 'Runtime.evaluate' && msg.sessionId === 'mcp-sess-1') {
+          sendWsFrame(socket, {
+            id: msg.id,
+            sessionId: 'mcp-sess-1',
+            result: { result: { type: 'string', value: 'INJECTED_OK' } },
+          });
+        } else if (msg.method === 'Target.detachFromTarget') {
+          sendWsFrame(socket, { id: msg.id, result: {} });
+        }
+      }
+    });
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  try {
+    const fakeHome = '/virtual-mcp-home';
+    const fakeAppData = '/virtual-mcp-appdata';
+    const autoPath = path.join(fakeHome, '.gemini', 'antigravity', 'statusbar_autoinject.js');
+    const portFilePath = path.join(fakeAppData, 'Antigravity', 'DevToolsActivePort');
+    const customReq = (spec) => {
+      if (spec === 'fs') {
+        return {
+          existsSync: (p) => p === autoPath || p === portFilePath,
+          readFileSync: (p) => {
+            if (p === autoPath) return 'function mountMcpManager() {}\n';
+            if (p === portFilePath) return `${port}\n/devtools/browser/mcp-browser-id\n`;
+            return '';
+          },
+        };
+      }
+      return require(spec);
+    };
+    const liveCtx = vm.createContext({
+      require: customReq,
+      module: { exports: {} },
+      exports: {},
+      __dirname: path.dirname(patcherPath),
+      __filename: patcherPath,
+      process: {
+        ...process,
+        env: { USERPROFILE: fakeHome, HOME: fakeHome, APPDATA: fakeAppData },
+        argv: [process.execPath, patcherPath],
+        exit() {},
+      },
+      WebSocket,
+      Buffer,
+      setTimeout,
+      clearTimeout,
+      console,
+    });
+    new vm.Script(patcherSrc + '\n;globalThis.__testInjectLive = injectViaCdpLive;').runInContext(liveCtx);
+    const liveRes = await liveCtx.__testInjectLive();
+    assert.equal(liveRes.pageTargetCount, 1, 'D-0020: Browser CDP WS fallback must discover 1 page target when /json/list is []');
+    assert.equal(liveRes.injectedCount, 1, 'D-0020: Browser CDP WS fallback must inject via Target.attachToTarget + Runtime.evaluate');
+    assert.ok(cdpMethodsSeen.includes('Target.getTargets'));
+    assert.ok(cdpMethodsSeen.includes('Target.attachToTarget'));
+    assert.ok(cdpMethodsSeen.includes('Target.detachFromTarget'));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
-test('D-0021: scripts/build.js preserves multiline template literals, package.json defines status script, and LICENSE/README are consistent', () => {
+test('D-0021: scripts/build.js preserves multiline template literals across regex literals (/\\/*/, /`/, /^file:\\/\\//i, /"/g, [/]), and README/README.ko/LICENSE/package.json are consistent', () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const vm = require('node:vm');
@@ -2074,8 +2246,30 @@ test('D-0021: scripts/build.js preserves multiline template literals, package.js
     '',
     '// preserved-slash-line',
     'col0-line`;',
+    'const rBlock = /\\/*/;',
+    'const tpl1 = `a1',
+    '',
+    '// keep-1',
+    'b1`;',
+    'const rTick = /`/;',
+    'const tpl2 = `a2',
+    '',
+    '// keep-2',
+    'b2`;',
+    "const rFile = 'file:///x'.replace(/^file:\\/\\//i, `a3",
+    '',
+    '// keep-3',
+    'b3`);',
+    'const rQuote = \'"\'.replace(/"/g, `a4',
+    '',
+    '// keep-4',
+    'b4`);',
+    "const rClass = '/web/2.31/z'.match(/\\/web\\/([^/]+)/)[1] + `a5",
+    '',
+    '// keep-5',
+    'b5`;',
     '// comment to strip',
-    'module.exports = { tpl };',
+    'module.exports = { tpl, rBlock: Boolean(rBlock), tpl1, tpl2, rFile, rQuote, rClass };',
   ].join('\n');
 
   const customRequire = (spec) => {
@@ -2114,6 +2308,11 @@ test('D-0021: scripts/build.js preserves multiline template literals, package.js
     'line1\n\n// preserved-slash-line\ncol0-line',
     'D-0021: build.js must preserve multiline template literal blank lines, // lines, and column-0 indentation'
   );
+  assert.equal(evalBox.__out.tpl1, 'a1\n\n// keep-1\nb1', 'D-0021: /\\/*/ regex must not trigger block comment state');
+  assert.equal(evalBox.__out.tpl2, 'a2\n\n// keep-2\nb2', 'D-0021: /`/ regex must not corrupt template stack');
+  assert.equal(evalBox.__out.rFile, 'a3\n\n// keep-3\nb3/x', 'D-0021: /^file:\\/\\//i regex must not break line scan early');
+  assert.equal(evalBox.__out.rQuote, 'a4\n\n// keep-4\nb4', 'D-0021: /"/g regex must not corrupt double-quote state');
+  assert.equal(evalBox.__out.rClass, '2.31a5\n\n// keep-5\nb5', 'D-0021: [/] inside regex character class must not terminate regex early');
 
   const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
   assert.equal(
@@ -2123,10 +2322,25 @@ test('D-0021: scripts/build.js preserves multiline template literals, package.js
   );
   assert.equal(fs.existsSync(path.join(rootDir, 'LICENSE')), true, 'D-0021: MIT LICENSE file must exist at repository root');
   const readmeEn = fs.readFileSync(path.join(rootDir, 'README.md'), 'utf8');
+  const readmeKo = fs.readFileSync(path.join(rootDir, 'README.ko.md'), 'utf8');
   assert.equal(readmeEn.includes('StandaloneZero-Offset'), false, 'D-0021: README.md typo StandaloneZero-Offset must be fixed');
+  assert.ok(
+    readmeEn.startsWith(`# Antigravity Custom MCP Server Manager (\`antigravity-mcp-manager\` \`v${pkg.version}\`)`),
+    'D-0021: README.md title version must match package.json'
+  );
+  assert.ok(
+    readmeKo.startsWith(`# Antigravity 커스텀 MCP 서버 매니저 (\`antigravity-mcp-manager\` \`v${pkg.version}\`)`),
+    'D-0021: README.ko.md title version must match package.json'
+  );
+  assert.equal(readmeEn.includes('16/16'), false, 'D-0021: stale 16/16 test count must be updated in README.md');
+  assert.equal(readmeKo.includes('16/16'), false, 'D-0021: stale 16/16 test count must be updated in README.ko.md');
+  assert.ok(readmeEn.includes('29/29'), 'D-0021: README.md must state 29/29 tests');
+  assert.ok(readmeKo.includes('29/29'), 'D-0021: README.ko.md must state 29/29 tests');
 });
 
-test('D-0022: destroy() removes injected style tag, restores hidden native settings pane display, and destroys same-origin remote iframe instance', () => {
+test('D-0022: destroy() cleans up style tag, DOMContentLoaded listener, remote iframe load listener, hidden native settings pane, and Models tab highlight', () => {
+  const vm = require('node:vm');
+  const { buildBundle } = require('../scripts/build');
   function makeClassList(owner) {
     return {
       add(...t) { const s = new Set((owner.className || '').split(/\s+/).filter(Boolean)); t.forEach((x) => s.add(x)); owner.className = [...s].join(' '); },
@@ -2157,6 +2371,7 @@ test('D-0022: destroy() removes injected style tag, restores hidden native setti
       remove() { if (this.parentNode) this.parentNode.removeChild(this); },
       addEventListener(ev, fn) { if (!this.listeners.has(ev)) this.listeners.set(ev, []); this.listeners.get(ev).push(fn); },
       removeEventListener(ev, fn) { if (this.listeners.has(ev)) this.listeners.set(ev, this.listeners.get(ev).filter((x) => x !== fn)); },
+      dispatchEvent(ev) { const fns = [...(this.listeners.get(ev.type) || [])]; for (const fn of fns) fn(ev); },
       click() { const fns = this.listeners.get('click') || []; for (const fn of fns) fn({ target: this, preventDefault() {}, stopPropagation() {} }); },
       closest(sel) {
         let cur = this;
@@ -2175,6 +2390,7 @@ test('D-0022: destroy() removes injected style tag, restores hidden native setti
         const walk = (n) => {
           for (const c of n.children) {
             if (sel === 'ga-remote-control iframe' && c.tagName === 'IFRAME') out.push(c);
+            else if (sel === 'span' && c.tagName === 'SPAN') out.push(c);
             else if (sel.startsWith('#') && c.id === sel.slice(1)) out.push(c);
             else if (sel === '.settings-modal-container' && c.classList.contains('settings-modal-container')) out.push(c);
             else if (sel === '.grow.w-full' && c.className === 'grow w-full') out.push(c);
@@ -2192,13 +2408,18 @@ test('D-0022: destroy() removes injected style tag, restores hidden native setti
     return el;
   }
   function makeDoc() {
+    const docListeners = new Map();
     return {
+      readyState: 'complete',
       head: makeEl('head'),
       body: makeEl('body'),
       createElement: (t) => makeEl(t),
       getElementById(id) { return this.head.querySelector(`#${id}`) || this.body.querySelector(`#${id}`); },
       querySelector(sel) { return this.head.querySelector(sel) || this.body.querySelector(sel); },
       querySelectorAll(sel) { return [...this.head.querySelectorAll(sel), ...this.body.querySelectorAll(sel)]; },
+      addEventListener(ev, fn) { if (!docListeners.has(ev)) docListeners.set(ev, []); docListeners.get(ev).push(fn); },
+      removeEventListener(ev, fn) { if (docListeners.has(ev)) docListeners.set(ev, docListeners.get(ev).filter((x) => x !== fn)); },
+      dispatchEvent(ev) { const fns = [...(docListeners.get(ev.type) || [])]; for (const fn of fns) fn(ev); },
     };
   }
 
@@ -2209,6 +2430,11 @@ test('D-0022: destroy() removes injected style tag, restores hidden native setti
   navList.className = 'flex flex-col gap-0.5';
   const modelsBtn = makeEl('button');
   modelsBtn.setAttribute('data-testid', 'settings-nav-item-Models');
+  modelsBtn.className = 'bg-sidebar-secondary';
+  const modelsSpan = makeEl('span');
+  modelsSpan.className = 'text-foreground font-medium';
+  modelsSpan.textContent = 'Models';
+  modelsBtn.appendChild(modelsSpan);
   navList.appendChild(modelsBtn);
   const contentContainer = makeEl('div');
   contentContainer.className = 'grow w-full';
@@ -2227,7 +2453,7 @@ test('D-0022: destroy() removes injected style tag, restores hidden native setti
     setTimeout,
     clearTimeout,
   };
-  iframeWin.parent = null; // filled below
+  iframeWin.parent = null;
   const gaRemote = makeEl('ga-remote-control');
   const iframe = makeEl('iframe');
   iframe.contentWindow = iframeWin;
@@ -2236,6 +2462,7 @@ test('D-0022: destroy() removes injected style tag, restores hidden native setti
   doc.body.appendChild(gaRemote);
 
   const win = {
+    document: doc,
     addEventListener() {},
     removeEventListener() {},
     setTimeout,
@@ -2252,13 +2479,491 @@ test('D-0022: destroy() removes injected style tag, restores hidden native setti
   const mcpNavBtn = doc.querySelector('[data-testid="settings-nav-item-McpManager"]');
   assert.ok(mcpNavBtn, 'MCP Servers nav button should be injected');
   mcpNavBtn.click();
+  assert.equal(modelsBtn.classList.contains('bg-sidebar-secondary'), false, 'Models tab highlight cleared while MCP Servers is active');
   assert.equal(nativeModelsPane.style.display, 'none', 'native pane should be hidden while MCP Servers tab is active');
   assert.ok(doc.getElementById('agy-mcp-manager-styles'), 'style tag should be injected');
   assert.ok(iframeWin.agyMcpManager, 'child remote iframe should have mounted agyMcpManager');
+  assert.equal(iframe.__agyMcpLoadBound, true, 'remote iframe load listener bound');
 
   ctrl.destroy();
 
   assert.equal(doc.getElementById('agy-mcp-manager-styles'), null, 'D-0022: destroy() must remove #agy-mcp-manager-styles');
   assert.equal(nativeModelsPane.style.display, 'flex', 'D-0022: destroy() must restore hidden native settings pane display');
+  assert.equal(modelsBtn.classList.contains('bg-sidebar-secondary'), true, 'D-0022: destroy() while MCP Servers tab is active must restore left Models tab highlight');
+  assert.equal(modelsSpan.classList.contains('text-foreground'), true, 'D-0022: destroy() must restore Models tab label foreground class');
   assert.equal(iframeWin.agyMcpManager, undefined, 'D-0022: destroy() must also destroy same-origin remote iframe instance');
+  assert.equal(iframe.__agyMcpLoadBound, undefined, 'D-0022: destroy() must clear __agyMcpLoadBound on remote iframe');
+
+  // Firing 'load' on remote iframe after destroy() must NOT zombie-remount inside iframeWin
+  iframe.dispatchEvent({ type: 'load' });
+  assert.equal(iframeWin.agyMcpManager, undefined, 'D-0022: iframe reload after destroy() must NOT zombie-remount agyMcpManager');
+
+  // Evaluating bundle while document.readyState === 'loading', then calling destroy() before DOMContentLoaded fires must NOT zombie-remount
+  const loadingDoc = makeDoc();
+  loadingDoc.readyState = 'loading';
+  const loadingWin = {
+    document: loadingDoc,
+    addEventListener() {},
+    removeEventListener() {},
+    setTimeout,
+    clearTimeout,
+  };
+  const { bundle } = buildBundle({ write: false });
+  const bootCtx = vm.createContext({
+    window: loadingWin,
+    document: loadingDoc,
+    setTimeout,
+    clearTimeout,
+    URL,
+    URLSearchParams,
+    TextEncoder,
+    TextDecoder,
+    Uint8Array,
+    ArrayBuffer,
+    Buffer,
+    console,
+  });
+  bootCtx.globalThis = bootCtx;
+  new vm.Script(bundle).runInContext(bootCtx);
+  const manualCtrl = mountMcpManager({ window: loadingWin, document: loadingDoc, bridge: mockBridge });
+  manualCtrl.destroy();
+  loadingDoc.readyState = 'complete';
+  loadingDoc.dispatchEvent({ type: 'DOMContentLoaded' });
+  assert.equal(loadingWin.agyMcpManager, undefined, 'D-0022: destroy() must remove pending DOMContentLoaded listener so firing DOMContentLoaded does not zombie-mount');
+});
+
+test('D-0023: readMcpConfig distinguishes ENOENT from permission/RPC/JSON errors to prevent wiping mcp_config.json, and concurrent mutations serialize without lost updates', async () => {
+  let diskContent = JSON.stringify({
+    mcpServers: {
+      existingA: { command: 'npx', args: ['-y', 'srv-a'] },
+      existingB: { url: 'https://b.example.com/mcp' },
+    },
+  });
+  let simulateReadFailure = true;
+  const failingBridge = createHostMcpBridge({
+    hostService: {
+      async getStandaloneDir() {
+        return { standaloneDir: 'C:/Users/TestUser/.gemini/antigravity/scratch' };
+      },
+      async readFile() {
+        if (simulateReadFailure) {
+          throw new Error('EACCES: permission denied or RPC deadline exceeded');
+        }
+        return { content: diskContent };
+      },
+      async writeFile({ content }) {
+        diskContent = typeof content === 'string' ? content : new TextDecoder().decode(content);
+        return {};
+      },
+      async refreshMcpServers() { return {}; },
+    },
+  });
+
+  const failedRead = await failingBridge.readMcpConfig();
+  assert.equal(failedRead.ok, false, 'D-0023: non-ENOENT readFile failure must return ok:false');
+  assert.ok(failedRead.error, 'D-0023: readMcpConfig must expose error message on read failure');
+
+  const abortedUpsert = await failingBridge.upsertCustomServer('newSrv', { command: 'node', args: ['x.js'] });
+  assert.equal(abortedUpsert.ok, false, 'D-0023: upsertCustomServer must abort rather than overwriting unreadable mcp_config.json with empty {}');
+  assert.ok(JSON.parse(diskContent).mcpServers.existingA, 'D-0023: existing servers on disk must remain untouched when readFile failed');
+
+  // Concurrent mutations serialization check (no Lost Update!)
+  simulateReadFailure = false;
+  const slowBridge = createHostMcpBridge({
+    hostService: {
+      async getStandaloneDir() {
+        return { standaloneDir: 'C:/Users/TestUser/.gemini/antigravity/scratch' };
+      },
+      async readFile() {
+        const snapshot = diskContent;
+        await new Promise((r) => setTimeout(r, 15));
+        return { content: snapshot };
+      },
+      async writeFile({ content }) {
+        await new Promise((r) => setTimeout(r, 10));
+        diskContent = typeof content === 'string' ? content : new TextDecoder().decode(content);
+        return {};
+      },
+      async refreshMcpServers() { return {}; },
+      async toggleMcpServer() { return {}; },
+    },
+  });
+
+  await Promise.all([
+    slowBridge.toggleServerTool('existingA', 'tool_1', false),
+    slowBridge.toggleServerTool('existingA', 'tool_2', false),
+    slowBridge.upsertCustomServer('concurrentC', { command: 'uvx', args: ['mcp-c'] }),
+  ]);
+  const finalSaved = JSON.parse(diskContent);
+  assert.deepEqual(
+    finalSaved.mcpServers.existingA.disabledTools.sort(),
+    ['tool_1', 'tool_2'],
+    'D-0023: concurrent toggleServerTool calls must be serialized without losing earlier tool toggles'
+  );
+  assert.ok(finalSaved.mcpServers.concurrentC, 'D-0023: concurrent upsertCustomServer must also be preserved');
+});
+
+test('D-0024: Raw JSON Save & Refresh and Quick Auto-Add multipleServers invoke bridge.refreshServers() and multi-server Auto-Fill avoids undefined server name', async () => {
+  const { createModalController } = require('../src/modal-ui');
+  function makeNode(tag) {
+    const n = {
+      nodeType: 1,
+      tagName: String(tag).toUpperCase(),
+      id: '',
+      className: '',
+      textContent: '',
+      value: '',
+      style: {},
+      children: [],
+      attrs: new Map(),
+      listeners: new Map(),
+      classList: {
+        add(...t) { const s = new Set((n.className || '').split(/\s+/).filter(Boolean)); t.forEach((x) => s.add(x)); n.className = [...s].join(' '); },
+        remove(...t) { const s = new Set((n.className || '').split(/\s+/).filter(Boolean)); t.forEach((x) => s.delete(x)); n.className = [...s].join(' '); },
+      },
+      setAttribute(k, v) { this.attrs.set(k, String(v)); if (k === 'id') this.id = String(v); },
+      getAttribute(k) { return k === 'id' ? (this.id || null) : (this.attrs.get(k) ?? null); },
+      appendChild(c) { c.parentNode = this; this.children.push(c); return c; },
+      removeChild(c) { const i = this.children.indexOf(c); if (i !== -1) this.children.splice(i, 1); return c; },
+      replaceChildren(...nodes) { this.children = [...nodes]; },
+      addEventListener(ev, fn) { if (!this.listeners.has(ev)) this.listeners.set(ev, []); this.listeners.get(ev).push(fn); },
+      async click() { for (const fn of this.listeners.get('click') || []) await fn({ target: this, preventDefault() {}, stopPropagation() {} }); },
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        const out = [];
+        const mAttr = /^\[([^=\]]+)="([^"]+)"\]$/.exec(sel);
+        const walk = (x) => {
+          for (const c of x.children || []) {
+            if (sel.startsWith('#') && c.id === sel.slice(1)) out.push(c);
+            else if (sel.startsWith('.') && (c.className || '').split(/\s+/).includes(sel.slice(1))) out.push(c);
+            else if (mAttr && c.getAttribute(mAttr[1]) === mAttr[2]) out.push(c);
+            walk(c);
+          }
+        };
+        walk(this);
+        return out;
+      },
+    };
+    return n;
+  }
+  const doc = {
+    head: makeNode('head'),
+    body: makeNode('body'),
+    createElement: (t) => makeNode(t),
+    createDocumentFragment: () => makeNode('frag'),
+    getElementById(id) { return this.head.querySelector(`#${id}`) || this.body.querySelector(`#${id}`); },
+  };
+  let refreshCount = 0;
+  let storedCfg = { mcpServers: { baseSrv: { command: 'npx' } } };
+  const ctrl = createModalController({
+    doc,
+    bridge: {
+      async readMcpConfig() { return { ok: true, uri: 'file:///mcp_config.json', config: JSON.parse(JSON.stringify(storedCfg)) }; },
+      async writeMcpConfig(cfg) { storedCfg = JSON.parse(JSON.stringify(cfg)); return { ok: true }; },
+      async refreshServers() { refreshCount += 1; return { ok: true }; },
+      async fetchServerStates() { return { ok: true, states: [] }; },
+    },
+  });
+
+  await ctrl.openModal('raw');
+  const rawSaveBtn = doc.body.querySelector('[data-testid="agy-mcp-save-raw-btn"]');
+  assert.ok(rawSaveBtn);
+  await rawSaveBtn.click();
+  assert.equal(refreshCount, 1, 'D-0024: clicking Save mcp_config.json & Refresh must invoke bridge.refreshServers()');
+
+  await ctrl.openModal('servers');
+  const smartInput = doc.body.querySelector('[data-testid="agy-mcp-smart-input"]');
+  const smartFillBtn = doc.body.querySelector('[data-testid="agy-mcp-smart-fill-btn"]');
+  smartInput.value = JSON.stringify({ mcpServers: { alpha: { url: 'https://a.example.com/mcp' }, beta: { url: 'https://b.example.com/mcp' } } });
+  await smartFillBtn.click();
+  const banner = doc.body.querySelector('.agy-mcp-status-banner');
+  assert.equal(
+    String(banner.textContent || '').includes('"undefined"'),
+    false,
+    'D-0024: Auto-Fill Form on multi-server JSON must never display "undefined"'
+  );
+
+  await ctrl.openModal('servers');
+  const smartInput2 = doc.body.querySelector('[data-testid="agy-mcp-smart-input"]');
+  const smartAddBtn = doc.body.querySelector('[data-testid="agy-mcp-smart-add-btn"]');
+  smartInput2.value = JSON.stringify({ mcpServers: { s1: { url: 'https://1.example.com/mcp' }, s2: { url: 'https://2.example.com/mcp' } } });
+  await smartAddBtn.click();
+  assert.equal(refreshCount, 2, 'D-0024: Quick Auto-Add for multipleServers must also invoke bridge.refreshServers()');
+  assert.ok(storedCfg.mcpServers.baseSrv && storedCfg.mcpServers.s1 && storedCfg.mcpServers.s2);
+});
+
+test('D-0025: openEditPopup and openOAuthConnectModal prevent duplicate backdrop creation on concurrent opens or close-during-await', async () => {
+  const { createModalController, EDIT_POPUP_ID, OAUTH_MODAL_ID } = require('../src/modal-ui');
+  function makeNode(tag) {
+    return {
+      nodeType: 1,
+      tagName: String(tag).toUpperCase(),
+      id: '',
+      className: '',
+      textContent: '',
+      value: '',
+      style: {},
+      children: [],
+      attrs: new Map(),
+      listeners: new Map(),
+      classList: { add() {}, remove() {} },
+      setAttribute(k, v) { this.attrs.set(k, String(v)); if (k === 'id') this.id = String(v); },
+      getAttribute(k) { return k === 'id' ? (this.id || null) : (this.attrs.get(k) ?? null); },
+      appendChild(c) { c.parentNode = this; this.children.push(c); return c; },
+      removeChild(c) { const i = this.children.indexOf(c); if (i !== -1) { this.children.splice(i, 1); c.parentNode = null; } return c; },
+      addEventListener(ev, fn) { this.listeners.set(ev, fn); },
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        const out = [];
+        const walk = (x) => {
+          for (const c of x.children || []) {
+            if (sel.startsWith('#') && c.id === sel.slice(1)) out.push(c);
+            else if (sel.startsWith('.') && (c.className || '').split(/\s+/).includes(sel.slice(1))) out.push(c);
+            walk(c);
+          }
+        };
+        walk(this);
+        return out;
+      },
+    };
+  }
+  const doc = {
+    head: makeNode('head'),
+    body: makeNode('body'),
+    createElement: (t) => makeNode(t),
+    getElementById(id) { return this.head.querySelector(`#${id}`) || this.body.querySelector(`#${id}`); },
+  };
+  const ctrl = createModalController({
+    doc,
+    bridge: {
+      async readMcpConfig() {
+        await new Promise((r) => setTimeout(r, 20));
+        return { ok: true, config: { mcpServers: { srv1: { url: 'https://example.com/mcp' } } } };
+      },
+      async fetchServerStates() {
+        await new Promise((r) => setTimeout(r, 20));
+        return { ok: true, states: [{ serverName: 'srv1', status: 1, authUrl: 'https://example.com/auth' }] };
+      },
+    },
+  });
+
+  // Concurrent double openOAuthConnectModal -> must append ONLY ONE #agy-mcp-oauth-connect-backdrop
+  await Promise.all([
+    ctrl.openOAuthConnectModal('srv1', 'https://example.com/auth'),
+    ctrl.openOAuthConnectModal('srv1', 'https://example.com/auth'),
+  ]);
+  assert.equal(
+    doc.body.querySelectorAll(`#${OAUTH_MODAL_ID}`).length,
+    1,
+    'D-0025: concurrent openOAuthConnectModal calls must never append duplicate backdrops'
+  );
+  ctrl.closeOAuthConnectModal();
+  assert.equal(doc.body.querySelectorAll(`#${OAUTH_MODAL_ID}`).length, 0);
+
+  // Calling openEditPopup then immediately closeEditPopup BEFORE reloadData resolves -> must stay closed!
+  const pendingPopup = ctrl.openEditPopup('srv1');
+  ctrl.closeEditPopup();
+  await pendingPopup;
+  assert.equal(
+    doc.body.querySelectorAll(`#${EDIT_POPUP_ID}`).length,
+    0,
+    'D-0025: closing EditPopup while async reloadData is in flight must cancel pending mount'
+  );
+});
+
+test('D-0026: ensure_statusbar_patch preserves // inside templates, parses NUL-padded ASAR headers, and guards non-http(s)/scriptJail frames', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const os = require('node:os');
+  const patcher = require('../scripts/ensure_statusbar_patch');
+
+  const tplUtils = [
+    '"use strict";',
+    '// removable comment line 1 padding budget for statusbar injection block in utils.js',
+    '// removable comment line 2 padding budget for statusbar injection block in utils.js',
+    '// removable comment line 3 padding budget for statusbar injection block in utils.js',
+    '// removable comment line 4 padding budget for statusbar injection block in utils.js',
+    '// removable comment line 5 padding budget for statusbar injection block in utils.js',
+    '// removable comment line 6 padding budget for statusbar injection block in utils.js',
+    '// removable comment line 7 padding budget for statusbar injection block in utils.js',
+    '// removable comment line 8 padding budget for statusbar injection block in utils.js',
+    'const keep = `line1',
+    '// KEEP_THIS_SLASH_IN_TEMPLATE',
+    '/* KEEP_THIS_BLOCK_IN_TEMPLATE */',
+    'line2`;',
+    '    void win.loadURL(url);',
+    '',
+  ].join('\n');
+  const inBuf = Buffer.from(tplUtils, 'utf8');
+  const outBuf = patcher.transformExactSize(inBuf, patcher.UTILS_ANCHOR_TARGET, patcher.UTILS_ANCHOR_REPLACEMENT);
+  assert.equal(outBuf.length, inBuf.length);
+  assert.ok(outBuf.toString('utf8').includes('// KEEP_THIS_SLASH_IN_TEMPLATE'), 'D-0026: template // line must be preserved');
+  assert.ok(outBuf.toString('utf8').includes('/* KEEP_THIS_BLOCK_IN_TEMPLATE */'), 'D-0026: template /* */ line must be preserved');
+  assert.ok(
+    patcher.MAIN_ANCHOR_REPLACEMENT.includes('isScriptJailSession') || patcher.MAIN_ANCHOR_REPLACEMENT.includes('getURL'),
+    'D-0026: MAIN_ANCHOR_REPLACEMENT must guard against scriptJail / non-http(s) frames'
+  );
+
+  const tmpAsar = path.join(os.tmpdir(), `agy-mcp-nul-asar-${process.pid}-${Date.now()}.asar`);
+  try {
+    const body = Buffer.from(`"use strict"; // ${patcher.PATCH_MARKER}\n`, 'utf8');
+    const hdrRaw = Buffer.from(JSON.stringify({
+      files: {
+        dist: {
+          files: {
+            'utils.js': { size: body.length, offset: '0' },
+            'main.js': { size: body.length, offset: String(body.length) },
+            'preload.js': { size: body.length, offset: String(body.length * 2) },
+          },
+        },
+      },
+    }), 'utf8');
+    const paddedSize = hdrRaw.length + 2;
+    const aligned = Math.ceil(paddedSize / 4) * 4;
+    const u8Size = 4 + aligned;
+    const u4Size = 4 + u8Size;
+    const pre = Buffer.alloc(8 + u4Size, 0);
+    pre.writeUInt32LE(4, 0);
+    pre.writeUInt32LE(u4Size, 4);
+    pre.writeUInt32LE(u8Size, 8);
+    pre.writeUInt32LE(paddedSize, 12);
+    hdrRaw.copy(pre, 16);
+    fs.writeFileSync(tmpAsar, Buffer.concat([pre, body, body, body]));
+    assert.equal(patcher.isAsarPatchedFast(tmpAsar), true, 'D-0026: NUL-padded ASAR header must parse cleanly');
+  } finally {
+    try { fs.unlinkSync(tmpAsar); } catch {}
+  }
+});
+
+test('D-0027: build.js handles trailing backslash parity & MODULE_ORDER completeness, install.js repairs orphan markers & lone CR, and .gitattributes exists', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const vm = require('node:vm');
+  const rootDir = path.join(__dirname, '..');
+  const { stripCommentsAndEmptyLines } = require('../scripts/build');
+
+  assert.equal(
+    stripCommentsAndEmptyLines("'unclosed\\\\\n// strip-me-after-even-backslash\nconst ok = 1;").includes('strip-me-after-even-backslash'),
+    false,
+    'D-0027: line ending with even backslashes (\\\\) must not keep inSingle=true onto next comment line'
+  );
+  assert.equal(
+    stripCommentsAndEmptyLines("'continued\\\n// keep-me-inside-string\n';").includes('// keep-me-inside-string'),
+    true,
+    'D-0027: line ending with odd backslashes (\\) must preserve next line inside string'
+  );
+
+  const buildPath = path.join(rootDir, 'scripts', 'build.js');
+  const buildSrc = fs.readFileSync(buildPath, 'utf8').replace(/^#!.*\n/, '');
+  const customReq = (spec) => {
+    if (spec === 'fs') {
+      return {
+        ...fs,
+        readdirSync: (dir, opts) => {
+          const entries = fs.readdirSync(dir, opts);
+          if (path.resolve(String(dir)) === path.resolve(path.join(rootDir, 'src'))) {
+            return [
+              ...entries,
+              opts && opts.withFileTypes
+                ? { name: 'orphan-unlisted-mcp.js', isDirectory: () => false, isFile: () => true }
+                : 'orphan-unlisted-mcp.js',
+            ];
+          }
+          return entries;
+        },
+        mkdirSync() {},
+        writeFileSync() {},
+      };
+    }
+    return require(spec);
+  };
+  const mod = { exports: {} };
+  new vm.Script(buildSrc).runInContext(vm.createContext({
+    require: customReq,
+    module: mod,
+    exports: mod.exports,
+    __dirname: path.dirname(buildPath),
+    __filename: buildPath,
+    process,
+    Buffer,
+    console,
+  }));
+  assert.throws(
+    () => mod.exports.buildBundle({ write: false }),
+    /orphan-unlisted-mcp\.js|MODULE_ORDER/,
+    'D-0027: buildBundle must fail fast when a src/*.js file is missing from MODULE_ORDER'
+  );
+
+  // D-0027: orphan BEGIN marker without END marker in mergeMcpManagerBlock + lone \r normalization + .gitattributes existence
+  const brokenExisting = [
+    'window.agyStatusBar = {};',
+    '// === BEGIN_AGY_MCP_MANAGER_V1 ===',
+    'const brokenHalf = 1;',
+  ].join('\r');
+  const repaired = mergeMcpManagerBlock(brokenExisting, 'const cleanMcp = 2;');
+  assert.equal(repaired.split('BEGIN_AGY_MCP_MANAGER').length - 1, 1, 'D-0027: orphan BEGIN marker must be replaced cleanly without duplicate blocks');
+  assert.equal(repaired.includes('brokenHalf'), false);
+  assert.equal(fs.existsSync(path.join(rootDir, '.gitattributes')), true, 'D-0027: .gitattributes must exist');
+});
+
+test('D-0028: parseArgsInput unescapes quotes & preserves JSON empty args, UTF-8 Base64 works without deprecated escape(), and destroy() escapes CSS attribute selectors', () => {
+  assert.deepEqual(
+    parseArgsInput('--msg "hello \\"world\\" \\\\ ok"'),
+    ['--msg', 'hello "world" \\ ok'],
+    'D-0028: parseArgsInput must unescape \\" and \\\\ inside double-quoted tokens'
+  );
+  assert.deepEqual(
+    parseArgsInput('["--prefix", ""]'),
+    ['--prefix', ''],
+    'D-0028: parseArgsInput must preserve intentional empty string elements in JSON arrays'
+  );
+
+  const utf8Basic = buildAuthHeaders({
+    authMode: 'basic',
+    basicUser: '관리자',
+    basicPass: '비밀번호!@#',
+  });
+  const decodedBasic = extractAuthFromSpec({ headers: utf8Basic });
+  assert.equal(decodedBasic.authMode, 'basic');
+  assert.equal(decodedBasic.basicUser, '관리자');
+  assert.equal(decodedBasic.basicPass, '비밀번호!@#');
+});
+
+test('D-0029, D-0030, D-0031: host-adapter-config decouples vendor RPC/domain constants, and GitFlow CI + documentation templates exist', async () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const rootDir = path.join(__dirname, '..');
+  const { resolveHostAdapterConfig, DEFAULT_HOST_ADAPTER_CONFIG } = require('../src/host-adapter-config');
+  assert.ok(DEFAULT_HOST_ADAPTER_CONFIG.rpcServicePrefix);
+
+  const customCfg = resolveHostAdapterConfig({
+    rpcServicePrefix: '/custom.mcp.v1.HostService',
+    remoteHostDomains: ['remote.custom-mcp.example'],
+    companionScripts: {
+      statusbarUrl: 'https://cdn.custom-mcp.example/sb.js',
+      koTranslatorUrl: 'https://cdn.custom-mcp.example/ko.js',
+    },
+  });
+
+  const seenRpcPaths = [];
+  const customWin = {
+    location: { hostname: 'remote.custom-mcp.example' },
+    __agyRemoteControlInstance: {
+      destroyed: false,
+      async proxyCommand(rpcPath) {
+        seenRpcPaths.push(rpcPath);
+        return { payload: new TextEncoder().encode(JSON.stringify({ states: [{ serverName: 'custom-s1', status: 2 }] })) };
+      },
+    },
+  };
+  const customBridge = createHostMcpBridge({ window: customWin, hostConfig: customCfg });
+  const st = await customBridge.getMcpServerStates();
+  assert.equal(st.length, 1);
+  assert.equal(seenRpcPaths[0], '/custom.mcp.v1.HostService/GetMcpServerStates');
+
+  const ciYml = fs.readFileSync(path.join(rootDir, '.github', 'workflows', 'ci.yml'), 'utf8');
+  assert.ok(ciYml.includes('develop') && ciYml.includes('fix/**') && ciYml.includes('workflow_dispatch'), 'D-0030: ci.yml must cover GitFlow branches and workflow_dispatch');
+  assert.equal(fs.existsSync(path.join(rootDir, 'docs', 'templates', 'README_TEMPLATE.md')), true, 'D-0031: README_TEMPLATE.md must exist');
+  assert.equal(fs.existsSync(path.join(rootDir, 'docs', 'templates', 'RELEASE_NOTES_TEMPLATE.md')), true, 'D-0031: RELEASE_NOTES_TEMPLATE.md must exist');
+  assert.equal(fs.existsSync(path.join(rootDir, 'docs', 'TEST_CASES.md')), true, 'D-0031: docs/TEST_CASES.md must exist');
 });
