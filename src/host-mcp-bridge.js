@@ -131,6 +131,7 @@ function createHostMcpBridge(opts = {}) {
   let sharedTextDecoder = null;
   // ceiling: 브릿지 인스턴스 내 비동기 직렬 잠금, 다중 프로세스 동시 편집이 필요하면 호스트 파일 잠금으로 확장
   let configMutationChain = Promise.resolve();
+  const hookedPrototypes = new Set();
 
   function withConfigMutationLock(fn) {
     const next = configMutationChain.then(fn, fn);
@@ -176,6 +177,7 @@ function createHostMcpBridge(opts = {}) {
 
   function hookRemoteControlPrototype(w, proto) {
     if (!proto || proto === Object.prototype) return;
+    hookedPrototypes.add(proto);
     proto.__agyTargetWin = w;
     if (Object.prototype.hasOwnProperty.call(proto, '__agyMcpRcHooked')) return;
     proto.__agyMcpRcHooked = true;
@@ -1432,6 +1434,42 @@ function createHostMcpBridge(opts = {}) {
     resolveRemoteControlInstance,
     toFsPathFromFileUri,
     hostConfig: resolvedHostConfig,
+    dispose() {
+      for (const proto of hookedPrototypes) {
+        try {
+          for (const mName of [
+            'handleIframeMessage',
+            'handleUrlChanged',
+            'proxyCommand',
+            'streamProxyCommand',
+            'handlePortRequest',
+            'managePolling',
+            'shouldPoll',
+            'loadInstances',
+            'isDisconnected',
+            'onIframeLoad',
+            'onWindowOnline',
+            'onWindowOffline',
+            'isOffline',
+            'isDirectIngressMode',
+            'isTabHidden',
+            'getSelectedInstance',
+            'instanceInfos',
+            'remoteConversationsInfos',
+          ]) {
+            const origKey = `__agyOrig_${mName}`;
+            if (proto[origKey]) {
+              proto[mName] = proto[origKey];
+              delete proto[origKey];
+            }
+          }
+          delete proto.__agyOrigHandleIframeMessage;
+          delete proto.__agyMcpRcHooked;
+          delete proto.__agyTargetWin;
+        } catch {}
+      }
+      hookedPrototypes.clear();
+    },
   };
 }
 

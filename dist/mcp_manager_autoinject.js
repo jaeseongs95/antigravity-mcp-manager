@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Antigravity Custom MCP Server Manager
 // @namespace    https://github.com/jaeseongs95/antigravity-mcp-manager
-// @version      1.4.17
+// @version      1.4.18
 // @description  Add, edit, toggle, and manage custom Stdio & HTTP MCP servers (mcp_config.json) directly inside the Antigravity 2.0 native app and Remote Control web.
 // @match        https://antigravity.google.com/*
 // @match        https://*.antigravity.google.com/*
@@ -1173,6 +1173,7 @@
       let sharedTextEncoder = null;
       let sharedTextDecoder = null;
       let configMutationChain = Promise.resolve();
+      const hookedPrototypes = new Set();
       function withConfigMutationLock(fn) {
         const next = configMutationChain.then(fn, fn);
         configMutationChain = next.catch(() => {});
@@ -1212,6 +1213,7 @@
       }
       function hookRemoteControlPrototype(w, proto) {
         if (!proto || proto === Object.prototype) return;
+        hookedPrototypes.add(proto);
         proto.__agyTargetWin = w;
         if (Object.prototype.hasOwnProperty.call(proto, '__agyMcpRcHooked')) return;
         proto.__agyMcpRcHooked = true;
@@ -2379,6 +2381,42 @@
         resolveRemoteControlInstance,
         toFsPathFromFileUri,
         hostConfig: resolvedHostConfig,
+        dispose() {
+          for (const proto of hookedPrototypes) {
+            try {
+              for (const mName of [
+                'handleIframeMessage',
+                'handleUrlChanged',
+                'proxyCommand',
+                'streamProxyCommand',
+                'handlePortRequest',
+                'managePolling',
+                'shouldPoll',
+                'loadInstances',
+                'isDisconnected',
+                'onIframeLoad',
+                'onWindowOnline',
+                'onWindowOffline',
+                'isOffline',
+                'isDirectIngressMode',
+                'isTabHidden',
+                'getSelectedInstance',
+                'instanceInfos',
+                'remoteConversationsInfos',
+              ]) {
+                const origKey = `__agyOrig_${mName}`;
+                if (proto[origKey]) {
+                  proto[mName] = proto[origKey];
+                  delete proto[origKey];
+                }
+              }
+              delete proto.__agyOrigHandleIframeMessage;
+              delete proto.__agyMcpRcHooked;
+              delete proto.__agyTargetWin;
+            } catch {}
+          }
+          hookedPrototypes.clear();
+        },
       };
     }
     module.exports = {
@@ -5105,7 +5143,7 @@
       ensureModalStyles,
       createModalController,
     } = require('./modal-ui');
-    const MCP_MANAGER_VERSION = 'v1.4.17';
+    const MCP_MANAGER_VERSION = 'v1.4.18';
     const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
     function escAttr(str) {
       return String(str ?? '')
@@ -5276,56 +5314,124 @@
           resolvedHostCfg.isRemoteHost(win?.location?.hostname) ||
           Boolean(doc?.querySelector?.('ga-remote-control'));
         if (!isRemoteWeb || !doc?.head) return Promise.resolve({ loaded: [] });
-        const execScriptText = (code) => {
-          if (!code || !doc.head) return false;
-          const s = doc.createElement('script');
+        const getNonce = () => {
           const nonceEl = doc.querySelector?.('script[nonce]');
-          const nonce = nonceEl ? nonceEl.nonce || nonceEl.getAttribute?.('nonce') : '';
-          if (nonce) s.nonce = nonce;
-          const policy = getOrCreateTrustedTypesPolicy(win);
-          try {
-            s.text = policy && typeof policy.createScript === 'function' ? policy.createScript(code) : code;
-            doc.head.appendChild(s);
-            return true;
-          } catch (_e) {
+          return nonceEl ? nonceEl.nonce || nonceEl.getAttribute?.('nonce') || '' : '';
+        };
+        const appendScriptSrcAsync = (rawUrl, policy, onDoneCleanup) =>
+          new Promise((resolve) => {
             try {
-              if (typeof Blob === 'function' && win.URL && typeof win.URL.createObjectURL === 'function') {
-                const s2 = doc.createElement('script');
-                if (nonce) s2.nonce = nonce;
-                const blobUrl = win.URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+              const s = doc.createElement('script');
+              const nonce = getNonce();
+              if (nonce) s.nonce = nonce;
+              s.src = policy && typeof policy.createScriptURL === 'function' ? policy.createScriptURL(rawUrl) : rawUrl;
+              if (typeof s.addEventListener !== 'function') {
+                doc.head.appendChild(s);
+                if (typeof onDoneCleanup === 'function') onDoneCleanup();
+                resolve(true);
+                return;
+              }
+              let settled = false;
+              const setTimeoutFn =
+                typeof win.setTimeout === 'function'
+                  ? win.setTimeout.bind(win)
+                  : (typeof setTimeout === 'function' ? setTimeout : null);
+              const clearTimeoutFn =
+                typeof win.clearTimeout === 'function'
+                  ? win.clearTimeout.bind(win)
+                  : (typeof clearTimeout === 'function' ? clearTimeout : null);
+              let timer = null;
+              const finish = (ok) => {
+                if (settled) return;
+                settled = true;
+                if (timer && clearTimeoutFn) {
+                  try { clearTimeoutFn(timer); } catch (_e) {}
+                }
+                if (typeof onDoneCleanup === 'function') {
+                  try { onDoneCleanup(); } catch (_e) {}
+                }
+                resolve(ok);
+              };
+              s.addEventListener('load', () => finish(true), { once: true });
+              s.addEventListener('error', () => finish(false), { once: true });
+              if (setTimeoutFn) {
+                timer = setTimeoutFn(() => finish(false), 4000);
+                if (timer && typeof timer.unref === 'function') timer.unref();
+              }
+              doc.head.appendChild(s);
+            } catch (_e) {
+              if (typeof onDoneCleanup === 'function') {
+                try { onDoneCleanup(); } catch (_e2) {}
+              }
+              resolve(false);
+            }
+          });
+        const injectCompanionCodeOrUrl = async (code, url, policy, checkLoaded) => {
+          const isLoaded = typeof checkLoaded === 'function' ? checkLoaded : () => false;
+          if (code && doc.head) {
+            try {
+              const s = doc.createElement('script');
+              const nonce = getNonce();
+              if (nonce) s.nonce = nonce;
+              s.text = policy && typeof policy.createScript === 'function' ? policy.createScript(code) : code;
+              doc.head.appendChild(s);
+              if (isLoaded() || typeof s.addEventListener !== 'function') {
+                return true;
+              }
+            } catch (_e) {}
+            try {
+              const BlobCtor = win.Blob || (typeof Blob === 'function' ? Blob : null);
+              const UrlApi = win.URL || (typeof URL !== 'undefined' ? URL : null);
+              if (BlobCtor && UrlApi && typeof UrlApi.createObjectURL === 'function') {
+                const blobUrl = UrlApi.createObjectURL(new BlobCtor([code], { type: 'text/javascript' }));
                 const cleanupBlob = () => {
                   try {
-                    if (typeof win.URL.revokeObjectURL === 'function') {
-                      win.URL.revokeObjectURL(blobUrl);
+                    if (typeof UrlApi.revokeObjectURL === 'function') {
+                      UrlApi.revokeObjectURL(blobUrl);
                     }
                   } catch (_e3) {}
                 };
-                if (typeof s2.addEventListener === 'function') {
-                  s2.addEventListener('load', cleanupBlob, { once: true });
-                  s2.addEventListener('error', cleanupBlob, { once: true });
-                } else {
-                  s2.onload = cleanupBlob;
-                  s2.onerror = cleanupBlob;
+                const blobOk = await appendScriptSrcAsync(blobUrl, policy, cleanupBlob);
+                if (blobOk && (isLoaded() || typeof doc.createElement('script')?.addEventListener !== 'function')) {
+                  return true;
                 }
-                s2.src = policy && typeof policy.createScriptURL === 'function' ? policy.createScriptURL(blobUrl) : blobUrl;
-                doc.head.appendChild(s2);
-                return true;
               }
             } catch (_e2) {}
-            return false;
           }
+          if (url && doc.head) {
+            const sep = url.includes('?') ? '&' : '?';
+            const remoteUrl = `${url}${sep}t=${Date.now()}`;
+            const remoteOk = await appendScriptSrcAsync(remoteUrl, policy, null);
+            if (remoteOk) {
+              return true;
+            }
+          }
+          return false;
         };
-        const injectRemoteOrHostFallback = async (flagKey, url, hostCodeFallback) => {
+        const injectRemoteOrHostFallback = async (flagKey, url, hostCodeFallback, checkLoaded) => {
           if (win[flagKey]) return false;
           win[flagKey] = true;
-          if (hostCodeFallback && execScriptText(hostCodeFallback)) {
-            return true;
-          }
+          const policy = getOrCreateTrustedTypesPolicy(win);
           try {
-            if (typeof win.fetch === 'function') {
-              const r = await win.fetch(`${url}?t=${Date.now()}`);
-              const code = r && r.ok ? await r.text() : '';
-              if (code && execScriptText(code)) return true;
+            if (hostCodeFallback) {
+              const ok = await injectCompanionCodeOrUrl(hostCodeFallback, url, policy, checkLoaded);
+              if (!ok) win[flagKey] = false;
+              return ok;
+            }
+            if (typeof win.fetch === 'function' && url) {
+              const sep = url.includes('?') ? '&' : '?';
+              const r = await Promise.resolve(win.fetch(`${url}${sep}t=${Date.now()}`)).catch(() => null);
+              const code = r && r.ok && typeof r.text === 'function' ? await r.text() : '';
+              if (code) {
+                const ok = await injectCompanionCodeOrUrl(code, url, policy, checkLoaded);
+                if (!ok) win[flagKey] = false;
+                return ok;
+              }
+            }
+            if (url) {
+              const ok = await injectCompanionCodeOrUrl('', url, policy, checkLoaded);
+              if (!ok) win[flagKey] = false;
+              return ok;
             }
           } catch (_e) {}
           win[flagKey] = false;
@@ -5354,7 +5460,8 @@
             const ok = await injectRemoteOrHostFallback(
               '__agyLoadingStatusBarCompanion',
               resolvedHostCfg.companionScripts.statusbarUrl,
-              info.statusbarBlock
+              info.statusbarBlock,
+              () => Boolean(win.agyStatusBar)
             );
             if (ok) loaded.push('antigravity-statusbar');
           }
@@ -5362,7 +5469,8 @@
             const ok = await injectRemoteOrHostFallback(
               '__agyLoadingKoThoughtCompanion',
               resolvedHostCfg.companionScripts.koTranslatorUrl,
-              info.koBlock
+              info.koBlock,
+              () => Boolean(win.__agyKoLocalizerActive || win.__agyKoThoughtCleanup)
             );
             if (ok) loaded.push('ko-thought-translator');
           }
@@ -5432,6 +5540,7 @@
           : null;
       const spoofedSrc = `${win.location?.origin || 'https://antigravity.google.com'}${basePath}/?iframe=true`;
       const rcProto = Object.getPrototypeOf(rcInst);
+      const hadOwnInstOnIframeLoad = Object.prototype.hasOwnProperty.call(rcInst, 'onIframeLoad');
       if (rcProto && typeof rcProto.onIframeLoad === 'function' && !rcProto.__agyOrigOnIframeLoad) {
         rcProto.__agyOrigOnIframeLoad = rcProto.onIframeLoad;
         rcProto.onIframeLoad = function (...args) {
@@ -5439,7 +5548,7 @@
           return rcProto.__agyOrigOnIframeLoad.apply(this, args);
         };
       }
-      if (typeof rcInst.onIframeLoad === 'function' && !rcInst.__agyOrigOnIframeLoad) {
+      if (hadOwnInstOnIframeLoad && typeof rcInst.onIframeLoad === 'function' && !rcInst.__agyOrigOnIframeLoad) {
         rcInst.__agyOrigOnIframeLoad = rcInst.onIframeLoad;
         rcInst.onIframeLoad = function (...args) {
           if (this.__agySuppressAutoIframeLoad) return Promise.resolve();
@@ -5447,6 +5556,12 @@
         };
       }
       rcInst.__agySuppressAutoIframeLoad = true;
+      let readyNotified = false;
+      const notifyReadyOnce = () => {
+        if (readyNotified) return;
+        readyNotified = true;
+        if (typeof onReady === 'function') onReady();
+      };
       const onBlankLoad = () => {
         try {
           const cw = iframe.contentWindow;
@@ -5487,7 +5602,7 @@
           } catch (_e) {}
           cw.__APP_CONFIG__ = {
             productName: 'antigravity',
-            csrfToken: 'csrf_token',
+            csrfToken: String(win?.__APP_CONFIG__?.csrfToken || rcInst?.csrfToken || ''),
             appVersion,
             isRemoteControl: true,
           };
@@ -5588,7 +5703,7 @@
                 rcInst.iframeUiReady?.set?.(true);
               }
             } catch (_e) {}
-            if (typeof onReady === 'function') onReady();
+            notifyReadyOnce();
           };
           mainScript.onerror = () => {
             rcInst.__agySuppressAutoIframeLoad = false;
@@ -5599,7 +5714,6 @@
             cd.head.appendChild(mainScript);
           }
           rcInst.__agySuppressAutoIframeLoad = false;
-          if (typeof onReady === 'function') onReady();
         } catch (_e) {
           rcInst.__agySuppressAutoIframeLoad = false;
           delete iframe.__agyMcpPromoted;
@@ -5646,6 +5760,31 @@
           },
         });
       } catch (_e) {}
+      iframe.__agyMcpRestorePromotion = () => {
+        try {
+          if (rcProto && rcProto.__agyOrigOnIframeLoad) {
+            rcProto.onIframeLoad = rcProto.__agyOrigOnIframeLoad;
+            delete rcProto.__agyOrigOnIframeLoad;
+          }
+          if (rcInst.__agyOrigOnIframeLoad) {
+            rcInst.onIframeLoad = rcInst.__agyOrigOnIframeLoad;
+            delete rcInst.__agyOrigOnIframeLoad;
+          } else if (!hadOwnInstOnIframeLoad) {
+            delete rcInst.onIframeLoad;
+          }
+          delete rcInst.__agySuppressAutoIframeLoad;
+        } catch (_e) {}
+        try {
+          if (typeof iframe.removeEventListener === 'function') {
+            iframe.removeEventListener('load', triggerBlankLoadOnce);
+          }
+        } catch (_e) {}
+        try {
+          delete iframe.src;
+        } catch (_e) {}
+        delete iframe.__agyMcpPromoted;
+        delete iframe.__agyMcpRestorePromotion;
+      };
       const setTimer = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : (typeof setTimeout === 'function' ? setTimeout : null);
       if (setTimer) {
         setTimer(triggerBlankLoadOnce, 25);
@@ -6371,6 +6510,11 @@
           }
           iframesToClean.forEach((ifr) => {
             try {
+              if (typeof ifr.__agyMcpRestorePromotion === 'function') {
+                ifr.__agyMcpRestorePromotion();
+              }
+            } catch {}
+            try {
               if (ifr.__agyMcpLoadHandler && typeof ifr.removeEventListener === 'function') {
                 ifr.removeEventListener('load', ifr.__agyMcpLoadHandler);
               }
@@ -6384,6 +6528,11 @@
               }
             } catch {}
           });
+          if (bridge && typeof bridge.dispose === 'function') {
+            try {
+              bridge.dispose();
+            } catch {}
+          }
           if (win.agyMcpManager === controller) {
             delete win.agyMcpManager;
             delete win.__agyMcpManagerActive;

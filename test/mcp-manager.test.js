@@ -2335,8 +2335,8 @@ test('D-0021: scripts/build.js preserves multiline template literals across rege
   );
   assert.equal(readmeEn.includes('16/16'), false, 'D-0021: stale 16/16 test count must be updated in README.md');
   assert.equal(readmeKo.includes('16/16'), false, 'D-0021: stale 16/16 test count must be updated in README.ko.md');
-  assert.ok(readmeEn.includes('30/30'), 'D-0021: README.md must state 30/30 tests');
-  assert.ok(readmeKo.includes('30/30'), 'D-0021: README.ko.md must state 30/30 tests');
+  assert.ok(readmeEn.includes('31/31'), 'D-0021: README.md must state 31/31 tests');
+  assert.ok(readmeKo.includes('31/31'), 'D-0021: README.ko.md must state 31/31 tests');
 });
 
 test('D-0022: destroy() cleans up style tag, DOMContentLoaded listener, remote iframe load listener, hidden native settings pane, and Models tab highlight', () => {
@@ -2993,18 +2993,17 @@ test('D-0033 & D-0034: isRemoteHost blocks substring domain spoofing and Trusted
   assert.equal(dottedCfg.isRemoteHost('fakeremote.custom-mcp.example'), false);
 
   const forbiddenGlobalPolicies = new Set(['default', 'dompurify', 'angular', 'angular#unsafe-bypass', 'nextjs#bundler']);
+  const TRUSTED_SCRIPT_BRAND = Symbol('TrustedScript');
+  const TRUSTED_SCRIPT_URL_BRAND = Symbol('TrustedScriptURL');
+
+  // 1) W3C-accurate strict TrustedTypes environment where ALL policies are denied (policy === null):
+  // BOTH script.text AND script.src throw TypeError on plain strings!
   const attemptedPolicies = [];
-  const appendedScripts = [];
-  let revokedBlobUrl = '';
   const strictWin = {
     location: { hostname: 'antigravity.google.com' },
     URL: {
-      createObjectURL() {
-        return 'blob:https://antigravity.google.com/mcp-sb-fallback';
-      },
-      revokeObjectURL(u) {
-        revokedBlobUrl = u;
-      },
+      createObjectURL: () => 'blob:https://antigravity.google.com/mcp-sb-fallback',
+      revokeObjectURL() {},
     },
     trustedTypes: {
       createPolicy(name) {
@@ -3012,28 +3011,39 @@ test('D-0033 & D-0034: isRemoteHost blocks substring domain spoofing and Trusted
         throw new TypeError(`Disallowed policy ${name}`);
       },
     },
+    fetch: async () => ({ ok: false }),
   };
-  const strictDoc = {
-    head: {
-      appendChild(el) {
-        appendedScripts.push(el);
-        if (typeof el._onload === 'function') el._onload();
-      },
-    },
+  const makeStrictScriptDoc = (onAppend) => ({
+    head: { appendChild: onAppend },
     createElement(tag) {
+      let _src = '';
+      let _text = '';
+      const listeners = {};
       return {
         tagName: tag,
-        src: '',
-        set text(_v) {
-          throw new TypeError('TrustedScript required');
+        get src() { return _src; },
+        set src(v) {
+          if (!v || v[TRUSTED_SCRIPT_URL_BRAND] !== true) {
+            throw new TypeError("Failed to set 'src' on 'HTMLScriptElement': This document requires 'TrustedScriptURL' assignment.");
+          }
+          _src = v.url;
         },
-        addEventListener(ev, fn) {
-          if (ev === 'load') this._onload = fn;
+        get text() { return _text; },
+        set text(v) {
+          if (!v || v[TRUSTED_SCRIPT_BRAND] !== true) {
+            throw new TypeError("Failed to set 'text' on 'HTMLScriptElement': This document requires 'TrustedScript' assignment.");
+          }
+          _text = v.code;
         },
+        addEventListener(ev, fn) { listeners[ev] = fn; },
+        _fire(ev) { if (listeners[ev]) listeners[ev](); },
       };
     },
     querySelector: () => null,
-  };
+  });
+  const strictDoc = makeStrictScriptDoc(() => {
+    throw new Error('Should not append unbranded script');
+  });
   const strictBridge = {
     async fetchHostInstalledPluginInfo() {
       return {
@@ -3045,13 +3055,373 @@ test('D-0033 & D-0034: isRemoteHost blocks substring domain spoofing and Trusted
       };
     },
   };
-  const res = await ensureRemoteCompanionScripts(strictWin, strictDoc, strictBridge);
-  assert.deepEqual(res.loaded, ['antigravity-statusbar'], 'D-0034: Blob URL fallback must succeed when all TrustedTypes policies are disallowed');
-  assert.equal(appendedScripts.length, 1);
-  assert.equal(appendedScripts[0].src, 'blob:https://antigravity.google.com/mcp-sb-fallback');
-  assert.equal(revokedBlobUrl, 'blob:https://antigravity.google.com/mcp-sb-fallback');
+  const blockedRes = await ensureRemoteCompanionScripts(strictWin, strictDoc, strictBridge);
+  assert.deepEqual(
+    blockedRes.loaded,
+    [],
+    'D-0034: when TrustedTypes rejects all policies and sinks reject plain strings, loader must NOT fake success'
+  );
+  assert.equal(strictWin.__agyLoadingStatusBarCompanion, false, 'D-0034: loading flag must reset on failure');
   for (const p of attemptedPolicies) {
     assert.equal(forbiddenGlobalPolicies.has(p), false, `D-0034: getOrCreateTrustedTypesPolicy must never attempt global policy '${p}'`);
     assert.ok(p.startsWith('agy-mcp-') || p.startsWith('agy-companion-'), `D-0034: policy '${p}' must be plugin-scoped`);
+  }
+
+  // 2) Async CSP block on inline & blob script must fall back to remote allowed URL with branded TrustedScriptURL!
+  const appendedUrls = [];
+  const cspWin = {
+    location: { hostname: 'antigravity.google.com' },
+    URL: {
+      createObjectURL: () => 'blob:https://antigravity.google.com/csp-blocked',
+      revokeObjectURL() {},
+    },
+    trustedTypes: {
+      createPolicy(name, rules) {
+        if (name === 'agy-mcp-manager') {
+          return {
+            createHTML: (h) => rules.createHTML(h),
+            createScript: (c) => ({ [TRUSTED_SCRIPT_BRAND]: true, code: rules.createScript(c) }),
+            createScriptURL: (u) => ({ [TRUSTED_SCRIPT_URL_BRAND]: true, url: rules.createScriptURL(u) }),
+          };
+        }
+        throw new TypeError(`Disallowed policy ${name}`);
+      },
+    },
+  };
+  const cspDoc = makeStrictScriptDoc((el) => {
+    if (el.src) {
+      appendedUrls.push(el.src);
+      if (el.src.startsWith('blob:')) {
+        Promise.resolve().then(() => el._fire('error'));
+      } else {
+        cspWin.agyStatusBar = { version: 'v32' };
+        Promise.resolve().then(() => el._fire('load'));
+      }
+    }
+  });
+  const cspRes = await ensureRemoteCompanionScripts(cspWin, cspDoc, strictBridge);
+  assert.deepEqual(cspRes.loaded, ['antigravity-statusbar'], 'D-0034: remote URL script fallback must succeed when inline & blob fail under CSP');
+  assert.ok(appendedUrls.some((u) => u.startsWith('https://raw.githubusercontent.com/')), 'D-0034: remote companion script URL must be loaded');
+});
+
+test('D-0022, D-0026, D-0032 reopen: destroy() restores all host prototypes & iframe.src, avoids hardcoded csrf_token & duplicate onReady, and fixes RFC6455 Ping/fragmentation & lock ownership', async () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const net = require('node:net');
+  const crypto = require('node:crypto');
+  const os = require('node:os');
+  const { execFileSync } = require('node:child_process');
+  const patcherPath = path.join(__dirname, '..', 'scripts', 'ensure_statusbar_patch.js');
+  const { configureTargetViaCdp } = require(patcherPath);
+
+  // 1) D-0022: Prototype restoration on destroy(), dynamic csrfToken (no hardcoded 'csrf_token'), and single onReady() call
+  const indexSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.js'), 'utf8');
+  assert.equal(
+    indexSrc.includes("'csrf_token'") || indexSrc.includes('"csrf_token"'),
+    false,
+    'D-0022: src/index.js must NOT hardcode literal csrfToken: "csrf_token"'
+  );
+
+  function HostRemoteControl() {}
+  const origMethods = {};
+  for (const mName of [
+    'handleIframeMessage',
+    'handleUrlChanged',
+    'proxyCommand',
+    'streamProxyCommand',
+    'handlePortRequest',
+    'managePolling',
+    'shouldPoll',
+    'loadInstances',
+    'isDisconnected',
+    'onIframeLoad',
+    'onWindowOnline',
+    'onWindowOffline',
+    'isOffline',
+    'isDirectIngressMode',
+    'isTabHidden',
+    'getSelectedInstance',
+    'instanceInfos',
+    'remoteConversationsInfos',
+  ]) {
+    origMethods[mName] =
+      mName === 'proxyCommand'
+        ? async function (rpcPath) {
+            if (String(rpcPath).endsWith('/GetCustomizationStates')) {
+              return { payload: new TextEncoder().encode(JSON.stringify({ states: [] })) };
+            }
+            if (String(rpcPath).endsWith('/ReadFile')) {
+              return {
+                payload: new TextEncoder().encode(
+                  JSON.stringify({ contents: Buffer.from('function mountMcpManager(){}\n', 'utf8').toString('base64') })
+                ),
+              };
+            }
+            return { payload: new TextEncoder().encode('{}') };
+          }
+        : function () {
+            return mName;
+          };
+    HostRemoteControl.prototype[mName] = origMethods[mName];
+  }
+  const rcInst = new HostRemoteControl();
+  rcInst.localUserInfo = { selectedGeminiDir: '/virtual/.gemini' };
+  rcInst.iframeSrc = () => 'https://antigravity.static.usercontent.goog/web/2.32.1/?iframe=true';
+
+  const appendedInChildHead = [];
+  const childWin = {
+    navigator: { userAgent: 'Windows' },
+    history: { replaceState() {} },
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const childDoc = {
+    head: {
+      appendChild(el) {
+        appendedInChildHead.push(el);
+      },
+    },
+    open() {},
+    write() {},
+    close() {},
+    createElement(tag) {
+      return { tagName: tag, style: {}, setAttribute() {}, getAttribute: () => null };
+    },
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  };
+  childWin.document = childDoc;
+
+  const iframeListeners = {};
+  let promotedToBlank = false;
+  let currentIframeAttrSrc = 'https://antigravity.static.usercontent.goog/web/2.32.1/?iframe=true';
+  const remoteIframe = {
+    nodeType: 1,
+    tagName: 'IFRAME',
+    src: currentIframeAttrSrc,
+    get contentWindow() {
+      if (!promotedToBlank) {
+        throw new Error('SecurityError: Blocked a frame with origin "https://antigravity.google.com" from accessing a cross-origin frame.');
+      }
+      return childWin;
+    },
+    get contentDocument() {
+      if (!promotedToBlank) {
+        throw new Error('SecurityError: Blocked a frame with origin "https://antigravity.google.com" from accessing a cross-origin frame.');
+      }
+      return childDoc;
+    },
+    getAttribute(k) { return k === 'src' ? currentIframeAttrSrc : null; },
+    setAttribute(k, v) {
+      if (k === 'src') {
+        currentIframeAttrSrc = String(v);
+        if (v === 'about:blank') promotedToBlank = true;
+      }
+    },
+    removeAttribute() {},
+    addEventListener(ev, fn) { iframeListeners[ev] = fn; },
+    removeEventListener(ev) { delete iframeListeners[ev]; },
+  };
+  const gaRcEl = {
+    nodeType: 1,
+    tagName: 'GA-REMOTE-CONTROL',
+    querySelector: (s) => (s === 'iframe' ? remoteIframe : null),
+    querySelectorAll: (s) => (s === 'iframe' ? [remoteIframe] : []),
+  };
+  const hostBody = {
+    nodeType: 1,
+    tagName: 'BODY',
+    children: [gaRcEl],
+    appendChild() {},
+    querySelector: (s) => (s === 'ga-remote-control' ? gaRcEl : (s === 'ga-remote-control iframe' ? remoteIframe : null)),
+    querySelectorAll: (s) => (s === 'ga-remote-control iframe' ? [remoteIframe] : []),
+  };
+  const hostHead = {
+    children: [],
+    appendChild(el) { this.children.push(el); },
+  };
+  const hostDoc = {
+    readyState: 'complete',
+    head: hostHead,
+    body: hostBody,
+    createElement(tag) {
+      return {
+        nodeType: 1,
+        tagName: tag.toUpperCase(),
+        style: {},
+        attrs: {},
+        setAttribute(k, v) { this.attrs[k] = String(v); },
+        getAttribute(k) { return this.attrs[k] ?? null; },
+        removeAttribute(k) { delete this.attrs[k]; },
+        appendChild() {},
+        remove() {},
+        querySelector: () => null,
+        querySelectorAll: () => [],
+      };
+    },
+    getElementById: () => null,
+    querySelector: (s) => hostBody.querySelector(s),
+    querySelectorAll: (s) => hostBody.querySelectorAll(s),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const hostWin = {
+    location: { hostname: 'antigravity.google.com', origin: 'https://antigravity.google.com', href: 'https://antigravity.google.com/' },
+    __APP_CONFIG__: { csrfToken: 'live-dynamic-csrf-token' },
+    __agyRemoteControlInstance: rcInst,
+    document: hostDoc,
+    addEventListener() {},
+    removeEventListener() {},
+    setTimeout,
+    clearTimeout,
+    MutationObserver: class { observe() {} disconnect() {} },
+  };
+  hostWin.parent = hostWin;
+  childWin.parent = hostWin;
+
+  const ctrl = mountMcpManager({ window: hostWin, document: hostDoc });
+  await new Promise((r) => setTimeout(r, 40));
+  // Before mainScript.onload fires, childWin.__APP_CONFIG__.csrfToken must carry the dynamic token (not 'csrf_token')
+  assert.equal(childWin.__APP_CONFIG__?.csrfToken, 'live-dynamic-csrf-token', 'D-0022: promoted iframe must inherit dynamic host csrfToken');
+  // Simulate mainScript.onload firing
+  const mainScriptEl = appendedInChildHead.find((el) => String(el.src || '').endsWith('/main.js'));
+  if (mainScriptEl && typeof mainScriptEl.onload === 'function') {
+    mainScriptEl.onload();
+  }
+
+  ctrl.destroy();
+
+  for (const [mName, origFn] of Object.entries(origMethods)) {
+    assert.equal(
+      HostRemoteControl.prototype[mName],
+      origFn,
+      `D-0022: destroy() must restore HostRemoteControl.prototype.${mName} to its exact original function`
+    );
+  }
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(HostRemoteControl.prototype, '__agyMcpRcHooked'),
+    false,
+    'D-0022: destroy() must clean up __agyMcpRcHooked marker from prototype'
+  );
+  const iframeOwnSrcDesc = Object.getOwnPropertyDescriptor(remoteIframe, 'src');
+  assert.equal(
+    Boolean(iframeOwnSrcDesc && typeof iframeOwnSrcDesc.get === 'function'),
+    false,
+    'D-0022: destroy() must remove spoofed Object.defineProperty(iframe, "src") getter'
+  );
+
+  // 2) D-0032: RFC 6455 payload Ping -> Pong echo & fragmented Continuation frames
+  const savedWs = globalThis.WebSocket;
+  delete globalThis.WebSocket;
+  let receivedPongPayload = null;
+  const rawWsServer = net.createServer((socket) => {
+    let upgraded = false;
+    let buf = Buffer.alloc(0);
+    socket.on('data', (chunk) => {
+      if (!upgraded) {
+        const txt = chunk.toString('utf8');
+        if (!txt.includes('\r\n\r\n')) return;
+        upgraded = true;
+        const keyMatch = txt.match(/Sec-WebSocket-Key:\s*([^\r\n]+)/i);
+        const accept = crypto
+          .createHash('sha1')
+          .update(keyMatch[1].trim() + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
+          .digest('base64');
+        socket.write(
+          `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`
+        );
+        return;
+      }
+      buf = Buffer.concat([buf, chunk]);
+      while (buf.length >= 6) {
+        const opcode = buf[0] & 0x0f;
+        let len = buf[1] & 0x7f;
+        let off = 2;
+        if (len === 126) {
+          if (buf.length < 8) return;
+          len = buf.readUInt16BE(2);
+          off = 4;
+        }
+        if (buf.length < off + 4 + len) return;
+        const mask = buf.subarray(off, off + 4);
+        const payload = Buffer.from(buf.subarray(off + 4, off + 4 + len));
+        for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
+        buf = buf.subarray(off + 4 + len);
+
+        if (opcode === 0x0a) {
+          receivedPongPayload = payload.toString('utf8');
+          const fullJson = Buffer.from(
+            JSON.stringify({ id: 1, result: { result: { value: 'INJECTED_OK' } } }),
+            'utf8'
+          );
+          const p1 = fullJson.subarray(0, 14);
+          const p2 = fullJson.subarray(14);
+          socket.write(Buffer.concat([Buffer.from([0x01, p1.length]), p1]));
+          socket.write(Buffer.concat([Buffer.from([0x80, p2.length]), p2]));
+        } else if (opcode === 0x01) {
+          const pingData = Buffer.from('mcp-ping-payload', 'utf8');
+          socket.write(Buffer.concat([Buffer.from([0x89, pingData.length]), pingData]));
+        }
+      }
+    });
+  });
+  await new Promise((r) => rawWsServer.listen(0, '127.0.0.1', r));
+  try {
+    const port = rawWsServer.address().port;
+    const evalResult = await configureTargetViaCdp(`ws://127.0.0.1:${port}/devtools/page/1`, 'void 0;', 'hash1', 1500);
+    assert.equal(receivedPongPayload, 'mcp-ping-payload', 'D-0032: RFC 6455 client must echo non-empty Ping payload in Pong');
+    assert.equal(evalResult, 'INJECTED_OK', 'D-0032: RFC 6455 client must reassemble fragmented Continuation frames');
+  } finally {
+    if (savedWs !== undefined) globalThis.WebSocket = savedWs;
+    rawWsServer.close();
+  }
+
+  // 3) D-0026: Foreign lock protection in releaseLock & locked syncAppStorageCode preservation
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-mcp-lock-test-'));
+  try {
+    const agyDir = path.join(tmpHome, '.gemini', 'antigravity');
+    const appDataDir = path.join(tmpHome, 'AppData', 'Roaming');
+    const agyAppData = path.join(appDataDir, 'Antigravity');
+    fs.mkdirSync(agyDir, { recursive: true });
+    fs.mkdirSync(agyAppData, { recursive: true });
+    fs.writeFileSync(path.join(agyDir, 'statusbar_autoinject.js'), '// mcp v1.4.18 code\n', 'utf8');
+    fs.writeFileSync(
+      path.join(agyAppData, 'app_storage.json'),
+      JSON.stringify({ hostTheme: 'dark-pro', 'agy-statusbar-code': 'old' }),
+      'utf8'
+    );
+    const lockFile = path.join(agyDir, 'statusbar_patch.lock');
+    fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, token: 'foreign-token', startedAt: new Date().toISOString() }), 'utf8');
+
+    const out = execFileSync(
+      process.execPath,
+      [
+        '-e',
+        `const p = require(${JSON.stringify(patcherPath)});
+         if (typeof p.releaseLock === 'function') p.releaseLock();
+         const lockSurvived = require('fs').existsSync(${JSON.stringify(lockFile)});
+         const synced1 = typeof p.syncAppStorageCode === 'function' ? p.syncAppStorageCode() : false;
+         const synced2 = typeof p.syncAppStorageCode === 'function' ? p.syncAppStorageCode() : true;
+         console.log(JSON.stringify({ lockSurvived, synced1, synced2 }));`,
+      ],
+      {
+        env: {
+          ...process.env,
+          USERPROFILE: tmpHome,
+          HOME: tmpHome,
+          APPDATA: appDataDir,
+          LOCALAPPDATA: path.join(tmpHome, 'AppData', 'Local'),
+        },
+        encoding: 'utf8',
+      }
+    );
+    const parsedOut = JSON.parse(out.trim());
+    assert.equal(parsedOut.lockSurvived, true, 'D-0026: releaseLock() must NOT delete another live process lock');
+    assert.equal(parsedOut.synced1, true, 'D-0026: syncAppStorageCode() updates when code differs');
+    assert.equal(parsedOut.synced2, false, 'D-0026: syncAppStorageCode() no-ops when code matches');
+    const updatedStorage = JSON.parse(fs.readFileSync(path.join(agyAppData, 'app_storage.json'), 'utf8'));
+    assert.equal(updatedStorage.hostTheme, 'dark-pro', 'D-0026: syncAppStorageCode() preserves concurrent host keys');
+  } finally {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
   }
 });
