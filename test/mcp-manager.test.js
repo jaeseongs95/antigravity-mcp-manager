@@ -3079,7 +3079,6 @@ test('D-0033 & D-0034: isRemoteHost blocks substring domain spoofing and Trusted
       createPolicy(name, rules) {
         if (name === 'agy-mcp-manager') {
           return {
-            createHTML: (h) => rules.createHTML(h),
             createScript: (c) => ({ [TRUSTED_SCRIPT_BRAND]: true, code: rules.createScript(c) }),
             createScriptURL: (u) => ({ [TRUSTED_SCRIPT_URL_BRAND]: true, url: rules.createScriptURL(u) }),
           };
@@ -3598,13 +3597,27 @@ test('Round-2 audit reopen (D-0022, D-0026, D-0032, D-0034): cross-polluted Trus
   };
   hostWin.document = hostDoc;
 
+  let capturedRound2Rules = null;
+  hostWin.trustedTypes = {
+    createPolicy(name, rules) {
+      capturedRound2Rules = rules;
+      return {
+        name,
+        createHTML: typeof rules.createHTML === 'function' ? (s) => ({ __ttHtml: String(rules.createHTML(s)) }) : undefined,
+        createScript: typeof rules.createScript === 'function' ? (s) => ({ __ttScript: String(rules.createScript(s)) }) : undefined,
+        createScriptURL: typeof rules.createScriptURL === 'function' ? (u) => ({ __ttUrl: String(rules.createScriptURL(u)) }) : undefined,
+      };
+    },
+  };
+
   const ctrl = mountMcpManager({ window: hostWin, document: hostDoc });
   await new Promise((r) => setTimeout(r, 45));
 
+  assert.ok(capturedRound2Rules, 'D-0034: own strict TrustedTypes policy must be created instead of trusting pre-polluted global');
   assert.equal(
-    typeof hostWin.__agyTrustedTypesPolicy?.createHTML,
-    'function',
-    'D-0034: getOrCreateTrustedTypesPolicy must replace partial __agyTrustedTypesPolicy with a complete policy containing createHTML/createScript/createScriptURL'
+    typeof capturedRound2Rules.createHTML,
+    'undefined',
+    'D-0034: TrustedTypes policy must NOT expose a passthrough createHTML callback'
   );
   assert.ok(
     ifr1._bodyChildren.some((el) => el.id === 'root') && ifr2._bodyChildren.some((el) => el.id === 'root'),
@@ -3801,4 +3814,244 @@ test('Round-2 audit reopen (D-0022, D-0026, D-0032, D-0034): cross-polluted Trus
   } finally {
     fs.rmSync(raceHome, { recursive: true, force: true });
   }
+});
+
+test('MCP-TC-036 Round-3 audit reopen (D-0022, D-0034): strict allowlist TrustedTypes policy, https/origin validation on iframe promotion, continuous __agySuppressAutoIframeLoad until mainScript.onload, and policy global cleanup', async () => {
+  // 1) D-0034: Strict TrustedTypes policy must omit createHTML and reject arbitrary scripts, non-HTTPS schemes, untrusted hosts, and forged blobs
+  let capturedRules = null;
+  const inlineStatusCode = 'window.agyStatusBar = { version: "v32" };';
+  const strictHostWin = {
+    location: { protocol: 'https:', hostname: 'antigravity.google.com', origin: 'https://antigravity.google.com', href: 'https://antigravity.google.com/' },
+    trustedTypes: {
+      createPolicy(name, rules) {
+        capturedRules = rules;
+        return {
+          name,
+          createScript: (c) => ({ __brand: 'script', val: rules.createScript(c) }),
+          createScriptURL: (u) => ({ __brand: 'url', val: rules.createScriptURL(u) }),
+        };
+      },
+    },
+  };
+  strictHostWin.parent = strictHostWin;
+  const strictHostDoc = {
+    head: {
+      appendChild(el) {
+        if (el.text && el.text.__brand === 'script') {
+          strictHostWin.agyStatusBar = { version: 'v32' };
+        }
+        return el;
+      },
+    },
+    createElement(tag) {
+      return { tagName: tag.toUpperCase() };
+    },
+    querySelector: () => null,
+  };
+  await ensureRemoteCompanionScripts(strictHostWin, strictHostDoc, {
+    async fetchHostInstalledPluginInfo() {
+      return {
+        resolved: true,
+        hasStatusbar: true,
+        hasMcpManager: true,
+        hasKoTranslator: false,
+        statusbarBlock: inlineStatusCode,
+      };
+    },
+  });
+  assert.ok(capturedRules, 'D-0034: companion loader must register plugin-scoped TrustedTypes policy');
+  assert.equal(typeof capturedRules.createHTML, 'undefined', 'D-0034: createHTML must NOT exist on TrustedTypes policy');
+  assert.throws(() => capturedRules.createScript('evil()'), TypeError, 'D-0034: unapproved inline code must throw TypeError');
+  assert.throws(() => capturedRules.createScript(inlineStatusCode), TypeError, 'D-0034: replayed one-shot inline code must throw TypeError');
+  assert.throws(() => capturedRules.createScriptURL('javascript:alert(1)'), TypeError, 'D-0034: javascript: URL must throw TypeError');
+  assert.throws(() => capturedRules.createScriptURL('http://www.gstatic.com/antigravity/web/2.32.1/main.js'), TypeError, 'D-0034: plaintext http: URL must throw TypeError');
+  assert.throws(() => capturedRules.createScriptURL('https://evil.example/pwn.js'), TypeError, 'D-0034: untrusted external domain must throw TypeError');
+  assert.throws(() => capturedRules.createScriptURL('blob:https://antigravity.google.com/forged'), TypeError, 'D-0034: forged blob: URL must throw TypeError');
+  assert.equal(
+    capturedRules.createScriptURL('https://www.gstatic.com/antigravity/web/2.32.1/prism_bundle.js'),
+    'https://www.gstatic.com/antigravity/web/2.32.1/prism_bundle.js',
+    'D-0034: allowlisted official CDN bundle URL must be accepted'
+  );
+  assert.equal(
+    capturedRules.createScriptURL('https://raw.githubusercontent.com/jaeseongs95/antigravity-statusbar/main/dist/statusbar_autoinject.js?t=99'),
+    'https://raw.githubusercontent.com/jaeseongs95/antigravity-statusbar/main/dist/statusbar_autoinject.js?t=99',
+    'D-0034: allowlisted official companion URL must be accepted'
+  );
+
+  // 2) D-0034 & D-0022: Reject http:// and untrusted https://evil.example in promoteCrossOriginRemoteIframe,
+  // AND hold rcInst.__agySuppressAutoIframeLoad === true continuously until mainScript.onload fires!
+  function GuardedRemoteControl() {}
+  let nativeOnIframeLoadCount = 0;
+  GuardedRemoteControl.prototype.onIframeLoad = function () {
+    nativeOnIframeLoadCount += 1;
+    return 'native-loaded';
+  };
+  GuardedRemoteControl.prototype.proxyCommand = async () => ({ payload: new TextEncoder().encode('{}') });
+
+  function buildIframeFixture(initialSrc, hostWinRef) {
+    let isBlank = false;
+    let attrSrc = initialSrc;
+    const headAppended = [];
+    const loadHandlers = [];
+    const cWin = {
+      navigator: { userAgent: 'Windows' },
+      history: { replaceState() {} },
+      addEventListener() {},
+      removeEventListener() {},
+      parent: hostWinRef,
+    };
+    const cDoc = {
+      documentElement: { setAttribute() {} },
+      head: {
+        firstChild: null,
+        removeChild() {},
+        appendChild(el) { headAppended.push(el); return el; },
+      },
+      body: {
+        firstChild: null,
+        removeChild() {},
+        appendChild(el) { return el; },
+      },
+      createElement(tag) {
+        return {
+          nodeType: 1,
+          tagName: String(tag).toUpperCase(),
+          style: {},
+          attrs: {},
+          setAttribute(k, v) { this.attrs[k] = String(v); },
+          getAttribute(k) { return this.attrs[k] ?? null; },
+          appendChild() {},
+        };
+      },
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    };
+    cWin.document = cDoc;
+    return {
+      nodeType: 1,
+      tagName: 'IFRAME',
+      src: attrSrc,
+      _headAppended: headAppended,
+      _fireBlankLoad() {
+        for (const fn of [...loadHandlers]) fn();
+      },
+      get contentWindow() {
+        if (!isBlank) throw new Error('Cross-origin');
+        return cWin;
+      },
+      get contentDocument() {
+        if (!isBlank) throw new Error('Cross-origin');
+        return cDoc;
+      },
+      getAttribute(k) { return k === 'src' ? attrSrc : null; },
+      setAttribute(k, v) {
+        if (k === 'src') {
+          attrSrc = String(v);
+          if (v === 'about:blank') isBlank = true;
+        }
+      },
+      removeAttribute() {},
+      addEventListener(ev, fn) { if (ev === 'load') loadHandlers.push(fn); },
+      removeEventListener() {},
+    };
+  }
+
+  const rcInst = new GuardedRemoteControl();
+  const win2 = {
+    location: { protocol: 'https:', hostname: 'antigravity.google.com', origin: 'https://antigravity.google.com', href: 'https://antigravity.google.com/' },
+    __APP_CONFIG__: { csrfToken: 'tok-r3' },
+    __agyRemoteControlInstance: rcInst,
+    __agyTrustedTypesPolicy: { legacy: true },
+    __agyTrustedHtmlPolicy: { legacy: true },
+    addEventListener() {},
+    removeEventListener() {},
+    setTimeout,
+    clearTimeout,
+    MutationObserver: class { observe() {} disconnect() {} },
+  };
+  win2.parent = win2;
+
+  const httpIframe = buildIframeFixture('http://antigravity.static.usercontent.goog/web/2.32.1/?iframe=true', win2);
+  const evilIframe = buildIframeFixture('https://evil.example/web/2.32.1/?iframe=true', win2);
+  const validIframe = buildIframeFixture('https://antigravity.static.usercontent.goog/web/2.32.1/?iframe=true', win2);
+  const allIframes = [httpIframe, evilIframe, validIframe];
+  const gaRc2 = {
+    nodeType: 1,
+    tagName: 'GA-REMOTE-CONTROL',
+    querySelector: (s) => (s === 'iframe' ? validIframe : null),
+    querySelectorAll: (s) => (s === 'iframe' ? allIframes : []),
+  };
+  const doc2 = {
+    readyState: 'complete',
+    head: { children: [], appendChild(el) { this.children.push(el); } },
+    body: {
+      nodeType: 1,
+      tagName: 'BODY',
+      children: [gaRc2],
+      appendChild() {},
+      querySelector: (s) => (s === 'ga-remote-control' ? gaRc2 : (s === 'ga-remote-control iframe' ? validIframe : null)),
+      querySelectorAll: (s) => (s === 'ga-remote-control iframe' ? allIframes : []),
+    },
+    createElement(tag) {
+      return {
+        nodeType: 1,
+        tagName: String(tag).toUpperCase(),
+        style: {},
+        attrs: {},
+        setAttribute(k, v) { this.attrs[k] = String(v); },
+        getAttribute(k) { return this.attrs[k] ?? null; },
+        removeAttribute(k) { delete this.attrs[k]; },
+        appendChild() {},
+        remove() {},
+        querySelector: () => null,
+        querySelectorAll: () => [],
+      };
+    },
+    getElementById: () => null,
+    querySelector: (s) => (s === 'ga-remote-control' ? gaRc2 : (s === 'ga-remote-control iframe' ? validIframe : null)),
+    querySelectorAll: (s) => (s === 'ga-remote-control iframe' ? allIframes : []),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  win2.document = doc2;
+
+  const ctrl2 = mountMcpManager({ window: win2, document: doc2 });
+  await new Promise((r) => setTimeout(r, 25));
+  validIframe._fireBlankLoad();
+
+  assert.equal(httpIframe.__agyMcpPromoted, undefined, 'D-0034: plaintext http:// iframe must NOT be promoted');
+  assert.equal(evilIframe.__agyMcpPromoted, undefined, 'D-0034: untrusted https://evil.example iframe must NOT be promoted');
+  assert.equal(evilIframe._headAppended.length, 0, 'D-0034: zero scripts may be loaded from untrusted external origin');
+
+  const mainScriptEl = validIframe._headAppended.find((el) => String(el.src || '').endsWith('/main.js'));
+  assert.ok(mainScriptEl, 'D-0022: valid official iframe must append main.js');
+  // CRITICAL D-0022 assertion: BEFORE mainScript.onload fires, suppression MUST still be active!
+  assert.equal(
+    rcInst.__agySuppressAutoIframeLoad,
+    true,
+    'D-0022: __agySuppressAutoIframeLoad must remain true after about:blank & onBlankLoad while mainScript is still loading'
+  );
+  await GuardedRemoteControl.prototype.onIframeLoad.call(rcInst);
+  assert.equal(
+    nativeOnIframeLoadCount,
+    0,
+    'D-0022: delayed native onIframeLoad before mainScript.onload must be suppressed so MessagePort is not prematurely consumed'
+  );
+
+  // Now fire mainScript.onload -> suppression must release and native onIframeLoad must run once
+  mainScriptEl.onload();
+  assert.equal(rcInst.__agySuppressAutoIframeLoad, false, 'D-0022: __agySuppressAutoIframeLoad must clear once mainScript.onload fires');
+  assert.equal(nativeOnIframeLoadCount, 1, 'D-0022: native onIframeLoad must run once after main.js boots');
+
+  ctrl2.destroy();
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(win2, '__agyTrustedTypesPolicy'),
+    false,
+    'D-0022: destroy() must delete residual window.__agyTrustedTypesPolicy when companion is inactive'
+  );
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(win2, '__agyTrustedHtmlPolicy'),
+    false,
+    'D-0022: destroy() must delete residual window.__agyTrustedHtmlPolicy when companion is inactive'
+  );
 });

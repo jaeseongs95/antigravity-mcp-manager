@@ -23,51 +23,147 @@ function escAttr(str) {
     .replace(/>/g, '&gt;');
 }
 
-function isCompleteTrustedTypesPolicy(p) {
-  return Boolean(
-    p &&
-      typeof p.createHTML === 'function' &&
-      typeof p.createScript === 'function' &&
-      typeof p.createScriptURL === 'function'
-  );
-}
+const OFFICIAL_COMPANION_URLS = Object.freeze([
+  'https://raw.githubusercontent.com/jaeseongs95/antigravity-statusbar/main/dist/statusbar_autoinject.js',
+  'https://raw.githubusercontent.com/jaeseongs95/antigravity-mcp-manager/main/dist/mcp_manager_autoinject.js',
+  'https://raw.githubusercontent.com/jaeseongs95/antigravity-ko-translator/main/plugins/ko-thought-translator/scripts/ko_thought_autoinject.js',
+]);
 
-function getOrCreateTrustedTypesPolicy(win, requiredMethod) {
-  if (!win) return null;
-  const existingCandidates = [win.__agyTrustedTypesPolicy, win.__agyTrustedHtmlPolicy].filter(Boolean);
-  for (const cand of existingCandidates) {
-    if (isCompleteTrustedTypesPolicy(cand)) {
+const strictPolicyControllers = typeof WeakMap === 'function' ? new WeakMap() : null;
+
+function isAllowedMcpScriptUrl(rawUrl, resolvedHostCfg) {
+  let parsed;
+  try {
+    parsed = new URL(String(rawUrl));
+  } catch (_e) {
+    return false;
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.pathname.includes('..')) {
+    return false;
+  }
+  const candidateUrls = [
+    ...OFFICIAL_COMPANION_URLS,
+    ...Object.values(resolvedHostCfg?.companionScripts || {}),
+  ];
+  for (const cand of candidateUrls) {
+    if (!cand) continue;
+    try {
+      const cu = new URL(String(cand));
+      if (cu.protocol === 'https:' && parsed.origin === cu.origin && parsed.pathname === cu.pathname) {
+        return true;
+      }
+    } catch (_e2) {}
+  }
+  if (/\/(?:prism_bundle|main)\.js$/.test(parsed.pathname)) {
+    const cdnBase = String(resolvedHostCfg?.cdnOrigin || 'https://www.gstatic.com/antigravity').replace(/\/+$/, '');
+    try {
+      const cdnUrl = new URL(cdnBase);
+      if (
+        cdnUrl.protocol === 'https:' &&
+        parsed.origin === cdnUrl.origin &&
+        (cdnUrl.pathname === '/' || parsed.pathname.startsWith(`${cdnUrl.pathname}/`))
+      ) {
+        return true;
+      }
+    } catch (_e3) {}
+    for (const staticOrig of resolvedHostCfg?.staticCdnOrigins || []) {
       try {
-        win.__agyTrustedTypesPolicy = cand;
-        win.__agyTrustedHtmlPolicy = cand;
-      } catch (_e) {}
-      return cand;
+        const su = new URL(String(staticOrig));
+        if (su.protocol === 'https:' && parsed.origin === su.origin) {
+          return true;
+        }
+      } catch (_e4) {}
+    }
+    if (resolvedHostCfg?.isRemoteHost?.(parsed.hostname)) {
+      return true;
     }
   }
+  return false;
+}
+
+function getOrCreateTrustedTypesPolicy(win, resolvedHostCfg) {
+  if (!win || typeof win !== 'object') return null;
+  if (strictPolicyControllers && strictPolicyControllers.has(win)) {
+    const existing = strictPolicyControllers.get(win);
+    existing.updateHostConfig(resolvedHostCfg);
+    return existing;
+  }
+  let latestHostCfg = resolvedHostCfg || resolveHostAdapterConfig(null, win);
+  const allowedInlineScripts = new Set();
+  const allowedBlobUrls = new Set();
+  let policy = null;
   if (win.trustedTypes && typeof win.trustedTypes.createPolicy === 'function') {
     for (const pName of ['agy-mcp-manager', 'agy-mcp-companion', 'agy-companion-' + Date.now()]) {
       try {
-        const policy = win.trustedTypes.createPolicy(pName, {
-          createHTML: (x) => String(x ?? ''),
-          createScript: (x) => String(x ?? ''),
-          createScriptURL: (x) => String(x ?? ''),
+        const created = win.trustedTypes.createPolicy(pName, {
+          createScript: (x) => {
+            const code = String(x ?? '');
+            if (allowedInlineScripts.has(code)) return code;
+            throw new TypeError('Untrusted inline script rejected by TrustedTypes policy');
+          },
+          createScriptURL: (x) => {
+            const raw = String(x ?? '');
+            if (raw.startsWith('blob:')) {
+              if (allowedBlobUrls.has(raw)) return raw;
+              throw new TypeError('Untrusted blob script URL rejected by TrustedTypes policy');
+            }
+            if (isAllowedMcpScriptUrl(raw, latestHostCfg)) {
+              return raw;
+            }
+            throw new TypeError('Untrusted script URL rejected by TrustedTypes policy');
+          },
         });
-        if (policy) {
-          try {
-            win.__agyTrustedTypesPolicy = policy;
-            win.__agyTrustedHtmlPolicy = policy;
-          } catch (_e) {}
-          return policy;
+        if (created) {
+          policy = created;
+          break;
         }
       } catch (_e) {}
     }
   }
-  if (requiredMethod) {
-    for (const cand of existingCandidates) {
-      if (typeof cand[requiredMethod] === 'function') return cand;
-    }
+  const ctrl = {
+    updateHostConfig(nextCfg) {
+      if (nextCfg) latestHostCfg = nextCfg;
+    },
+    allowInline(code) {
+      allowedInlineScripts.add(String(code ?? ''));
+    },
+    revokeInline(code) {
+      allowedInlineScripts.delete(String(code ?? ''));
+    },
+    allowBlob(blobUrl) {
+      allowedBlobUrls.add(String(blobUrl ?? ''));
+    },
+    revokeBlob(blobUrl) {
+      allowedBlobUrls.delete(String(blobUrl ?? ''));
+    },
+    toScript(code) {
+      if (policy && typeof policy.createScript === 'function') {
+        return policy.createScript(code);
+      }
+      if (!allowedInlineScripts.has(String(code ?? ''))) {
+        throw new TypeError('Untrusted inline script rejected');
+      }
+      return code;
+    },
+    toScriptURL(rawUrl) {
+      if (policy && typeof policy.createScriptURL === 'function') {
+        return policy.createScriptURL(rawUrl);
+      }
+      const raw = String(rawUrl ?? '');
+      if (raw.startsWith('blob:')) {
+        if (allowedBlobUrls.has(raw)) return raw;
+        throw new TypeError('Untrusted blob script URL rejected');
+      }
+      if (isAllowedMcpScriptUrl(raw, latestHostCfg)) {
+        return raw;
+      }
+      throw new TypeError('Untrusted script URL rejected');
+    },
+  };
+  if (policy && strictPolicyControllers) {
+    strictPolicyControllers.set(win, ctrl);
   }
-  return null;
+  return ctrl;
 }
 
 function extractServerNameFromRow(row) {
@@ -225,13 +321,13 @@ function ensureRemoteCompanionScripts(win, doc, bridge, hostConfig) {
       return nonceEl ? nonceEl.nonce || nonceEl.getAttribute?.('nonce') || '' : '';
     };
 
-    const appendScriptSrcAsync = (rawUrl, policy, onDoneCleanup) =>
+    const appendScriptSrcAsync = (rawUrl, policyCtrl, onDoneCleanup) =>
       new Promise((resolve) => {
         try {
           const s = doc.createElement('script');
           const nonce = getNonce();
           if (nonce) s.nonce = nonce;
-          s.src = policy && typeof policy.createScriptURL === 'function' ? policy.createScriptURL(rawUrl) : rawUrl;
+          s.src = policyCtrl ? policyCtrl.toScriptURL(rawUrl) : rawUrl;
           if (typeof s.addEventListener !== 'function') {
             doc.head.appendChild(s);
             if (typeof onDoneCleanup === 'function') onDoneCleanup();
@@ -274,15 +370,20 @@ function ensureRemoteCompanionScripts(win, doc, bridge, hostConfig) {
         }
       });
 
-    const injectCompanionCodeOrUrl = async (code, url, policy, checkLoaded) => {
+    const injectCompanionCodeOrUrl = async (code, url, policyCtrl, checkLoaded) => {
       const isLoaded = typeof checkLoaded === 'function' ? checkLoaded : () => false;
       if (code && doc.head) {
         try {
           const s = doc.createElement('script');
           const nonce = getNonce();
           if (nonce) s.nonce = nonce;
-          s.text = policy && typeof policy.createScript === 'function' ? policy.createScript(code) : code;
-          doc.head.appendChild(s);
+          policyCtrl?.allowInline(code);
+          try {
+            s.text = policyCtrl ? policyCtrl.toScript(code) : code;
+            doc.head.appendChild(s);
+          } finally {
+            policyCtrl?.revokeInline(code);
+          }
           if (isLoaded() || typeof s.addEventListener !== 'function') {
             return true;
           }
@@ -293,14 +394,16 @@ function ensureRemoteCompanionScripts(win, doc, bridge, hostConfig) {
           const UrlApi = win.URL || (typeof URL !== 'undefined' ? URL : null);
           if (BlobCtor && UrlApi && typeof UrlApi.createObjectURL === 'function') {
             const blobUrl = UrlApi.createObjectURL(new BlobCtor([code], { type: 'text/javascript' }));
+            policyCtrl?.allowBlob(blobUrl);
             const cleanupBlob = () => {
+              policyCtrl?.revokeBlob(blobUrl);
               try {
                 if (typeof UrlApi.revokeObjectURL === 'function') {
                   UrlApi.revokeObjectURL(blobUrl);
                 }
               } catch (_e3) {}
             };
-            const blobOk = await appendScriptSrcAsync(blobUrl, policy, cleanupBlob);
+            const blobOk = await appendScriptSrcAsync(blobUrl, policyCtrl, cleanupBlob);
             if (blobOk && (isLoaded() || typeof doc.createElement('script')?.addEventListener !== 'function')) {
               return true;
             }
@@ -311,7 +414,7 @@ function ensureRemoteCompanionScripts(win, doc, bridge, hostConfig) {
       if (url && doc.head) {
         const sep = url.includes('?') ? '&' : '?';
         const remoteUrl = `${url}${sep}t=${Date.now()}`;
-        const remoteOk = await appendScriptSrcAsync(remoteUrl, policy, null);
+        const remoteOk = await appendScriptSrcAsync(remoteUrl, policyCtrl, null);
         if (remoteOk) {
           return true;
         }
@@ -322,10 +425,10 @@ function ensureRemoteCompanionScripts(win, doc, bridge, hostConfig) {
     const injectRemoteOrHostFallback = async (flagKey, url, hostCodeFallback, checkLoaded) => {
       if (win[flagKey]) return false;
       win[flagKey] = true;
-      const policy = getOrCreateTrustedTypesPolicy(win);
+      const policyCtrl = getOrCreateTrustedTypesPolicy(win, resolvedHostCfg);
       try {
         if (hostCodeFallback) {
-          const ok = await injectCompanionCodeOrUrl(hostCodeFallback, url, policy, checkLoaded);
+          const ok = await injectCompanionCodeOrUrl(hostCodeFallback, url, policyCtrl, checkLoaded);
           if (!ok) win[flagKey] = false;
           return ok;
         }
@@ -334,13 +437,13 @@ function ensureRemoteCompanionScripts(win, doc, bridge, hostConfig) {
           const r = await Promise.resolve(win.fetch(`${url}${sep}t=${Date.now()}`)).catch(() => null);
           const code = r && r.ok && typeof r.text === 'function' ? await r.text() : '';
           if (code) {
-            const ok = await injectCompanionCodeOrUrl(code, url, policy, checkLoaded);
+            const ok = await injectCompanionCodeOrUrl(code, url, policyCtrl, checkLoaded);
             if (!ok) win[flagKey] = false;
             return ok;
           }
         }
         if (url) {
-          const ok = await injectCompanionCodeOrUrl('', url, policy, checkLoaded);
+          const ok = await injectCompanionCodeOrUrl('', url, policyCtrl, checkLoaded);
           if (!ok) win[flagKey] = false;
           return ok;
         }
@@ -422,17 +525,32 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady) {
   } catch (_e) {
     return false;
   }
-  if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') {
+  if (parsedUrl.protocol !== 'https:' || parsedUrl.username || parsedUrl.password) {
+    return false;
+  }
+
+  const resolvedHostCfg = resolveHostAdapterConfig(bridge?.hostConfig, win);
+  const trustedStaticHosts = new Set();
+  for (const staticOrig of resolvedHostCfg.staticCdnOrigins || []) {
+    try {
+      const su = new URL(String(staticOrig));
+      if (su.protocol === 'https:') {
+        trustedStaticHosts.add(su.hostname.toLowerCase());
+      }
+    } catch (_e) {}
+  }
+  const candidateHost = parsedUrl.hostname.toLowerCase();
+  if (!trustedStaticHosts.has(candidateHost) && !resolvedHostCfg.isRemoteHost(candidateHost)) {
     return false;
   }
 
   const basePath = parsedUrl.pathname.replace(/^\/antigravity/, '').replace(/\/+$/, '');
+  if (basePath.includes('..') || /["'<>\\\s]/.test(basePath)) {
+    return false;
+  }
   const verMatch = basePath.match(/\/web\/([^/]+)/);
   const appVersion = verMatch ? verMatch[1] : '2.29.0';
-  const cdnOrigin =
-    parsedUrl.hostname === 'antigravity.static.usercontent.goog' || parsedUrl.origin === win.location?.origin
-      ? 'https://www.gstatic.com/antigravity'
-      : parsedUrl.origin;
+  const cdnOrigin = String(resolvedHostCfg.cdnOrigin || 'https://www.gstatic.com/antigravity').replace(/\/+$/, '');
   const cdnBaseUrl = `${cdnOrigin}${basePath}`;
 
   iframe.__agyMcpPromoted = MCP_MANAGER_VERSION;
@@ -491,6 +609,10 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady) {
     }
     rcInst.__agyMcpActivePromotions.add(promotionToken);
   }
+  if (!(rcInst.__agyMcpSuppressingPromotions instanceof Set)) {
+    rcInst.__agyMcpSuppressingPromotions = new Set();
+  }
+  rcInst.__agyMcpSuppressingPromotions.add(promotionToken);
   rcInst.__agySuppressAutoIframeLoad = true;
   let childWindowRef = null;
   let hadOwnChildDec = false;
@@ -498,8 +620,28 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady) {
   let wrappedChildDec = null;
   let capturedLsByThisPromotion = null;
 
+  const endSuppressionForThisPromotion = () => {
+    if (rcInst.__agyMcpSuppressingPromotions instanceof Set) {
+      rcInst.__agyMcpSuppressingPromotions.delete(promotionToken);
+      if (rcInst.__agyMcpSuppressingPromotions.size === 0) {
+        delete rcInst.__agyMcpSuppressingPromotions;
+        rcInst.__agySuppressAutoIframeLoad = false;
+      } else {
+        rcInst.__agySuppressAutoIframeLoad = true;
+      }
+    } else {
+      rcInst.__agySuppressAutoIframeLoad = false;
+    }
+  };
+
   const releaseRcHooks = () => {
     try {
+      if (rcInst.__agyMcpSuppressingPromotions instanceof Set) {
+        rcInst.__agyMcpSuppressingPromotions.delete(promotionToken);
+        if (rcInst.__agyMcpSuppressingPromotions.size === 0) {
+          delete rcInst.__agyMcpSuppressingPromotions;
+        }
+      }
       if (rcProto && rcProto.__agyMcpActivePromotions instanceof Set) {
         rcProto.__agyMcpActivePromotions.delete(promotionToken);
         if (rcProto.__agyMcpActivePromotions.size === 0) {
@@ -527,6 +669,8 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady) {
         !(rcInst.__agyMcpActivePromotions?.size > 0)
       ) {
         delete rcInst.__agySuppressAutoIframeLoad;
+      } else {
+        rcInst.__agySuppressAutoIframeLoad = Boolean(rcInst.__agyMcpSuppressingPromotions?.size > 0);
       }
     } catch (_e) {}
   };
@@ -542,11 +686,16 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady) {
     try {
       const cw = iframe.contentWindow;
       const cd = iframe.contentDocument || cw?.document;
-      if (!cw || !cd) return;
+      if (!cw || !cd) {
+        endSuppressionForThisPromotion();
+        releaseRcHooks();
+        delete iframe.__agyMcpPromoted;
+        return;
+      }
       childWindowRef = cw;
 
       const nonce = doc.querySelector?.('script[nonce]')?.nonce || '';
-      const ttPolicy = getOrCreateTrustedTypesPolicy(win, 'createScriptURL');
+      const ttPolicyCtrl = getOrCreateTrustedTypesPolicy(win, resolvedHostCfg);
       const clearChildren = (parent) => {
         if (!parent) return;
         while (parent.firstChild && typeof parent.removeChild === 'function') {
@@ -712,18 +861,16 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady) {
       if (nonce) prismScript.nonce = nonce;
       prismScript.async = false;
       const prismUrl = `${cdnBaseUrl}/prism_bundle.js`;
-      prismScript.src =
-        ttPolicy && typeof ttPolicy.createScriptURL === 'function' ? ttPolicy.createScriptURL(prismUrl) : prismUrl;
+      prismScript.src = ttPolicyCtrl ? ttPolicyCtrl.toScriptURL(prismUrl) : prismUrl;
 
       const mainScript = cd.createElement('script');
       if (nonce) mainScript.nonce = nonce;
       mainScript.async = false;
       const mainUrl = `${cdnBaseUrl}/main.js`;
-      mainScript.src =
-        ttPolicy && typeof ttPolicy.createScriptURL === 'function' ? ttPolicy.createScriptURL(mainUrl) : mainUrl;
+      mainScript.src = ttPolicyCtrl ? ttPolicyCtrl.toScriptURL(mainUrl) : mainUrl;
 
       mainScript.onload = () => {
-        rcInst.__agySuppressAutoIframeLoad = false;
+        endSuppressionForThisPromotion();
         cw.__agyMainBooted = true;
         if (savedChildPath) rcInst.initialChildPath = savedChildPath;
         const origLoad =
@@ -747,7 +894,7 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady) {
         notifyReadyOnce();
       };
       mainScript.onerror = () => {
-        rcInst.__agySuppressAutoIframeLoad = false;
+        endSuppressionForThisPromotion();
         releaseRcHooks();
         delete iframe.__agyMcpPromoted;
       };
@@ -755,10 +902,13 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady) {
       if (headEl && typeof headEl.appendChild === 'function') {
         headEl.appendChild(prismScript);
         headEl.appendChild(mainScript);
+      } else {
+        endSuppressionForThisPromotion();
+        releaseRcHooks();
+        delete iframe.__agyMcpPromoted;
       }
-      rcInst.__agySuppressAutoIframeLoad = false;
     } catch (_e) {
-      rcInst.__agySuppressAutoIframeLoad = false;
+      endSuppressionForThisPromotion();
       releaseRcHooks();
       delete iframe.__agyMcpPromoted;
     }
@@ -790,8 +940,11 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady) {
       iframe.setAttribute?.('src', 'about:blank');
       iframe.src = 'about:blank';
     }
-  } finally {
-    rcInst.__agySuppressAutoIframeLoad = false;
+  } catch (_e) {
+    endSuppressionForThisPromotion();
+    releaseRcHooks();
+    delete iframe.__agyMcpPromoted;
+    return false;
   }
   try {
     Object.defineProperty(iframe, 'src', {
@@ -1680,11 +1833,16 @@ function mountMcpManager(env = {}) {
         } catch {}
       }
       try {
+        if (strictPolicyControllers) {
+          strictPolicyControllers.delete(win);
+        }
         delete win.__agyLoadingStatusBarCompanion;
         delete win.__agyLoadingKoThoughtCompanion;
         delete win.__agyProbingRcInstance;
         if (!win.agyStatusBar) {
           delete win.__agyCapturedLsClient;
+          delete win.__agyTrustedTypesPolicy;
+          delete win.__agyTrustedHtmlPolicy;
         }
       } catch {}
       if (win.agyMcpManager === controller) {
