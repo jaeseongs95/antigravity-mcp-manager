@@ -2335,8 +2335,8 @@ test('D-0021: scripts/build.js preserves multiline template literals across rege
   );
   assert.equal(readmeEn.includes('16/16'), false, 'D-0021: stale 16/16 test count must be updated in README.md');
   assert.equal(readmeKo.includes('16/16'), false, 'D-0021: stale 16/16 test count must be updated in README.ko.md');
-  assert.ok(readmeEn.includes('29/29'), 'D-0021: README.md must state 29/29 tests');
-  assert.ok(readmeKo.includes('29/29'), 'D-0021: README.ko.md must state 29/29 tests');
+  assert.ok(readmeEn.includes('30/30'), 'D-0021: README.md must state 30/30 tests');
+  assert.ok(readmeKo.includes('30/30'), 'D-0021: README.ko.md must state 30/30 tests');
 });
 
 test('D-0022: destroy() cleans up style tag, DOMContentLoaded listener, remote iframe load listener, hidden native settings pane, and Models tab highlight', () => {
@@ -2967,4 +2967,91 @@ test('D-0029, D-0030, D-0031: host-adapter-config decouples vendor RPC/domain co
   assert.equal(fs.existsSync(path.join(rootDir, 'docs', 'templates', 'README_TEMPLATE.md')), true, 'D-0031: README_TEMPLATE.md must exist');
   assert.equal(fs.existsSync(path.join(rootDir, 'docs', 'templates', 'RELEASE_NOTES_TEMPLATE.md')), true, 'D-0031: RELEASE_NOTES_TEMPLATE.md must exist');
   assert.equal(fs.existsSync(path.join(rootDir, 'docs', 'TEST_CASES.md')), true, 'D-0031: docs/TEST_CASES.md must exist');
+});
+
+test('D-0033 & D-0034: isRemoteHost blocks substring domain spoofing and TrustedTypes never registers global passthrough policies', async () => {
+  const { resolveHostAdapterConfig } = require('../src/host-adapter-config');
+
+  const defaultCfg = resolveHostAdapterConfig();
+  assert.equal(defaultCfg.isRemoteHost('antigravity.google.com'), true);
+  assert.equal(defaultCfg.isRemoteHost('r.antigravity.google.com'), true);
+  assert.equal(
+    defaultCfg.isRemoteHost('antigravity.google.com.evil.example'),
+    false,
+    'D-0033: suffix-appended attacker domain must NOT match remoteHostDomains'
+  );
+  assert.equal(
+    defaultCfg.isRemoteHost('evil-antigravity.google.com'),
+    false,
+    'D-0033: hyphen-prefixed attacker domain without dot boundary must NOT match remoteHostDomains'
+  );
+
+  const dottedCfg = resolveHostAdapterConfig({ remoteHostDomains: ['.remote.custom-mcp.example.', ''] });
+  assert.equal(dottedCfg.isRemoteHost('remote.custom-mcp.example'), true);
+  assert.equal(dottedCfg.isRemoteHost('sub.remote.custom-mcp.example'), true);
+  assert.equal(dottedCfg.isRemoteHost('remote.custom-mcp.example.evil.test'), false);
+  assert.equal(dottedCfg.isRemoteHost('fakeremote.custom-mcp.example'), false);
+
+  const forbiddenGlobalPolicies = new Set(['default', 'dompurify', 'angular', 'angular#unsafe-bypass', 'nextjs#bundler']);
+  const attemptedPolicies = [];
+  const appendedScripts = [];
+  let revokedBlobUrl = '';
+  const strictWin = {
+    location: { hostname: 'antigravity.google.com' },
+    URL: {
+      createObjectURL() {
+        return 'blob:https://antigravity.google.com/mcp-sb-fallback';
+      },
+      revokeObjectURL(u) {
+        revokedBlobUrl = u;
+      },
+    },
+    trustedTypes: {
+      createPolicy(name) {
+        attemptedPolicies.push(name);
+        throw new TypeError(`Disallowed policy ${name}`);
+      },
+    },
+  };
+  const strictDoc = {
+    head: {
+      appendChild(el) {
+        appendedScripts.push(el);
+        if (typeof el._onload === 'function') el._onload();
+      },
+    },
+    createElement(tag) {
+      return {
+        tagName: tag,
+        src: '',
+        set text(_v) {
+          throw new TypeError('TrustedScript required');
+        },
+        addEventListener(ev, fn) {
+          if (ev === 'load') this._onload = fn;
+        },
+      };
+    },
+    querySelector: () => null,
+  };
+  const strictBridge = {
+    async fetchHostInstalledPluginInfo() {
+      return {
+        resolved: true,
+        hasStatusbar: true,
+        hasMcpManager: true,
+        hasKoTranslator: false,
+        statusbarBlock: 'function mountStatusBar(){}',
+      };
+    },
+  };
+  const res = await ensureRemoteCompanionScripts(strictWin, strictDoc, strictBridge);
+  assert.deepEqual(res.loaded, ['antigravity-statusbar'], 'D-0034: Blob URL fallback must succeed when all TrustedTypes policies are disallowed');
+  assert.equal(appendedScripts.length, 1);
+  assert.equal(appendedScripts[0].src, 'blob:https://antigravity.google.com/mcp-sb-fallback');
+  assert.equal(revokedBlobUrl, 'blob:https://antigravity.google.com/mcp-sb-fallback');
+  for (const p of attemptedPolicies) {
+    assert.equal(forbiddenGlobalPolicies.has(p), false, `D-0034: getOrCreateTrustedTypesPolicy must never attempt global policy '${p}'`);
+    assert.ok(p.startsWith('agy-mcp-') || p.startsWith('agy-companion-'), `D-0034: policy '${p}' must be plugin-scoped`);
+  }
 });

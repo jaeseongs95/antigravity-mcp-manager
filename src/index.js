@@ -11,7 +11,7 @@ const {
   createModalController,
 } = require('./modal-ui');
 
-const MCP_MANAGER_VERSION = 'v1.4.16';
+const MCP_MANAGER_VERSION = 'v1.4.17';
 const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
 
 function escAttr(str) {
@@ -27,7 +27,7 @@ function getOrCreateTrustedTypesPolicy(win) {
   if (!win) return null;
   if (win.__agyTrustedTypesPolicy) return win.__agyTrustedTypesPolicy;
   if (win.trustedTypes && typeof win.trustedTypes.createPolicy === 'function') {
-    for (const pName of ['agy-mcp-manager', 'agy-companion-' + Date.now(), 'angular#unsafe-bypass', 'default', 'dompurify']) {
+    for (const pName of ['agy-mcp-manager', 'agy-mcp-companion', 'agy-companion-' + Date.now()]) {
       try {
         const policy = win.trustedTypes.createPolicy(pName, {
           createHTML: (x) => x,

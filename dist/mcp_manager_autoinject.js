@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Antigravity Custom MCP Server Manager
 // @namespace    https://github.com/jaeseongs95/antigravity-mcp-manager
-// @version      1.4.16
+// @version      1.4.17
 // @description  Add, edit, toggle, and manage custom Stdio & HTTP MCP servers (mcp_config.json) directly inside the Antigravity 2.0 native app and Remote Control web.
 // @match        https://antigravity.google.com/*
 // @match        https://*.antigravity.google.com/*
@@ -39,9 +39,15 @@
         /\/+$/,
         ''
       );
-      const remoteHostDomains = Array.isArray(src.remoteHostDomains) && src.remoteHostDomains.length > 0
-        ? src.remoteHostDomains.map((d) => String(d).trim().toLowerCase()).filter(Boolean)
-        : [...DEFAULT_HOST_ADAPTER_CONFIG.remoteHostDomains];
+      const normalizedCustomDomains = Array.isArray(src.remoteHostDomains)
+        ? src.remoteHostDomains
+            .map((d) => String(d).trim().toLowerCase().replace(/^\.+|\.+$/g, ''))
+            .filter(Boolean)
+        : [];
+      const remoteHostDomains =
+        normalizedCustomDomains.length > 0
+          ? normalizedCustomDomains
+          : [...DEFAULT_HOST_ADAPTER_CONFIG.remoteHostDomains];
       const staticCdnOrigins = Array.isArray(src.staticCdnOrigins) && src.staticCdnOrigins.length > 0
         ? src.staticCdnOrigins.map((o) => String(o).trim()).filter(Boolean)
         : [...DEFAULT_HOST_ADAPTER_CONFIG.staticCdnOrigins];
@@ -60,9 +66,9 @@
           return `${rpcServicePrefix}/${clean}`;
         },
         isRemoteHost(hostname) {
-          const host = String(hostname || '').trim().toLowerCase();
+          const host = String(hostname || '').trim().toLowerCase().replace(/\.+$/, '');
           if (!host) return false;
-          return remoteHostDomains.some((d) => host === d || host.endsWith(`.${d}`) || host.includes(d));
+          return remoteHostDomains.some((d) => host === d || host.endsWith(`.${d}`));
         },
       };
     }
@@ -5099,7 +5105,7 @@
       ensureModalStyles,
       createModalController,
     } = require('./modal-ui');
-    const MCP_MANAGER_VERSION = 'v1.4.16';
+    const MCP_MANAGER_VERSION = 'v1.4.17';
     const NATIVE_BTN_ATTR = 'data-agy-custom-mcp-btn';
     function escAttr(str) {
       return String(str ?? '')
@@ -5113,7 +5119,7 @@
       if (!win) return null;
       if (win.__agyTrustedTypesPolicy) return win.__agyTrustedTypesPolicy;
       if (win.trustedTypes && typeof win.trustedTypes.createPolicy === 'function') {
-        for (const pName of ['agy-mcp-manager', 'agy-companion-' + Date.now(), 'angular#unsafe-bypass', 'default', 'dompurify']) {
+        for (const pName of ['agy-mcp-manager', 'agy-mcp-companion', 'agy-companion-' + Date.now()]) {
           try {
             const policy = win.trustedTypes.createPolicy(pName, {
               createHTML: (x) => x,

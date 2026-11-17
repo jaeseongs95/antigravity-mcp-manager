@@ -1,4 +1,4 @@
-# Antigravity 커스텀 MCP 서버 매니저 (`antigravity-mcp-manager` `v1.4.16`)
+# Antigravity 커스텀 MCP 서버 매니저 (`antigravity-mcp-manager` `v1.4.17`)
 
 **언어 (Languages):** **[English (README.md)](./README.md)** | **한국어 ([README.ko.md](./README.ko.md))**
 
@@ -150,7 +150,7 @@ antigravity-mcp-manager/
 │   ├── TEST_CASES.md              # 사전 테스트케이스 명세서
 │   └── templates/                 # 한·영 공개 문서 및 통합 릴리즈노트 템플릿
 ├── test/
-│   └── mcp-manager.test.js        # 개별 모듈 단위 테스트 + 런타임 번들 통합·회귀 테스트 (29/29)
+│   └── mcp-manager.test.js        # 개별 모듈 단위 테스트 + 런타임 번들 통합·회귀 테스트 (30/30)
 ├── .gitattributes                 # 운영체제 간 LF 줄바꿈 정규화 설정
 ├── README.md                      # 기본 영문 안내 문서 (English)
 ├── README.ko.md                   # 국문 안내 문서 (Korean)
@@ -163,7 +163,7 @@ antigravity-mcp-manager/
 ## 검증 및 테스트
 
 ```bash
-# dist/mcp_manager_autoinject.js 빌드 및 29/29개 단위·통합 회귀 테스트 실행
+# dist/mcp_manager_autoinject.js 빌드 및 30/30개 단위·통합 회귀 테스트 실행
 npm test
 ```
 

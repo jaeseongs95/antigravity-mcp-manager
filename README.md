@@ -1,4 +1,4 @@
-# Antigravity Custom MCP Server Manager (`antigravity-mcp-manager` `v1.4.16`)
+# Antigravity Custom MCP Server Manager (`antigravity-mcp-manager` `v1.4.17`)
 
 **Languages:** **English ([README.md](./README.md))** | **[한국어 (README.ko.md)](./README.ko.md)**
 
@@ -150,7 +150,7 @@ antigravity-mcp-manager/
 │   ├── TEST_CASES.md              # Pre-test verification specification & test matrix
 │   └── templates/                 # Bilingual README & Release Notes templates
 ├── test/
-│   └── mcp-manager.test.js        # Module unit tests + runtime bundle integration & regression tests (29/29)
+│   └── mcp-manager.test.js        # Module unit tests + runtime bundle integration & regression tests (30/30)
 ├── .gitattributes                 # LF line-ending normalization across OS checkouts
 ├── README.md                      # Primary English documentation
 ├── README.ko.md                   # Korean documentation
@@ -163,7 +163,7 @@ antigravity-mcp-manager/
 ## Verification & Testing
 
 ```bash
-# Build dist/mcp_manager_autoinject.js and run all 29/29 unit + integration tests
+# Build dist/mcp_manager_autoinject.js and run all 30/30 unit + integration tests
 npm test
 ```
 
