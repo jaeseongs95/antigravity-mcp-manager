@@ -1469,6 +1469,17 @@ function createHostMcpBridge(opts = {}) {
         } catch {}
       }
       hookedPrototypes.clear();
+      try {
+        if (win) {
+          delete win.__agyProbingRcInstance;
+          if (!win.agyStatusBar) {
+            delete win.__agyCapturedLsClient;
+          }
+        }
+        if (doc) {
+          delete doc.__agyMcpLastDfsTs;
+        }
+      } catch {}
     },
   };
 }

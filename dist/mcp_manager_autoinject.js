@@ -2416,6 +2416,17 @@
             } catch {}
           }
           hookedPrototypes.clear();
+          try {
+            if (win) {
+              delete win.__agyProbingRcInstance;
+              if (!win.agyStatusBar) {
+                delete win.__agyCapturedLsClient;
+              }
+            }
+            if (doc) {
+              delete doc.__agyMcpLastDfsTs;
+            }
+          } catch {}
         },
       };
     }
@@ -5153,22 +5164,47 @@
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
     }
-    function getOrCreateTrustedTypesPolicy(win) {
+    function isCompleteTrustedTypesPolicy(p) {
+      return Boolean(
+        p &&
+          typeof p.createHTML === 'function' &&
+          typeof p.createScript === 'function' &&
+          typeof p.createScriptURL === 'function'
+      );
+    }
+    function getOrCreateTrustedTypesPolicy(win, requiredMethod) {
       if (!win) return null;
-      if (win.__agyTrustedTypesPolicy) return win.__agyTrustedTypesPolicy;
+      const existingCandidates = [win.__agyTrustedTypesPolicy, win.__agyTrustedHtmlPolicy].filter(Boolean);
+      for (const cand of existingCandidates) {
+        if (isCompleteTrustedTypesPolicy(cand)) {
+          try {
+            win.__agyTrustedTypesPolicy = cand;
+            win.__agyTrustedHtmlPolicy = cand;
+          } catch (_e) {}
+          return cand;
+        }
+      }
       if (win.trustedTypes && typeof win.trustedTypes.createPolicy === 'function') {
         for (const pName of ['agy-mcp-manager', 'agy-mcp-companion', 'agy-companion-' + Date.now()]) {
           try {
             const policy = win.trustedTypes.createPolicy(pName, {
-              createHTML: (x) => x,
-              createScript: (x) => x,
-              createScriptURL: (x) => x,
+              createHTML: (x) => String(x ?? ''),
+              createScript: (x) => String(x ?? ''),
+              createScriptURL: (x) => String(x ?? ''),
             });
             if (policy) {
-              win.__agyTrustedTypesPolicy = policy;
+              try {
+                win.__agyTrustedTypesPolicy = policy;
+                win.__agyTrustedHtmlPolicy = policy;
+              } catch (_e) {}
               return policy;
             }
           } catch (_e) {}
+        }
+      }
+      if (requiredMethod) {
+        for (const cand of existingCandidates) {
+          if (typeof cand[requiredMethod] === 'function') return cand;
         }
       }
       return null;
@@ -5539,23 +5575,73 @@
           ? Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src')
           : null;
       const spoofedSrc = `${win.location?.origin || 'https://antigravity.google.com'}${basePath}/?iframe=true`;
+      const promotionToken = {};
       const rcProto = Object.getPrototypeOf(rcInst);
       const hadOwnInstOnIframeLoad = Object.prototype.hasOwnProperty.call(rcInst, 'onIframeLoad');
-      if (rcProto && typeof rcProto.onIframeLoad === 'function' && !rcProto.__agyOrigOnIframeLoad) {
-        rcProto.__agyOrigOnIframeLoad = rcProto.onIframeLoad;
-        rcProto.onIframeLoad = function (...args) {
-          if (this.__agySuppressAutoIframeLoad) return Promise.resolve();
-          return rcProto.__agyOrigOnIframeLoad.apply(this, args);
-        };
+      if (rcProto && typeof rcProto.onIframeLoad === 'function') {
+        if (!rcProto.__agyOrigOnIframeLoad) {
+          rcProto.__agyOrigOnIframeLoad = rcProto.onIframeLoad;
+          rcProto.onIframeLoad = function (...args) {
+            if (this.__agySuppressAutoIframeLoad) return Promise.resolve();
+            return rcProto.__agyOrigOnIframeLoad.apply(this, args);
+          };
+        }
+        if (!(rcProto.__agyMcpActivePromotions instanceof Set)) {
+          rcProto.__agyMcpActivePromotions = new Set();
+        }
+        rcProto.__agyMcpActivePromotions.add(promotionToken);
       }
-      if (hadOwnInstOnIframeLoad && typeof rcInst.onIframeLoad === 'function' && !rcInst.__agyOrigOnIframeLoad) {
-        rcInst.__agyOrigOnIframeLoad = rcInst.onIframeLoad;
-        rcInst.onIframeLoad = function (...args) {
-          if (this.__agySuppressAutoIframeLoad) return Promise.resolve();
-          return this.__agyOrigOnIframeLoad.apply(this, args);
-        };
+      if (hadOwnInstOnIframeLoad && typeof rcInst.onIframeLoad === 'function') {
+        if (!rcInst.__agyOrigOnIframeLoad) {
+          rcInst.__agyOrigOnIframeLoad = rcInst.onIframeLoad;
+          rcInst.onIframeLoad = function (...args) {
+            if (this.__agySuppressAutoIframeLoad) return Promise.resolve();
+            return this.__agyOrigOnIframeLoad.apply(this, args);
+          };
+        }
+        if (!(rcInst.__agyMcpActivePromotions instanceof Set)) {
+          rcInst.__agyMcpActivePromotions = new Set();
+        }
+        rcInst.__agyMcpActivePromotions.add(promotionToken);
       }
       rcInst.__agySuppressAutoIframeLoad = true;
+      let childWindowRef = null;
+      let hadOwnChildDec = false;
+      let prevChildDec = undefined;
+      let wrappedChildDec = null;
+      let capturedLsByThisPromotion = null;
+      const releaseRcHooks = () => {
+        try {
+          if (rcProto && rcProto.__agyMcpActivePromotions instanceof Set) {
+            rcProto.__agyMcpActivePromotions.delete(promotionToken);
+            if (rcProto.__agyMcpActivePromotions.size === 0) {
+              if (rcProto.__agyOrigOnIframeLoad) {
+                rcProto.onIframeLoad = rcProto.__agyOrigOnIframeLoad;
+                delete rcProto.__agyOrigOnIframeLoad;
+              }
+              delete rcProto.__agyMcpActivePromotions;
+            }
+          }
+          if (rcInst.__agyMcpActivePromotions instanceof Set) {
+            rcInst.__agyMcpActivePromotions.delete(promotionToken);
+            if (rcInst.__agyMcpActivePromotions.size === 0) {
+              if (rcInst.__agyOrigOnIframeLoad) {
+                rcInst.onIframeLoad = rcInst.__agyOrigOnIframeLoad;
+                delete rcInst.__agyOrigOnIframeLoad;
+              } else if (!hadOwnInstOnIframeLoad) {
+                delete rcInst.onIframeLoad;
+              }
+              delete rcInst.__agyMcpActivePromotions;
+            }
+          }
+          if (
+            !(rcProto?.__agyMcpActivePromotions?.size > 0) &&
+            !(rcInst.__agyMcpActivePromotions?.size > 0)
+          ) {
+            delete rcInst.__agySuppressAutoIframeLoad;
+          }
+        } catch (_e) {}
+      };
       let readyNotified = false;
       const notifyReadyOnce = () => {
         if (readyNotified) return;
@@ -5567,29 +5653,81 @@
           const cw = iframe.contentWindow;
           const cd = iframe.contentDocument || cw?.document;
           if (!cw || !cd) return;
+          childWindowRef = cw;
           const nonce = doc.querySelector?.('script[nonce]')?.nonce || '';
-          const nonceAttr = nonce ? ` nonce="${escAttr(nonce)}"` : '';
-          const safeCdnBaseUrl = escAttr(cdnBaseUrl);
-          const ttPolicy = getOrCreateTrustedTypesPolicy(win);
-          const shellHtml =
-            `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">` +
-            `<link rel="stylesheet" href="${safeCdnBaseUrl}/jetbox.css"${nonceAttr}>` +
-            `<link rel="stylesheet" href="${safeCdnBaseUrl}/compiled_tailwind.css"${nonceAttr}>` +
-            `<style>html,body,#root{height:100%;height:100dvh;max-height:100dvh;margin:0;overflow:hidden;background-color:transparent;overscroll-behavior:none;-webkit-text-size-adjust:100%;}</style>` +
-            `</head><body><div id="root"></div></body></html>`;
-          cd.open();
-          cd.write(ttPolicy && typeof ttPolicy.createHTML === 'function' ? ttPolicy.createHTML(shellHtml) : shellHtml);
-          cd.close();
+          const ttPolicy = getOrCreateTrustedTypesPolicy(win, 'createScriptURL');
+          const clearChildren = (parent) => {
+            if (!parent) return;
+            while (parent.firstChild && typeof parent.removeChild === 'function') {
+              parent.removeChild(parent.firstChild);
+            }
+          };
+          if (cd.documentElement && typeof cd.documentElement.setAttribute === 'function') {
+            cd.documentElement.setAttribute('lang', 'en');
+          }
+          let headEl = cd.head;
+          if (!headEl && typeof cd.createElement === 'function') {
+            headEl = cd.createElement('head');
+            cd.documentElement?.appendChild?.(headEl);
+          }
+          let bodyEl = cd.body;
+          if (!bodyEl && typeof cd.createElement === 'function') {
+            bodyEl = cd.createElement('body');
+            cd.documentElement?.appendChild?.(bodyEl);
+          }
+          clearChildren(headEl);
+          clearChildren(bodyEl);
+          if (headEl && typeof headEl.appendChild === 'function' && typeof cd.createElement === 'function') {
+            const metaCharset = cd.createElement('meta');
+            metaCharset.setAttribute?.('charset', 'UTF-8');
+            headEl.appendChild(metaCharset);
+            const metaViewport = cd.createElement('meta');
+            metaViewport.setAttribute?.('name', 'viewport');
+            metaViewport.setAttribute?.(
+              'content',
+              'width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover'
+            );
+            headEl.appendChild(metaViewport);
+            for (const cssFile of ['jetbox.css', 'compiled_tailwind.css']) {
+              const linkEl = cd.createElement('link');
+              linkEl.setAttribute?.('rel', 'stylesheet');
+              const href = `${cdnBaseUrl}/${cssFile}`;
+              linkEl.setAttribute?.('href', href);
+              linkEl.href = href;
+              if (nonce) {
+                linkEl.nonce = nonce;
+                linkEl.setAttribute?.('nonce', nonce);
+              }
+              headEl.appendChild(linkEl);
+            }
+            const styleShell = cd.createElement('style');
+            if (nonce) {
+              styleShell.nonce = nonce;
+              styleShell.setAttribute?.('nonce', nonce);
+            }
+            styleShell.textContent =
+              'html,body,#root{height:100%;height:100dvh;max-height:100dvh;margin:0;overflow:hidden;background-color:transparent;overscroll-behavior:none;-webkit-text-size-adjust:100%;}';
+            headEl.appendChild(styleShell);
+          }
+          if (bodyEl && typeof bodyEl.appendChild === 'function' && typeof cd.createElement === 'function') {
+            const rootDiv = cd.createElement('div');
+            rootDiv.id = 'root';
+            rootDiv.setAttribute?.('id', 'root');
+            bodyEl.appendChild(rootDiv);
+          }
           try {
-            const prevDec = cw.__JETSKI_LS_CLIENT_DECORATOR__;
-            cw.__JETSKI_LS_CLIENT_DECORATOR__ = function (client) {
-              const decorated = typeof prevDec === 'function' ? prevDec(client) || client : client;
+            hadOwnChildDec = Object.prototype.hasOwnProperty.call(cw, '__JETSKI_LS_CLIENT_DECORATOR__');
+            prevChildDec = cw.__JETSKI_LS_CLIENT_DECORATOR__;
+            wrappedChildDec = function (client) {
+              const decorated = typeof prevChildDec === 'function' ? prevChildDec(client) || client : client;
               if (decorated && typeof decorated === 'object') {
+                capturedLsByThisPromotion = decorated;
                 cw.__agyCapturedLsClient = decorated;
                 win.__agyCapturedLsClient = decorated;
               }
               return decorated;
             };
+            cw.__JETSKI_LS_CLIENT_DECORATOR__ = wrappedChildDec;
           } catch (_e) {}
           try {
             cw.history?.replaceState?.(null, '', buildInitialIframeHistoryUrl());
@@ -5707,15 +5845,17 @@
           };
           mainScript.onerror = () => {
             rcInst.__agySuppressAutoIframeLoad = false;
+            releaseRcHooks();
             delete iframe.__agyMcpPromoted;
           };
-          if (cd.head) {
-            cd.head.appendChild(prismScript);
-            cd.head.appendChild(mainScript);
+          if (headEl && typeof headEl.appendChild === 'function') {
+            headEl.appendChild(prismScript);
+            headEl.appendChild(mainScript);
           }
           rcInst.__agySuppressAutoIframeLoad = false;
         } catch (_e) {
           rcInst.__agySuppressAutoIframeLoad = false;
+          releaseRcHooks();
           delete iframe.__agyMcpPromoted;
         }
       };
@@ -5761,18 +5901,24 @@
         });
       } catch (_e) {}
       iframe.__agyMcpRestorePromotion = () => {
+        releaseRcHooks();
         try {
-          if (rcProto && rcProto.__agyOrigOnIframeLoad) {
-            rcProto.onIframeLoad = rcProto.__agyOrigOnIframeLoad;
-            delete rcProto.__agyOrigOnIframeLoad;
+          let targetCw = childWindowRef;
+          if (!targetCw) {
+            try {
+              targetCw = iframe.contentWindow;
+            } catch (_e2) {}
           }
-          if (rcInst.__agyOrigOnIframeLoad) {
-            rcInst.onIframeLoad = rcInst.__agyOrigOnIframeLoad;
-            delete rcInst.__agyOrigOnIframeLoad;
-          } else if (!hadOwnInstOnIframeLoad) {
-            delete rcInst.onIframeLoad;
+          if (targetCw) {
+            if (wrappedChildDec && targetCw.__JETSKI_LS_CLIENT_DECORATOR__ === wrappedChildDec) {
+              if (hadOwnChildDec) targetCw.__JETSKI_LS_CLIENT_DECORATOR__ = prevChildDec;
+              else delete targetCw.__JETSKI_LS_CLIENT_DECORATOR__;
+            }
+            delete targetCw.__agyCapturedLsClient;
           }
-          delete rcInst.__agySuppressAutoIframeLoad;
+          if (capturedLsByThisPromotion && win.__agyCapturedLsClient === capturedLsByThisPromotion && !win.agyStatusBar) {
+            delete win.__agyCapturedLsClient;
+          }
         } catch (_e) {}
         try {
           if (typeof iframe.removeEventListener === 'function') {
@@ -6060,48 +6206,54 @@
       const boundRemoteIframes = new Set();
       function ensureRemoteIframeMounted() {
         if (destroyed) return false;
-        const iframe = doc.querySelector?.('ga-remote-control iframe');
-        if (!iframe) return false;
-        if (!iframe.__agyMcpLoadBound && typeof iframe.addEventListener === 'function') {
-          const onIframeLoad = () => {
-            if (destroyed) return;
-            ensureRemoteIframeMounted();
-          };
-          iframe.__agyMcpLoadBound = true;
-          iframe.__agyMcpLoadHandler = onIframeLoad;
-          boundRemoteIframes.add(iframe);
-          iframe.addEventListener('load', onIframeLoad);
-        }
-        try {
-          const iframeWin = iframe.contentWindow;
-          const iframeDoc = iframe.contentDocument || iframeWin?.document;
-          if (iframeWin && iframeDoc && iframeDoc.body) {
-            if (!iframeWin.agyMcpManager || iframeWin.agyMcpManager.version !== MCP_MANAGER_VERSION) {
-              mountMcpManager({
-                window: iframeWin,
-                document: iframeDoc,
-                bridge,
-                hostConfig: resolvedHostCfg,
-              });
-            } else if (typeof iframeWin.agyMcpManager.__rebindIfBodyReplaced === 'function') {
-              iframeWin.agyMcpManager.__rebindIfBodyReplaced();
+        const rawList = doc.querySelectorAll ? Array.from(doc.querySelectorAll('ga-remote-control iframe')) : [];
+        const singleFallback = rawList.length === 0 ? doc.querySelector?.('ga-remote-control iframe') : null;
+        const iframes = singleFallback ? [singleFallback] : rawList;
+        if (iframes.length === 0) return false;
+        let anyMounted = false;
+        for (const iframe of iframes) {
+          if (!iframe) continue;
+          if (!iframe.__agyMcpLoadBound && typeof iframe.addEventListener === 'function') {
+            const onIframeLoad = () => {
+              if (destroyed) return;
+              ensureRemoteIframeMounted();
+            };
+            iframe.__agyMcpLoadBound = true;
+            iframe.__agyMcpLoadHandler = onIframeLoad;
+            boundRemoteIframes.add(iframe);
+            iframe.addEventListener('load', onIframeLoad);
+          }
+          try {
+            const iframeWin = iframe.contentWindow;
+            const iframeDoc = iframe.contentDocument || iframeWin?.document;
+            if (iframeWin && iframeDoc && iframeDoc.body) {
+              if (!iframeWin.agyMcpManager || iframeWin.agyMcpManager.version !== MCP_MANAGER_VERSION) {
+                mountMcpManager({
+                  window: iframeWin,
+                  document: iframeDoc,
+                  bridge,
+                  hostConfig: resolvedHostCfg,
+                });
+              } else if (typeof iframeWin.agyMcpManager.__rebindIfBodyReplaced === 'function') {
+                iframeWin.agyMcpManager.__rebindIfBodyReplaced();
+              }
+              anyMounted = true;
             }
-            return true;
-          }
-        } catch (_e) {
-          if (
-            companionCheckDone &&
-            !hostHasKoTranslator &&
-            !win.__agyKoLocalizerActive &&
-            !win.__agyLoadingKoThoughtCompanion &&
-            !win.__agyKoThoughtCleanup
-          ) {
-            promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, () => {
-              if (!destroyed) ensureRemoteIframeMounted();
-            });
+          } catch (_e) {
+            if (
+              companionCheckDone &&
+              !hostHasKoTranslator &&
+              !win.__agyKoLocalizerActive &&
+              !win.__agyLoadingKoThoughtCompanion &&
+              !win.__agyKoThoughtCleanup
+            ) {
+              promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, () => {
+                if (!destroyed) ensureRemoteIframeMounted();
+              });
+            }
           }
         }
-        return false;
+        return anyMounted;
       }
       if (!isChildFrame) {
         ensureRemoteCompanionScripts(win, doc, bridge, resolvedHostCfg)
@@ -6533,6 +6685,14 @@
               bridge.dispose();
             } catch {}
           }
+          try {
+            delete win.__agyLoadingStatusBarCompanion;
+            delete win.__agyLoadingKoThoughtCompanion;
+            delete win.__agyProbingRcInstance;
+            if (!win.agyStatusBar) {
+              delete win.__agyCapturedLsClient;
+            }
+          } catch {}
           if (win.agyMcpManager === controller) {
             delete win.agyMcpManager;
             delete win.__agyMcpManagerActive;

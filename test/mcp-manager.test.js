@@ -3425,3 +3425,380 @@ test('D-0022, D-0026, D-0032 reopen: destroy() restores all host prototypes & if
     fs.rmSync(tmpHome, { recursive: true, force: true });
   }
 });
+
+test('Round-2 audit reopen (D-0022, D-0026, D-0032, D-0034): cross-polluted TrustedTypes guard & zero cd.write HTML sink, multi-iframe rcProto refcount & __agyCapturedLsClient cleanup, RFC6455 close/interleaving, and lock release race', async () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const net = require('node:net');
+  const crypto = require('node:crypto');
+  const os = require('node:os');
+  const { execFileSync } = require('node:child_process');
+  const patcherPath = path.join(__dirname, '..', 'scripts', 'ensure_statusbar_patch.js');
+  const { configureTargetViaCdp } = require(patcherPath);
+
+  // 1) D-0034 & D-0022: Cross-polluted partial __agyTrustedTypesPolicy (missing createHTML), strict cd.write throw, 2 concurrent remote iframes sharing HostRemoteControl.prototype, and __agyCapturedLsClient cleanup
+  function MultiRemoteControl() {}
+  const origOnIframeLoad = function () { return 'orig-on-iframe-load'; };
+  MultiRemoteControl.prototype.onIframeLoad = origOnIframeLoad;
+  MultiRemoteControl.prototype.proxyCommand = async () => ({ payload: new TextEncoder().encode('{}') });
+  MultiRemoteControl.prototype.iframeSrc = () => 'https://antigravity.static.usercontent.goog/web/2.32.1/?iframe=true';
+
+  const rcInstShared = new MultiRemoteControl();
+
+  function makePromotableIframe(idSuffix, hostWinRef) {
+    let isBlank = false;
+    let attrSrc = `https://antigravity.static.usercontent.goog/web/2.32.1/?iframe=true&slot=${idSuffix}`;
+    const headChildren = [];
+    const bodyChildren = [];
+    const cWin = {
+      navigator: { userAgent: 'Windows' },
+      history: { replaceState() {} },
+      addEventListener() {},
+      removeEventListener() {},
+      parent: hostWinRef,
+    };
+    const cDoc = {
+      documentElement: { setAttribute() {} },
+      head: {
+        firstChild: null,
+        removeChild() {},
+        appendChild(el) { headChildren.push(el); return el; },
+      },
+      body: {
+        firstChild: null,
+        removeChild() {},
+        appendChild(el) { bodyChildren.push(el); return el; },
+      },
+      open() {
+        throw new TypeError('D-0034: cd.open() / cd.write() TrustedHTML sink must NOT be used for static shell');
+      },
+      write() {
+        throw new TypeError("Failed to execute 'write' on 'Document': This document requires 'TrustedHTML' assignment.");
+      },
+      close() {},
+      createElement(tag) {
+        let _src = '';
+        return {
+          nodeType: 1,
+          tagName: String(tag).toUpperCase(),
+          style: {},
+          attrs: {},
+          setAttribute(k, v) { this.attrs[k] = String(v); },
+          getAttribute(k) { return this.attrs[k] ?? null; },
+          appendChild() {},
+          get src() { return _src; },
+          set src(v) {
+            if (String(tag).toLowerCase() === 'script' && (typeof v !== 'object' || !v.__ttUrl)) {
+              throw new TypeError("This document requires 'TrustedScriptURL' assignment.");
+            }
+            _src = typeof v === 'object' ? v.__ttUrl : String(v);
+          },
+        };
+      },
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    };
+    cWin.document = cDoc;
+
+    const ifr = {
+      nodeType: 1,
+      tagName: 'IFRAME',
+      src: attrSrc,
+      _headChildren: headChildren,
+      _bodyChildren: bodyChildren,
+      _cWin: cWin,
+      get contentWindow() {
+        if (!isBlank) throw new Error('Cross-origin');
+        return cWin;
+      },
+      get contentDocument() {
+        if (!isBlank) throw new Error('Cross-origin');
+        return cDoc;
+      },
+      getAttribute(k) { return k === 'src' ? attrSrc : null; },
+      setAttribute(k, v) {
+        if (k === 'src') {
+          attrSrc = String(v);
+          if (v === 'about:blank') isBlank = true;
+        }
+      },
+      removeAttribute() {},
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    return ifr;
+  }
+
+  const hostWin = {
+    location: { hostname: 'antigravity.google.com', origin: 'https://antigravity.google.com', href: 'https://antigravity.google.com/' },
+    __APP_CONFIG__: { csrfToken: 'tok-round2' },
+    __agyRemoteControlInstance: rcInstShared,
+    // Pre-polluted partial TrustedTypes policy (missing createHTML!) left by an external/older companion
+    __agyTrustedTypesPolicy: {
+      createScript: (s) => ({ __ttScript: String(s) }),
+      createScriptURL: (u) => ({ __ttUrl: String(u) }),
+    },
+    trustedTypes: {
+      createPolicy(name, rules) {
+        return {
+          name,
+          createHTML: typeof rules.createHTML === 'function' ? (s) => ({ __ttHtml: String(rules.createHTML(s)) }) : undefined,
+          createScript: typeof rules.createScript === 'function' ? (s) => ({ __ttScript: String(rules.createScript(s)) }) : undefined,
+          createScriptURL: typeof rules.createScriptURL === 'function' ? (u) => ({ __ttUrl: String(rules.createScriptURL(u)) }) : undefined,
+        };
+      },
+    },
+    addEventListener() {},
+    removeEventListener() {},
+    setTimeout,
+    clearTimeout,
+    MutationObserver: class { observe() {} disconnect() {} },
+  };
+  hostWin.parent = hostWin;
+
+  const ifr1 = makePromotableIframe('1', hostWin);
+  const ifr2 = makePromotableIframe('2', hostWin);
+  const gaRc = {
+    nodeType: 1,
+    tagName: 'GA-REMOTE-CONTROL',
+    querySelector: (s) => (s === 'iframe' ? ifr1 : null),
+    querySelectorAll: (s) => (s === 'iframe' ? [ifr1, ifr2] : []),
+  };
+  const hostDoc = {
+    readyState: 'complete',
+    head: { children: [], appendChild(el) { this.children.push(el); } },
+    body: {
+      nodeType: 1,
+      tagName: 'BODY',
+      children: [gaRc],
+      appendChild() {},
+      querySelector: (s) => (s === 'ga-remote-control' ? gaRc : (s === 'ga-remote-control iframe' ? ifr1 : null)),
+      querySelectorAll: (s) => (s === 'ga-remote-control iframe' ? [ifr1, ifr2] : []),
+    },
+    createElement(tag) {
+      return {
+        nodeType: 1,
+        tagName: String(tag).toUpperCase(),
+        style: {},
+        attrs: {},
+        setAttribute(k, v) { this.attrs[k] = String(v); },
+        getAttribute(k) { return this.attrs[k] ?? null; },
+        removeAttribute(k) { delete this.attrs[k]; },
+        appendChild() {},
+        remove() {},
+        querySelector: () => null,
+        querySelectorAll: () => [],
+      };
+    },
+    getElementById: () => null,
+    querySelector: (s) => (s === 'ga-remote-control' ? gaRc : (s === 'ga-remote-control iframe' ? ifr1 : null)),
+    querySelectorAll: (s) => (s === 'ga-remote-control iframe' ? [ifr1, ifr2] : []),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  hostWin.document = hostDoc;
+
+  const ctrl = mountMcpManager({ window: hostWin, document: hostDoc });
+  await new Promise((r) => setTimeout(r, 45));
+
+  assert.equal(
+    typeof hostWin.__agyTrustedTypesPolicy?.createHTML,
+    'function',
+    'D-0034: getOrCreateTrustedTypesPolicy must replace partial __agyTrustedTypesPolicy with a complete policy containing createHTML/createScript/createScriptURL'
+  );
+  assert.ok(
+    ifr1._bodyChildren.some((el) => el.id === 'root') && ifr2._bodyChildren.some((el) => el.id === 'root'),
+    'D-0034: both promoted iframes must mount #root via DOM createElement without calling cd.write()'
+  );
+
+  // Trigger LS client decorator inside ifr1 to populate hostWin.__agyCapturedLsClient
+  assert.equal(typeof ifr1._cWin.__JETSKI_LS_CLIENT_DECORATOR__, 'function');
+  const fakeDecoratedClient = { marker: 'ls-client-1' };
+  ifr1._cWin.__JETSKI_LS_CLIENT_DECORATOR__(fakeDecoratedClient);
+  assert.equal(hostWin.__agyCapturedLsClient, fakeDecoratedClient);
+
+  // D-0022 multi-iframe refcount: restoring ONLY ifr1 while ifr2 is still promoted must NOT clobber shared rcProto.onIframeLoad wrapper!
+  assert.equal(typeof ifr1.__agyMcpRestorePromotion, 'function');
+  ifr1.__agyMcpRestorePromotion();
+  rcInstShared.__agySuppressAutoIframeLoad = true;
+  const suppressedRes = await MultiRemoteControl.prototype.onIframeLoad.call(rcInstShared);
+  assert.equal(
+    suppressedRes,
+    undefined,
+    'D-0022: restoring 1 of 2 promoted iframes must keep shared MultiRemoteControl.prototype.onIframeLoad suppression wrapper alive for remaining active iframe'
+  );
+
+  // Full destroy() must restore MultiRemoteControl.prototype.onIframeLoad AND delete __agyCapturedLsClient
+  ctrl.destroy();
+  assert.equal(
+    MultiRemoteControl.prototype.onIframeLoad,
+    origOnIframeLoad,
+    'D-0022: destroy() must restore MultiRemoteControl.prototype.onIframeLoad after all promoted iframes are cleaned up'
+  );
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(hostWin, '__agyCapturedLsClient'),
+    false,
+    'D-0022: destroy() must clean up window.__agyCapturedLsClient'
+  );
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(ifr1._cWin, '__agyCapturedLsClient'),
+    false,
+    'D-0022: destroy() must clean up childWindow.__agyCapturedLsClient'
+  );
+
+  // 2) D-0032: Close frame delivery, fast reject on server 0x08 Close, and RFC6455 §5.4 fragmentation interleaving error
+  const savedGlobalWs = globalThis.WebSocket;
+  delete globalThis.WebSocket;
+  try {
+    let sawClientClose = false;
+    const srvClose = net.createServer((socket) => {
+      let upgraded = false;
+      let buf = Buffer.alloc(0);
+      socket.on('data', (chunk) => {
+        if (!upgraded) {
+          const txt = chunk.toString('utf8');
+          if (!txt.includes('\r\n\r\n')) return;
+          upgraded = true;
+          const key = txt.match(/Sec-WebSocket-Key:\s*([^\r\n]+)/i)[1].trim();
+          const acc = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+          socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${acc}\r\n\r\n`);
+          return;
+        }
+        buf = Buffer.concat([buf, chunk]);
+        while (buf.length >= 6) {
+          const op = buf[0] & 0x0f;
+          let len = buf[1] & 0x7f;
+          let off = 2;
+          if (len === 126) {
+            if (buf.length < 8) return;
+            len = buf.readUInt16BE(2);
+            off = 4;
+          }
+          if (buf.length < off + 4 + len) return;
+          buf = buf.subarray(off + 4 + len);
+          if (op === 0x01) {
+            const rep = Buffer.from(JSON.stringify({ id: 1, result: { result: { value: 'INJECTED_OK' } } }), 'utf8');
+            socket.write(Buffer.concat([Buffer.from([0x81, rep.length]), rep]));
+          } else if (op === 0x08) {
+            sawClientClose = true;
+            socket.end();
+          }
+        }
+      });
+    });
+    await new Promise((r) => srvClose.listen(0, '127.0.0.1', r));
+    try {
+      const val = await configureTargetViaCdp(`ws://127.0.0.1:${srvClose.address().port}/devtools/page/1`, 'void 0;', 'h1', 1500);
+      assert.equal(val, 'INJECTED_OK');
+      await new Promise((r) => setTimeout(r, 30));
+      assert.equal(sawClientClose, true, 'D-0032: client.close() must deliver Close frame before socket teardown');
+    } finally {
+      srvClose.close();
+    }
+
+    const srvServerClose = net.createServer((socket) => {
+      let upgraded = false;
+      let sentClose = false;
+      socket.on('data', (chunk) => {
+        if (!upgraded) {
+          const txt = chunk.toString('utf8');
+          if (!txt.includes('\r\n\r\n')) return;
+          upgraded = true;
+          const key = txt.match(/Sec-WebSocket-Key:\s*([^\r\n]+)/i)[1].trim();
+          const acc = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+          socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${acc}\r\n\r\n`);
+          return;
+        }
+        if (sentClose) return;
+        sentClose = true;
+        socket.end(Buffer.from([0x88, 0x00]));
+      });
+    });
+    await new Promise((r) => srvServerClose.listen(0, '127.0.0.1', r));
+    try {
+      const t0 = Date.now();
+      await assert.rejects(
+        () => configureTargetViaCdp(`ws://127.0.0.1:${srvServerClose.address().port}/devtools/page/1`, 'void 0;', 'h1', 2000),
+        /closed|WebSocket/i
+      );
+      assert.ok(Date.now() - t0 < 600, 'D-0032: server 0x08 Close must reject promptly without hanging until timeout');
+    } finally {
+      srvServerClose.close();
+    }
+
+    const srvInterleaved = net.createServer((socket) => {
+      let upgraded = false;
+      let sentBad = false;
+      socket.on('data', (chunk) => {
+        if (!upgraded) {
+          const txt = chunk.toString('utf8');
+          if (!txt.includes('\r\n\r\n')) return;
+          upgraded = true;
+          const key = txt.match(/Sec-WebSocket-Key:\s*([^\r\n]+)/i)[1].trim();
+          const acc = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+          socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${acc}\r\n\r\n`);
+          return;
+        }
+        if (sentBad) return;
+        sentBad = true;
+        const f1 = Buffer.from('{"id":1,', 'utf8');
+        const f2 = Buffer.from(JSON.stringify({ id: 1, result: { result: { value: 'INJECTED_OK' } } }), 'utf8');
+        socket.write(Buffer.concat([Buffer.from([0x01, f1.length]), f1]));
+        socket.write(Buffer.concat([Buffer.from([0x81, f2.length]), f2]));
+      });
+    });
+    await new Promise((r) => srvInterleaved.listen(0, '127.0.0.1', r));
+    try {
+      await assert.rejects(
+        () => configureTargetViaCdp(`ws://127.0.0.1:${srvInterleaved.address().port}/devtools/page/1`, 'void 0;', 'h1', 1500),
+        /fragment|interleaved|protocol|WebSocket/i
+      );
+    } finally {
+      srvInterleaved.close();
+    }
+  } finally {
+    if (savedGlobalWs !== undefined) globalThis.WebSocket = savedGlobalWs;
+  }
+
+  // 3) D-0026: Stale-lock takeover race inside releaseLock()
+  const raceHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-mcp-relrace-'));
+  try {
+    const agyDir = path.join(raceHome, '.gemini', 'antigravity');
+    const lockFile = path.join(agyDir, 'statusbar_patch.lock');
+    const raceOut = execFileSync(
+      process.execPath,
+      [
+        '-e',
+        `const fs = require('fs');
+         const p = require(${JSON.stringify(patcherPath)});
+         const acquired = p.acquireLock();
+         const origRead = fs.readFileSync.bind(fs);
+         let injected = false;
+         fs.readFileSync = function(targetPath, ...rest) {
+           const res = origRead(targetPath, ...rest);
+           if (!injected && String(targetPath) === ${JSON.stringify(lockFile)}) {
+             injected = true;
+             fs.writeFileSync(${JSON.stringify(lockFile)}, JSON.stringify({ pid: 99999, token: 'mcp-process-b-token', startedAt: new Date().toISOString() }), 'utf8');
+           }
+           return res;
+         };
+         const released = p.releaseLock();
+         fs.readFileSync = origRead;
+         const existsAfter = fs.existsSync(${JSON.stringify(lockFile)});
+         const survivingToken = existsAfter ? JSON.parse(origRead(${JSON.stringify(lockFile)}, 'utf8')).token : null;
+         console.log(JSON.stringify({ acquired, released, existsAfter, survivingToken }));`,
+      ],
+      {
+        env: { ...process.env, USERPROFILE: raceHome, HOME: raceHome },
+        encoding: 'utf8',
+      }
+    );
+    const raceRes = JSON.parse(raceOut.trim());
+    assert.equal(raceRes.acquired, true);
+    assert.equal(raceRes.released, false, 'D-0026: releaseLock must return false when lock token changed before rename');
+    assert.equal(raceRes.existsAfter, true, 'D-0026: Process B new lock must survive');
+    assert.equal(raceRes.survivingToken, 'mcp-process-b-token');
+  } finally {
+    fs.rmSync(raceHome, { recursive: true, force: true });
+  }
+});
