@@ -1013,6 +1013,7 @@ function createHostMcpBridge(opts = {}) {
       if (pluginNames.size > 0) {
         return {
           resolved: false,
+          geminiDir: null,
           geminiRoot: null,
           autoinjectUri: null,
           hasStatusbar: pluginNames.has('antigravity-statusbar'),
@@ -1021,6 +1022,10 @@ function createHostMcpBridge(opts = {}) {
           statusbarBlock: '',
           mcpBlock: '',
           koBlock: '',
+          statusbarCode: '',
+          mcpManagerCode: '',
+          koTranslatorCode: '',
+          hostBundleText: '',
         };
       }
       return null;
@@ -1049,6 +1054,7 @@ function createHostMcpBridge(opts = {}) {
       if (pluginNames.size > 0) {
         return {
           resolved: false,
+          geminiDir: geminiRoot,
           geminiRoot,
           autoinjectUri,
           hasStatusbar: pluginNames.has('antigravity-statusbar'),
@@ -1057,6 +1063,10 @@ function createHostMcpBridge(opts = {}) {
           statusbarBlock: '',
           mcpBlock: '',
           koBlock: '',
+          statusbarCode: '',
+          mcpManagerCode: '',
+          koTranslatorCode: '',
+          hostBundleText: '',
         };
       }
       return null;
@@ -1065,10 +1075,15 @@ function createHostMcpBridge(opts = {}) {
     const manifest = parseAutoinjectCompanionManifest(text, pluginNames);
     cachedHostPluginInfo = {
       resolved: true,
+      geminiDir: geminiRoot,
       geminiRoot,
       autoinjectUri,
       ...manifest,
+      hostBundleText: text,
     };
+    if (win) {
+      win.__agyHostInstalledPlugins = cachedHostPluginInfo;
+    }
     return cachedHostPluginInfo;
   }
 
@@ -1094,6 +1109,7 @@ function createHostMcpBridge(opts = {}) {
     setCustomConfigUriOverride,
     fetchHostInstalledPluginInfo,
     resolveRemoteControlInstance,
+    runtimeLease,
     toFsPathFromFileUri,
     hostConfig: resolvedHostConfig,
     dispose() {
@@ -1101,6 +1117,11 @@ function createHostMcpBridge(opts = {}) {
       try {
         if (win) {
           delete win.__agyProbingRcInstance;
+          if (!win.agyStatusBar && !win.__agyKoLocalizerActive && !win.__agyKoThoughtCleanup) {
+            if (win.__agyHostInstalledPlugins === cachedHostPluginInfo) {
+              delete win.__agyHostInstalledPlugins;
+            }
+          }
           if (!win.agyStatusBar) {
             delete win.__agyCapturedLsClient;
           }

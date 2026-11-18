@@ -8,8 +8,12 @@
  */
 
 const { resolveHostAdapterConfig } = require('./host-adapter-config');
-const { isAutoIframeLoadSuppressed } = require('./remote-runtime');
-const { getOrCreateTrustedTypesPolicy, getScriptNonce } = require('./companion-loader');
+const { acquireRemoteRuntimeLease } = require('./remote-runtime');
+const {
+  isAllowedMcpScriptUrl,
+  getOrCreateTrustedTypesPolicy,
+  getScriptNonce,
+} = require('./companion-loader');
 
 const FRAME_PROMOTION_STATE = Object.freeze({
   IDLE: 'idle',
@@ -40,20 +44,41 @@ function canAcquirePromotionOwnership(iframe, version) {
   return true;
 }
 
-function resolveRelativeToCdnUrl(rawValue, cdnBaseUrl) {
+function resolveRelativeToCdnUrl(rawValue, cdnBaseUrl, hostOrigin) {
   if (typeof rawValue !== 'string') return null;
   const trimmed = rawValue.trim();
   if (!trimmed) return null;
-  if (/^(?:https?:|blob:|data:|javascript:)/i.test(trimmed)) return null;
+  const cleanCdnBase = String(cdnBaseUrl || '').replace(/\/+$/, '');
+  if (!cleanCdnBase) return null;
+  const cdnRoot = cleanCdnBase.replace(/\/web\/[^/]+$/, '');
+
+  if (/^(?:blob:|data:|javascript:|mailto:|tel:|about:)/i.test(trimmed)) return null;
+  if (/^https?:\/\//i.test(trimmed)) {
+    if (hostOrigin) {
+      try {
+        const parsed = new URL(trimmed);
+        const hOrig = new URL(String(hostOrigin)).origin;
+        if (parsed.origin === hOrig && /^\/web\/[^/]+\//.test(parsed.pathname) && !parsed.pathname.includes('..')) {
+          return `${cdnRoot}${parsed.pathname}${parsed.search}${parsed.hash}`;
+        }
+      } catch {}
+    }
+    return null;
+  }
+  if (trimmed.startsWith('//') || trimmed.startsWith('#') || trimmed.startsWith('?') || trimmed.includes('..')) {
+    return null;
+  }
   if (trimmed.startsWith('/web/')) {
-    const cdnRoot = cdnBaseUrl.replace(/\/web\/[^/]+$/, '');
     return `${cdnRoot}${trimmed}`;
   }
   if (trimmed.startsWith('/')) {
-    return `${cdnBaseUrl}${trimmed}`;
+    return `${cleanCdnBase}${trimmed}`;
   }
   if (trimmed.startsWith('./')) {
-    return `${cdnBaseUrl}/${trimmed.slice(2)}`;
+    return `${cleanCdnBase}/${trimmed.slice(2)}`;
+  }
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) {
+    return `${cleanCdnBase}/${trimmed}`;
   }
   return null;
 }
@@ -90,9 +115,168 @@ function installChildHistoryAdapter(cw, originUrl) {
   }
 }
 
-function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, ttPolicyCtrl) {
+function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolvedHostCfg, ttPolicyCtrl) {
   if (!cd || typeof cd.createElement !== 'function' || cd.__agyAssetAdapted) return;
   cd.__agyAssetAdapted = true;
+
+  const rewriteAssetUrl = (raw) => resolveRelativeToCdnUrl(String(raw ?? ''), cdnBaseUrl, hostOrigin) || String(raw ?? '');
+  const toSafeScriptUrl = (raw) => {
+    const mapped = rewriteAssetUrl(raw);
+    if (!ttPolicyCtrl) return mapped;
+    try {
+      return ttPolicyCtrl.toScriptURL(mapped);
+    } catch {
+      return mapped;
+    }
+  };
+
+  const wrapProtoUrlProp = (ProtoObj, propName, isScriptProp) => {
+    if (!ProtoObj || ProtoObj.__agyPropAdapted) return null;
+    const desc = Object.getOwnPropertyDescriptor(ProtoObj, propName);
+    if (!desc || typeof desc.set !== 'function' || typeof desc.get !== 'function') return null;
+    try {
+      Object.defineProperty(ProtoObj, propName, {
+        configurable: true,
+        enumerable: desc.enumerable,
+        get() {
+          return desc.get.call(this);
+        },
+        set(val) {
+          if (nonce && (isScriptProp || propName === 'href') && !this.nonce) {
+            try {
+              this.nonce = nonce;
+            } catch {}
+          }
+          if (val && typeof val === 'object') {
+            desc.set.call(this, val);
+            return;
+          }
+          const nextVal = isScriptProp ? toSafeScriptUrl(val) : rewriteAssetUrl(val);
+          desc.set.call(this, nextVal);
+        },
+      });
+      Object.defineProperty(ProtoObj, '__agyPropAdapted', {
+        value: true,
+        configurable: true,
+      });
+      return desc;
+    } catch {
+      return desc;
+    }
+  };
+
+  const scriptSrcDesc = wrapProtoUrlProp(cw?.HTMLScriptElement?.prototype, 'src', true);
+  wrapProtoUrlProp(cw?.HTMLImageElement?.prototype, 'src', false);
+  wrapProtoUrlProp(cw?.HTMLSourceElement?.prototype, 'src', false);
+  wrapProtoUrlProp(cw?.HTMLLinkElement?.prototype, 'href', false);
+
+  if (cw?.Element?.prototype && typeof cw.Element.prototype.setAttribute === 'function' && !cw.Element.prototype.__agySetAttrAdapted) {
+    const origElemSetAttr = cw.Element.prototype.setAttribute;
+    try {
+      cw.Element.prototype.setAttribute = function (name, value) {
+        const attrLower = String(name || '').toLowerCase();
+        const tagUpper = String(this?.tagName || '').toUpperCase();
+        if (attrLower === 'src' && tagUpper === 'SCRIPT') {
+          if (nonce) {
+            try {
+              this.nonce = nonce;
+              origElemSetAttr.call(this, 'nonce', nonce);
+            } catch {}
+          }
+          if (value && typeof value === 'object') {
+            return origElemSetAttr.call(this, name, value);
+          }
+          const safeVal = toSafeScriptUrl(value);
+          if (scriptSrcDesc && typeof scriptSrcDesc.set === 'function') {
+            scriptSrcDesc.set.call(this, safeVal);
+            return undefined;
+          }
+          return origElemSetAttr.call(this, name, safeVal);
+        }
+        if (attrLower === 'src' && (tagUpper === 'IMG' || tagUpper === 'SOURCE' || tagUpper === 'AUDIO' || tagUpper === 'VIDEO')) {
+          return origElemSetAttr.call(this, name, value && typeof value === 'object' ? value : rewriteAssetUrl(value));
+        }
+        if (attrLower === 'href' && tagUpper === 'LINK') {
+          if (nonce) {
+            try {
+              this.nonce = nonce;
+              origElemSetAttr.call(this, 'nonce', nonce);
+            } catch {}
+          }
+          return origElemSetAttr.call(this, name, value && typeof value === 'object' ? value : rewriteAssetUrl(value));
+        }
+        return origElemSetAttr.call(this, name, value);
+      };
+      Object.defineProperty(cw.Element.prototype, '__agySetAttrAdapted', {
+        value: true,
+        configurable: true,
+      });
+    } catch {}
+  }
+
+  if (cw && typeof cw.Worker === 'function' && !cw.Worker.__agyWorkerAdapted) {
+    const OrigWorker = cw.Worker;
+    const AdaptedWorker = function (scriptURL, options) {
+      if (scriptURL && typeof scriptURL === 'object') {
+        return options !== undefined ? new OrigWorker(scriptURL, options) : new OrigWorker(scriptURL);
+      }
+      const rawStr = String(scriptURL ?? '').trim();
+      if (rawStr.startsWith('blob:')) {
+        if (hostOrigin && !rawStr.startsWith(`blob:${hostOrigin}/`)) {
+          throw new TypeError('Cross-origin blob Worker URL rejected');
+        }
+        let safeBlob = scriptURL;
+        if (ttPolicyCtrl) {
+          ttPolicyCtrl.allowBlob(rawStr);
+          safeBlob = ttPolicyCtrl.toScriptURL(rawStr);
+        }
+        return options !== undefined ? new OrigWorker(safeBlob, options) : new OrigWorker(safeBlob);
+      }
+      const resolvedUrl = resolveRelativeToCdnUrl(rawStr, cdnBaseUrl, hostOrigin) || rawStr;
+      if (!isAllowedMcpScriptUrl(resolvedUrl, resolvedHostCfg)) {
+        throw new TypeError('Untrusted Worker script URL rejected');
+      }
+      const BlobCtor = cw.Blob || (typeof Blob === 'function' ? Blob : null);
+      const UrlApi = cw.URL || (typeof URL !== 'undefined' ? URL : null);
+      if (BlobCtor && UrlApi && typeof UrlApi.createObjectURL === 'function') {
+        const bootCode =
+          options && options.type === 'module'
+            ? `import ${JSON.stringify(resolvedUrl)};\n`
+            : `importScripts(${JSON.stringify(resolvedUrl)});\n`;
+        const blobUrl = UrlApi.createObjectURL(new BlobCtor([bootCode], { type: 'text/javascript' }));
+        ttPolicyCtrl?.allowBlob(blobUrl);
+        const safeBlobUrl = ttPolicyCtrl ? ttPolicyCtrl.toScriptURL(blobUrl) : blobUrl;
+        let worker;
+        try {
+          worker = options !== undefined ? new OrigWorker(safeBlobUrl, options) : new OrigWorker(safeBlobUrl);
+        } catch (err) {
+          ttPolicyCtrl?.revokeBlob(blobUrl);
+          try { UrlApi.revokeObjectURL?.(blobUrl); } catch {}
+          throw err;
+        }
+        const setTimer = typeof cw.setTimeout === 'function' ? cw.setTimeout.bind(cw) : (typeof setTimeout === 'function' ? setTimeout : null);
+        if (setTimer) {
+          const t = setTimer(() => {
+            ttPolicyCtrl?.revokeBlob(blobUrl);
+            try { UrlApi.revokeObjectURL?.(blobUrl); } catch {}
+          }, 5000);
+          if (t && typeof t.unref === 'function') t.unref();
+        }
+        return worker;
+      }
+      const safeDirect = ttPolicyCtrl ? ttPolicyCtrl.toScriptURL(resolvedUrl) : resolvedUrl;
+      return options !== undefined ? new OrigWorker(safeDirect, options) : new OrigWorker(safeDirect);
+    };
+    AdaptedWorker.prototype = OrigWorker.prototype;
+    try {
+      Object.setPrototypeOf(AdaptedWorker, OrigWorker);
+    } catch {}
+    AdaptedWorker.__agyWorkerAdapted = true;
+    try {
+      cw.Worker = AdaptedWorker;
+    } catch {}
+  }
+
   const origCreateEl = cd.createElement.bind(cd);
   cd.createElement = function (tagName, options) {
     const el = options !== undefined ? origCreateEl(tagName, options) : origCreateEl(tagName);
@@ -103,29 +287,49 @@ function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, ttPolicyCtrl) {
         el.setAttribute?.('nonce', nonce);
       } catch {}
     }
-    if (el && lower === 'script' && ttPolicyCtrl) {
-      const protoDesc =
-        cw?.HTMLScriptElement?.prototype &&
-        Object.getOwnPropertyDescriptor(cw.HTMLScriptElement.prototype, 'src');
-      if (protoDesc && typeof protoDesc.set === 'function' && typeof protoDesc.get === 'function') {
+    const isNativeElem = Boolean(cw?.Element && el instanceof cw.Element);
+    if (el && !isNativeElem) {
+      if (typeof el.setAttribute === 'function' && !el.__agySyntheticSetAttrAdapted) {
+        const origElSetAttr = el.setAttribute.bind(el);
+        el.setAttribute = function (name, val) {
+          const attrL = String(name || '').toLowerCase();
+          if (attrL === 'src' && lower === 'script') {
+            if (nonce) origElSetAttr('nonce', nonce);
+            const safeVal = val && typeof val === 'object' ? val : toSafeScriptUrl(val);
+            el.src = safeVal;
+            return origElSetAttr(name, safeVal);
+          }
+          if (attrL === 'src' && (lower === 'img' || lower === 'source' || lower === 'audio' || lower === 'video')) {
+            const mapped = val && typeof val === 'object' ? val : rewriteAssetUrl(val);
+            el.src = mapped;
+            return origElSetAttr(name, mapped);
+          }
+          if (attrL === 'href' && lower === 'link') {
+            if (nonce) origElSetAttr('nonce', nonce);
+            const mapped = val && typeof val === 'object' ? val : rewriteAssetUrl(val);
+            el.href = mapped;
+            return origElSetAttr(name, mapped);
+          }
+          return origElSetAttr(name, val);
+        };
+        el.__agySyntheticSetAttrAdapted = true;
+      }
+      if (lower === 'script' || lower === 'img' || lower === 'source' || lower === 'link') {
+        const prop = lower === 'link' ? 'href' : 'src';
+        let innerVal = el[prop] || '';
         try {
-          Object.defineProperty(el, 'src', {
+          Object.defineProperty(el, prop, {
             configurable: true,
             enumerable: true,
             get() {
-              return protoDesc.get.call(this);
+              return innerVal;
             },
             set(val) {
               if (val && typeof val === 'object') {
-                protoDesc.set.call(this, val);
+                innerVal = val;
                 return;
               }
-              const mapped = resolveRelativeToCdnUrl(String(val ?? ''), cdnBaseUrl) || String(val ?? '');
-              let safeVal = mapped;
-              try {
-                safeVal = ttPolicyCtrl.toScriptURL(mapped);
-              } catch {}
-              protoDesc.set.call(this, safeVal);
+              innerVal = lower === 'script' ? toSafeScriptUrl(val) : rewriteAssetUrl(val);
             },
           });
         } catch {}
@@ -240,55 +444,24 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady, versi
     return subQuery ? `${fullPath}?${subQuery}&${baseQuery}` : `${fullPath}?${baseQuery}`;
   };
 
+  const IframeCtor = win?.HTMLIFrameElement || (typeof HTMLIFrameElement !== 'undefined' ? HTMLIFrameElement : null);
   const origSrcDesc =
-    typeof HTMLIFrameElement !== 'undefined'
-      ? Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src')
+    IframeCtor && iframe instanceof IframeCtor && IframeCtor.prototype
+      ? Object.getOwnPropertyDescriptor(IframeCtor.prototype, 'src')
       : null;
   const hostOrigin = win.location?.origin || 'https://antigravity.google.com';
   const canonicalFrameUrl = `${hostOrigin}${basePath}/${parsedUrl.search || '?iframe=true'}`;
 
-  const promotionToken = {};
-  const rcProto = Object.getPrototypeOf(rcInst);
-  const hadOwnInstOnIframeLoad = Object.prototype.hasOwnProperty.call(rcInst, 'onIframeLoad');
-  if (rcProto && typeof rcProto.onIframeLoad === 'function') {
-    if (!rcProto.__agyMcpOrigOnIframeLoad) {
-      const prevProtoOnLoad = rcProto.onIframeLoad;
-      const wrappedProtoOnLoad = function (...args) {
-        if (isAutoIframeLoadSuppressed(this)) return Promise.resolve();
-        return prevProtoOnLoad.apply(this, args);
-      };
-      rcProto.__agyMcpOrigOnIframeLoad = prevProtoOnLoad;
-      rcProto.__agyMcpWrappedOnIframeLoad = wrappedProtoOnLoad;
-      rcProto.onIframeLoad = wrappedProtoOnLoad;
-    }
-    if (!(rcProto.__agyMcpActivePromotions instanceof Set)) {
-      rcProto.__agyMcpActivePromotions = new Set();
-    }
-    rcProto.__agyMcpActivePromotions.add(promotionToken);
-  }
-  if (hadOwnInstOnIframeLoad && typeof rcInst.onIframeLoad === 'function') {
-    if (!rcInst.__agyMcpOrigOnIframeLoad) {
-      const prevInstOnLoad = rcInst.onIframeLoad;
-      const wrappedInstOnLoad = function (...args) {
-        if (isAutoIframeLoadSuppressed(this)) return Promise.resolve();
-        return prevInstOnLoad.apply(this, args);
-      };
-      rcInst.__agyMcpOrigOnIframeLoad = prevInstOnLoad;
-      rcInst.__agyMcpWrappedOnIframeLoad = wrappedInstOnLoad;
-      rcInst.onIframeLoad = wrappedInstOnLoad;
-    }
-    if (!(rcInst.__agyMcpActivePromotions instanceof Set)) {
-      rcInst.__agyMcpActivePromotions = new Set();
-    }
-    rcInst.__agyMcpActivePromotions.add(promotionToken);
-  }
-  if (!(rcInst.__agyMcpSuppressingPromotions instanceof Set)) {
-    rcInst.__agyMcpSuppressingPromotions = new Set();
-  }
-  rcInst.__agyMcpSuppressingPromotions.add(promotionToken);
+  const ownsRuntimeLease = !(bridge && bridge.runtimeLease && typeof bridge.runtimeLease.tapTarget === 'function');
+  const activeLease = ownsRuntimeLease
+    ? acquireRemoteRuntimeLease({ hostConfig: resolvedHostCfg, defaultWin: win })
+    : bridge.runtimeLease;
+  activeLease.tapTarget(win, rcInst);
+
   rcInst.__agySuppressAutoIframeLoadCount = (rcInst.__agySuppressAutoIframeLoadCount || 0) + 1;
   rcInst.__agySuppressAutoIframeLoad = true;
   let suppressionActiveForToken = true;
+  let leaseReleasedForToken = false;
 
   let childWindowRef = null;
   let hadOwnChildDec = false;
@@ -297,65 +470,27 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady, versi
   let capturedLsByThisPromotion = null;
 
   const endSuppressionForThisPromotion = () => {
-    if (suppressionActiveForToken) {
-      suppressionActiveForToken = false;
-      const nextCount = Math.max(0, (rcInst.__agySuppressAutoIframeLoadCount || 1) - 1);
-      if (nextCount === 0) {
-        delete rcInst.__agySuppressAutoIframeLoadCount;
-      } else {
-        rcInst.__agySuppressAutoIframeLoadCount = nextCount;
-      }
-    }
-    if (rcInst.__agyMcpSuppressingPromotions instanceof Set) {
-      rcInst.__agyMcpSuppressingPromotions.delete(promotionToken);
-      if (rcInst.__agyMcpSuppressingPromotions.size === 0) {
-        delete rcInst.__agyMcpSuppressingPromotions;
-        rcInst.__agySuppressAutoIframeLoad = Boolean(rcInst.__agySuppressAutoIframeLoadCount > 0);
-      } else {
-        rcInst.__agySuppressAutoIframeLoad = true;
-      }
+    if (!suppressionActiveForToken) return;
+    suppressionActiveForToken = false;
+    const nextCount = Math.max(0, (rcInst.__agySuppressAutoIframeLoadCount || 1) - 1);
+    if (nextCount === 0) {
+      delete rcInst.__agySuppressAutoIframeLoadCount;
+      rcInst.__agySuppressAutoIframeLoad = false;
     } else {
-      rcInst.__agySuppressAutoIframeLoad = Boolean(rcInst.__agySuppressAutoIframeLoadCount > 0);
+      rcInst.__agySuppressAutoIframeLoadCount = nextCount;
+      rcInst.__agySuppressAutoIframeLoad = true;
     }
   };
 
   const releaseRcHooks = () => {
     try {
       endSuppressionForThisPromotion();
-      if (rcProto && rcProto.__agyMcpActivePromotions instanceof Set) {
-        rcProto.__agyMcpActivePromotions.delete(promotionToken);
-        if (rcProto.__agyMcpActivePromotions.size === 0) {
-          if (rcProto.__agyMcpOrigOnIframeLoad && rcProto.onIframeLoad === rcProto.__agyMcpWrappedOnIframeLoad) {
-            rcProto.onIframeLoad = rcProto.__agyMcpOrigOnIframeLoad;
-          }
-          delete rcProto.__agyMcpOrigOnIframeLoad;
-          delete rcProto.__agyMcpWrappedOnIframeLoad;
-          delete rcProto.__agyMcpActivePromotions;
-        }
-      }
-      if (rcInst.__agyMcpActivePromotions instanceof Set) {
-        rcInst.__agyMcpActivePromotions.delete(promotionToken);
-        if (rcInst.__agyMcpActivePromotions.size === 0) {
-          if (rcInst.__agyMcpOrigOnIframeLoad && rcInst.onIframeLoad === rcInst.__agyMcpWrappedOnIframeLoad) {
-            rcInst.onIframeLoad = rcInst.__agyMcpOrigOnIframeLoad;
-          } else if (!hadOwnInstOnIframeLoad && rcInst.onIframeLoad === rcInst.__agyMcpWrappedOnIframeLoad) {
-            delete rcInst.onIframeLoad;
-          }
-          delete rcInst.__agyMcpOrigOnIframeLoad;
-          delete rcInst.__agyMcpWrappedOnIframeLoad;
-          delete rcInst.__agyMcpActivePromotions;
-        }
-      }
-      if (
-        !(rcProto?.__agyMcpActivePromotions?.size > 0) &&
-        !(rcInst.__agyMcpActivePromotions?.size > 0) &&
-        !(rcInst.__agySuppressAutoIframeLoadCount > 0)
-      ) {
+      if (!(rcInst.__agySuppressAutoIframeLoadCount > 0) && rcInst.__agySuppressAutoIframeLoad === false) {
         delete rcInst.__agySuppressAutoIframeLoad;
-      } else {
-        rcInst.__agySuppressAutoIframeLoad = Boolean(
-          rcInst.__agyMcpSuppressingPromotions?.size > 0 || rcInst.__agySuppressAutoIframeLoadCount > 0
-        );
+      }
+      if (ownsRuntimeLease && !leaseReleasedForToken) {
+        leaseReleasedForToken = true;
+        activeLease.release();
       }
     } catch {}
   };
@@ -465,7 +600,7 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady, versi
       clearChildren(bodyEl);
 
       installChildHistoryAdapter(cw, canonicalFrameUrl);
-      installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, ttPolicyCtrl);
+      installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolvedHostCfg, ttPolicyCtrl);
 
       if (headEl && typeof headEl.appendChild === 'function' && typeof cd.createElement === 'function') {
         const metaCharset = cd.createElement('meta');
@@ -638,15 +773,11 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady, versi
         endSuppressionForThisPromotion();
         cw.__agyMainBooted = true;
         if (savedChildPath) rcInst.initialChildPath = savedChildPath;
-        const origLoad =
-          rcInst.__agyMcpOrigOnIframeLoad ||
-          rcProto?.__agyMcpOrigOnIframeLoad ||
-          rcInst.onIframeLoad;
         let loadRet = null;
-        if (typeof origLoad === 'function' && !cw.__initialConfigReceived && !cw.__agyOnIframeLoadCalled) {
+        if (!cw.__initialConfigReceived && !cw.__agyOnIframeLoadCalled) {
           cw.__agyOnIframeLoadCalled = true;
           try {
-            loadRet = origLoad.call(rcInst);
+            loadRet = activeLease.invokeOriginalOnIframeLoad(rcInst);
           } catch {}
         }
         if (loadRet && typeof loadRet.then === 'function') {
@@ -706,22 +837,7 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady, versi
     iframe.__agyRemotePromotionState = FRAME_PROMOTION_STATE.IDLE;
     return false;
   }
-  try {
-    Object.defineProperty(iframe, 'src', {
-      configurable: true,
-      enumerable: true,
-      get: () => canonicalFrameUrl,
-      set: (v) => {
-        if (origSrcDesc && typeof origSrcDesc.set === 'function') {
-          origSrcDesc.set.call(iframe, v);
-        } else {
-          iframe.setAttribute?.('src', v);
-        }
-      },
-    });
-  } catch {}
-
-  iframe.__agyMcpRestorePromotion = () => {
+  const cleanupPromotedIframeState = () => {
     clearFallbackTimer();
     releaseRcHooks();
     try {
@@ -758,6 +874,26 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady, versi
     delete iframe.__agyMcpPromotionFailed;
     delete iframe.__agyMcpRestorePromotion;
   };
+
+  try {
+    Object.defineProperty(iframe, 'src', {
+      configurable: true,
+      enumerable: true,
+      get: () => canonicalFrameUrl,
+      set: (v) => {
+        rolledBack = true;
+        cleanupPromotedIframeState();
+        if (origSrcDesc && typeof origSrcDesc.set === 'function') {
+          origSrcDesc.set.call(iframe, v);
+        } else {
+          iframe.setAttribute?.('src', v);
+          iframe.src = v;
+        }
+      },
+    });
+  } catch {}
+
+  iframe.__agyMcpRestorePromotion = cleanupPromotedIframeState;
 
   const setTimer = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : (typeof setTimeout === 'function' ? setTimeout : null);
   const isNativeDomIframe = Boolean(win.HTMLIFrameElement && iframe instanceof win.HTMLIFrameElement);

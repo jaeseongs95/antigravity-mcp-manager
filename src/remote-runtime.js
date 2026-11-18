@@ -167,19 +167,29 @@ function parseAutoinjectCompanionManifest(bundleText, discoveredPluginNames) {
   const hasMcpMarker = (mcpSpan.start !== -1 && mcpSpan.end > mcpSpan.start) || (!isBaseStatusbar && mcpFuncRe.test(baseSegment));
   const hasKoMarker = koSpan.start !== -1 && koSpan.end > koSpan.start;
 
+  const statusbarBlock = isBaseStatusbar ? baseSegment : '';
+  const mcpBlock =
+    mcpSpan.start !== -1 && mcpSpan.end > mcpSpan.start ? text.slice(mcpSpan.start, mcpSpan.end).trim() : '';
+  const koBlock =
+    koSpan.start !== -1 && koSpan.end > koSpan.start ? text.slice(koSpan.start, koSpan.end).trim() : '';
+
   return {
     hasStatusbar: isBaseStatusbar || pluginNames.has('antigravity-statusbar'),
     hasMcpManager: hasMcpMarker || pluginNames.has('antigravity-mcp-manager'),
     hasKoTranslator: hasKoMarker || pluginNames.has('ko-thought-translator'),
-    statusbarBlock: isBaseStatusbar ? baseSegment : '',
-    mcpBlock: mcpSpan.start !== -1 && mcpSpan.end > mcpSpan.start ? text.slice(mcpSpan.start, mcpSpan.end).trim() : '',
-    koBlock: koSpan.start !== -1 && koSpan.end > koSpan.start ? text.slice(koSpan.start, koSpan.end).trim() : '',
+    statusbarBlock,
+    mcpBlock,
+    koBlock,
+    statusbarCode: statusbarBlock,
+    mcpManagerCode: mcpBlock,
+    koTranslatorCode: koBlock,
   };
 }
 
 function acquireRemoteRuntimeLease({ hostConfig, defaultWin }) {
   const resolvedHostConfig = resolveHostAdapterConfig(hostConfig, defaultWin);
   const hookedPrototypes = new Map();
+  const hookedInstances = new Map();
   let disposed = false;
 
   function tapPrototype(targetWin, proto) {
@@ -198,11 +208,11 @@ function acquireRemoteRuntimeLease({ hostConfig, defaultWin }) {
       if (typeof proto[mName] !== 'function') continue;
       const prevFn = proto[mName];
       const wrappedFn = function (ev) {
-        if (mName === 'onIframeLoad' && isAutoIframeLoadSuppressed(this)) {
-          return Promise.resolve();
-        }
         if (protoDisposed || disposed) {
           return prevFn.apply(this, arguments);
+        }
+        if (mName === 'onIframeLoad' && isAutoIframeLoadSuppressed(this)) {
+          return Promise.resolve();
         }
         if (currentTargetWin && this && !this.destroyed) {
           currentTargetWin.__agyRemoteControlInstance = this;
@@ -224,6 +234,9 @@ function acquireRemoteRuntimeLease({ hostConfig, defaultWin }) {
       setTargetWin(w) {
         if (w) currentTargetWin = w;
       },
+      getOriginal(mName) {
+        return wrappedMethods.get(mName)?.prevFn || null;
+      },
       release() {
         protoDisposed = true;
         for (const [mName, entry] of wrappedMethods.entries()) {
@@ -236,11 +249,64 @@ function acquireRemoteRuntimeLease({ hostConfig, defaultWin }) {
     });
   }
 
+  function tapInstanceOwnMethods(rcInst) {
+    if (!rcInst || typeof rcInst !== 'object' || disposed) return;
+    if (!Object.prototype.hasOwnProperty.call(rcInst, 'onIframeLoad')) return;
+    if (typeof rcInst.onIframeLoad !== 'function') return;
+    if (hookedInstances.has(rcInst)) return;
+
+    let instDisposed = false;
+    const prevOnLoad = rcInst.onIframeLoad;
+    const wrappedOnLoad = function () {
+      if (instDisposed || disposed) {
+        return prevOnLoad.apply(this, arguments);
+      }
+      if (isAutoIframeLoadSuppressed(this)) {
+        return Promise.resolve();
+      }
+      return prevOnLoad.apply(this, arguments);
+    };
+    rcInst.onIframeLoad = wrappedOnLoad;
+    hookedInstances.set(rcInst, {
+      prevOnLoad,
+      wrappedOnLoad,
+      release() {
+        instDisposed = true;
+        if (rcInst.onIframeLoad === wrappedOnLoad) {
+          rcInst.onIframeLoad = prevOnLoad;
+        }
+      },
+    });
+  }
+
+  function tapTarget(targetWin, rcInst) {
+    if (!rcInst || typeof rcInst !== 'object' || disposed) return;
+    tapPrototype(targetWin, Object.getPrototypeOf(rcInst));
+    tapInstanceOwnMethods(rcInst);
+  }
+
+  function invokeOriginalOnIframeLoad(rcInst) {
+    if (!rcInst || typeof rcInst !== 'object') return undefined;
+    const ownEntry = hookedInstances.get(rcInst);
+    if (ownEntry && typeof ownEntry.prevOnLoad === 'function') {
+      return ownEntry.prevOnLoad.call(rcInst);
+    }
+    const protoEntry = hookedPrototypes.get(Object.getPrototypeOf(rcInst));
+    const protoOrig = protoEntry?.getOriginal('onIframeLoad');
+    if (typeof protoOrig === 'function') {
+      return protoOrig.call(rcInst);
+    }
+    if (typeof rcInst.onIframeLoad === 'function') {
+      return rcInst.onIframeLoad.call(rcInst);
+    }
+    return undefined;
+  }
+
   function resolveRemoteControlInstance(w) {
     const targetWin = w || defaultWin;
     if (!targetWin || disposed) return null;
     if (targetWin.__agyRemoteControlInstance && !targetWin.__agyRemoteControlInstance.destroyed) {
-      tapPrototype(targetWin, Object.getPrototypeOf(targetWin.__agyRemoteControlInstance));
+      tapTarget(targetWin, targetWin.__agyRemoteControlInstance);
       return targetWin.__agyRemoteControlInstance;
     }
 
@@ -405,6 +471,12 @@ function acquireRemoteRuntimeLease({ hostConfig, defaultWin }) {
   function release() {
     if (disposed) return;
     disposed = true;
+    for (const [, rec] of hookedInstances.entries()) {
+      try {
+        rec.release();
+      } catch {}
+    }
+    hookedInstances.clear();
     for (const [, rec] of hookedPrototypes.entries()) {
       try {
         rec.release();
@@ -421,6 +493,8 @@ function acquireRemoteRuntimeLease({ hostConfig, defaultWin }) {
   return {
     resolvedHostConfig,
     tapPrototype,
+    tapTarget,
+    invokeOriginalOnIframeLoad,
     resolveRemoteControlInstance,
     release,
   };

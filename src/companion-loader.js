@@ -43,7 +43,7 @@ function isAllowedMcpScriptUrl(rawUrl, resolvedHostCfg) {
       }
     } catch {}
   }
-  if (/\.js$/i.test(parsed.pathname) && /\/web\/[^/]+\//.test(parsed.pathname)) {
+  if (/\.(?:m|c)?js$/i.test(parsed.pathname) && /\/web\/[^/]+\//.test(parsed.pathname)) {
     const cdnBase = String(resolvedHostCfg?.cdnOrigin || 'https://www.gstatic.com/antigravity').replace(/\/+$/, '');
     try {
       const cdnUrl = new URL(cdnBase);
@@ -80,8 +80,9 @@ function getOrCreateTrustedTypesPolicy(win, resolvedHostCfg) {
   let latestHostCfg = resolvedHostCfg || resolveHostAdapterConfig(null, win);
   const allowedInlineScripts = new Set();
   const allowedBlobUrls = new Set();
+  const ttSupported = Boolean(win.trustedTypes && typeof win.trustedTypes.createPolicy === 'function');
   let policy = null;
-  if (win.trustedTypes && typeof win.trustedTypes.createPolicy === 'function') {
+  if (ttSupported) {
     for (const pName of ['agy-mcp-manager', 'agy-mcp-companion', 'agy-companion-' + Date.now()]) {
       try {
         const created = win.trustedTypes.createPolicy(pName, {
@@ -130,6 +131,9 @@ function getOrCreateTrustedTypesPolicy(win, resolvedHostCfg) {
       if (policy && typeof policy.createScript === 'function') {
         return policy.createScript(code);
       }
+      if (ttSupported) {
+        throw new TypeError('TrustedTypes policy creation blocked by CSP');
+      }
       if (!allowedInlineScripts.has(String(code ?? ''))) {
         throw new TypeError('Untrusted inline script rejected');
       }
@@ -138,6 +142,9 @@ function getOrCreateTrustedTypesPolicy(win, resolvedHostCfg) {
     toScriptURL(rawUrl) {
       if (policy && typeof policy.createScriptURL === 'function') {
         return policy.createScriptURL(rawUrl);
+      }
+      if (ttSupported) {
+        throw new TypeError('TrustedTypes policy creation blocked by CSP');
       }
       const raw = String(rawUrl ?? '');
       if (raw.startsWith('blob:')) {
@@ -415,7 +422,7 @@ function ensureRemoteCompanionScripts(win, doc, bridge, hostConfig, onUpdate) {
           'statusbar',
           ['__agyLoadingStatusBarCompanion'],
           resolvedHostCfg.companionScripts.statusbarUrl,
-          info.statusbarBlock,
+          info.statusbarBlock || info.statusbarCode || '',
           () => Boolean(win.agyStatusBar)
         );
         if (ok) loaded.push('antigravity-statusbar');
@@ -425,7 +432,7 @@ function ensureRemoteCompanionScripts(win, doc, bridge, hostConfig, onUpdate) {
           'ko-thought-translator',
           ['__agyLoadingKoThoughtCompanion', '__agyLoadingKoTranslatorCompanion'],
           resolvedHostCfg.companionScripts.koTranslatorUrl,
-          info.koBlock,
+          info.koBlock || info.koTranslatorCode || '',
           () => Boolean(win.__agyKoLocalizerActive || win.__agyKoThoughtCleanup)
         );
         if (ok) loaded.push('ko-thought-translator');
