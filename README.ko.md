@@ -1,102 +1,69 @@
-# Antigravity 커스텀 MCP 서버 매니저 (`antigravity-mcp-manager` `v1.5.0`)
+# Antigravity 커스텀 MCP 서버 매니저 (`antigravity-mcp-manager` `v2.0.0`)
 
 **언어 (Languages):** **[English (README.md)](./README.md)** | **한국어 ([README.ko.md](./README.ko.md))**
 
-**Google Antigravity 2.0 네이티브 데스크톱 앱** 및 **원격 제어 웹(`https://antigravity.google.com/r/...`)**의 **`Settings(설정)` -> `MCP Servers(MCP 서버)` 탭**, **`Customizations(맞춤 설정)` -> `MCP Servers`** 화면, 그리고 **원격 호스트 상단 런처**에서 공식 카탈로그에 없는 **사용자 지정 MCP 서버**(원격 OAuth MCP 포털/서버 및 로컬 `Stdio` 명령 `npx`, `uvx`, `node`, `python`, `docker`, `deno`, `bun`, `pnpx`)를 앱 재시작 없이 즉시 추가·OAuth 인증·수정·삭제·토글할 수 있는 확장 도구입니다.
+**Google Antigravity 2.0 네이티브 데스크톱 앱** 및 **원격 제어 웹(`https://antigravity.google.com/r/...`)**에서 공식 카탈로그에 없는 **사용자 지정 MCP 서버**(HTTPS / 루프백 HTTP Streamable MCP 서버 및 `npx`, `uvx`, `node`, `python`, `docker`, `deno`, `bun`, `pnpx` 등 로컬 `Stdio` 프로세스)를 앱 재시작 없이 안전하게 추가·OAuth 인증·수정·삭제·토글할 수 있는 확장 도구입니다.
 
 ---
 
 ## 목차 (Table of Contents)
 
-1. [개요 및 핵심 기능](#개요-및-핵심-기능)
-2. [데스크톱 앱 설치 및 사용법 (로컬 PC)](#데스크톱-앱-설치-및-사용법-로컬-pc)
-3. [원격 제어 웹(Remote Control) 북마클릿 & 유저스크립트 안내](#원격-제어-웹remote-control-북마클릿--유저스크립트-안내)
+1. [개요 및 v2.0.0 아키텍처 핵심 변경점](#개요-및-v200-아키텍처-핵심-변경점)
+2. [데스크톱 앱 설치, 제거 및 ASAR 원복 안내](#데스크톱-앱-설치-제거-및-asar-원복-안내)
+3. [원격 제어 웹 북마클릿 & 유저스크립트 안내](#원격-제어-웹-북마클릿--유저스크립트-안내)
 4. [실행 위치 및 단축키 안내](#실행-위치-및-단축키-안내)
-5. [OAuth 및 커스텀 MCP 서버 등록 방법](#oauth-및-커스텀-mcp-서버-등록-방법)
-6. [호스트 설치 맞춤형 동반 플러그인 자동 로드](#호스트-설치-맞춤형-동반-플러그인-자동-로드)
-7. [저장소 구조](#저장소-구조)
-8. [검증 및 테스트](#검증-및-테스트)
+5. [보안 및 설정 무결성 보장](#보안-및-설정-무결성-보장)
+6. [저장소 구조](#저장소-구조)
+7. [검증 및 테스트](#검증-및-테스트)
 
 ---
 
-## 개요 및 핵심 기능
+## 개요 및 v2.0.0 아키텍처 핵심 변경점
 
-1. **네이티브 앱 & 원격 웹 `Settings(설정)` 좌측 사이드바 `"MCP Servers(MCP 서버)"` 탭 통합**
-   - `Settings(설정)` 모달 좌측 사이드바의 `"Models(모델)"` / `"한글 번역"` 탭 바로 아래에 **`"MCP Servers"` (`settings-nav-item-McpManager`)** 전용 탭을 추가합니다.
-   - 탭 클릭 시 설정창 내부에서 실시간 상태 알림 배너(`.agy-mcp-status-banner`), `⚡ 빠른 자동 추가(Quick Auto-Add)`, `+ 커스텀 MCP 서버 추가`, 서버별 `⚙️ 설정 수정`, `🔗 <서버이름> 연결 ↗`, 개별 도구(Tools) ON/OFF 토글, `{ } mcp_config.json 직접 편집`을 모두 바로 수행할 수 있습니다.
-2. **유한 상태 기계(FSM) 기반 원격 프레임 승격기 & 비파괴 외곽 런처 (`v1.5.0` 아키텍처 재설계)**
-   - 원격 제어 런타임 리스(`src/remote-runtime.js`), `TrustedTypes`/CSP 동반 로더(`src/companion-loader.js`), 교차 오리진 워크벤치 프레임 승격기(`src/remote-frame-promoter.js`), 네이티브 DOM 통합기(`src/native-dom-integrator.js`)를 단일 책임 모듈로 분리했습니다.
-   - 무인자 `cd.open(); cd.close();`(WHATWG HTML §8.4, `TrustedHTML` 싱크 호출 0회)와 자식 `History`·동적 청크 자산 어댑터를 통해 Antigravity `2.33.0+` TanStack Router의 `history.replaceState` `SecurityError`와 검은 화면 장애를 원천 방지합니다.
-   - 원격 제어 호스트 페이지 상단 우측에 하단 상태바(`.agy-ctx-statusbar`)와 분리된 **`MCP Servers` (`#agy-mcp-remote-launcher`)** 캡슐 런처를 제공하여, 모바일 터치 기기나 엄격한 CSP(`trusted-types`) 환경에서도 단축키나 `iframe` 승격 없이 원터치로 매니저를 열 수 있습니다.
-3. **OAuth 중심 사용자 지정 MCP 서버 등록 & 자동 `<서버이름> 연결 ↗` 모달**
-   - 원격 MCP 포털/서버 URL만 입력하면 안티그래비티 호스트(`language_server.exe`)의 RFC 9728 / RFC 8414 OAuth Discovery(`/.well-known/oauth-protected-resource` 및 `/.well-known/oauth-authorization-server`)를 통해 `authUrl`을 자동 감지하고 즉시 **`Connect <ServerName>` (`<서버이름> 연결`) 모달**을 띄웁니다.
-   - 브라우저 자동 콜백뿐 아니라 원격 환경에서 인가 코드(Authorization Code) 또는 콜백 URL 전체를 직접 붙여넣어 제출하는 수동 완료(`completeMcpOAuth(serverName, code)`)를 함께 지원합니다.
-4. **스마트 자동 파서 (`⚡ Quick Auto-Add`)**
-   - 원격 MCP URL 한 줄, `curl -H "Authorization: ..."` 명령어, `mcp_config.json` JSON 조각, 또는 로컬 `Stdio` 실행 명령어(`npx`, `uvx`, `node`, `python`, `docker`, `deno`, `bun`, `pnpx` 등 — URL 인자가 포함된 Stdio 명령 포함)를 붙여넣고 **`자동 추가 및 연결`** 또는 **`양식 자동 채우기`**를 누르면 형식을 자동으로 판별해 등록·프리필합니다.
-5. **호스트 `mcp_config.json` 무결성 보호 및 변경 직렬화**
-   - 기존 등록된 서버가 없는 초기 설치 환경에서도 React Fiber `selectedGeminiDir`, `GetLocalUserInfo`(`homeDirUri`), `GetCustomizationStates` 폴백으로 `~/.gemini/config/mcp_config.json` 경로를 정확히 탐색합니다.
-   - 파일 미존재(`ENOENT`)와 권한·RPC·구문 오류를 구분하여 읽기 실패 시 기존 설정 덮어쓰기를 차단하고, 연속적인 서버·도구 토글을 직렬화하여 변경 유실(Lost Update)을 방지합니다.
-6. **호스트 어댑터 설정 분리 (`src/host-adapter-config.js`)**
-   - RPC 서비스 접두사, 원격 도메인, 정적 CDN 오리진, 동반 스크립트 URL을 `resolveHostAdapterConfig`(`window.__AGY_HOST_ADAPTER_CONFIG__`)로 분리해 호스트 구성 변화에 유연하게 대응합니다.
-7. **영어(English) 기본 UI + `ko-thought-translator` 한글 번역 패치 자동 연동**
-   - 기본 UI는 영어로 제공되며, `ko-thought-translator` 한글 패치가 활성화되어 있으면 모든 버튼·모달·배너가 한국어로 자동 변환됩니다.
-8. **단독 설치(1개) 및 다중 설치(2~3개) 호환**
-   - 어휘 문맥 인식 주석 제거기를 갖춘 패처(`scripts/ensure_statusbar_patch.js`, `v2.26.x` – `v2.33.x+`)를 내장하여 `antigravity-mcp-manager` 단독 설치 시에도 데스크톱 앱과 원격 웹에서 독립적으로 동작하며, `antigravity-statusbar` 및 `ko-thought-translator`와 함께 설치된 환경에서도 충돌 없이 결합됩니다.
+- **육각형(Ports & Adapters) 아키텍처 전면 재설계 (`v2.0.0`)**:
+  - **`src/core/**` (호스트·DOM·타이머·벤더 전역 참조 0건)**: 순수 ECMAScript 도메인 서비스(`McpManagerService`), `Promise.all` 안전 FIFO `AsyncMutex`, UTF-16 고정 JSONC 스팬 편집기(`jsonc-codec.js`), 단일 정규 URL 및 보안 스키마 검증기, 순수 UTF-8 SHA-256, LIFO `DisposableStore`로 구성됩니다.
+  - **`src/ui/**` (벤더 중립 안전 UI)**: 선언형 안전 DOM 빌더(`h()`, `innerHTML`/`document.write` 0건), 주입형 폴백 초점 복귀를 지원하는 ARIA 포커스 트랩, 스크롤 위치 보존, 한국어 한글 IME 조합 보호(`isComposing` / `229`)를 제공합니다.
+  - **`src/adapters/antigravity/**` (호스트 어댑터 격리)**: 상한 제한 React Fiber 탐색기, 참조 카운트 기반 Angular 19 `RemoteControlComponent` 리스, Connect-JSON `proxyCommand` 전송기, 6-상태 원격 워크벤치 승격 FSM(`base-uri 'self'` 및 `require-trusted-types-for 'script'` 준수), WebIDL 표준 정합 CDN Worker 브릿지를 캡슐화합니다.
+- **다중 동반 플러그인 무간섭 공존**:
+  - 줄 시작 앵커 마커(`BEGIN_AGY_MCP_MANAGER_V1` .. `END_AGY_MCP_MANAGER_V1`), `PASSIVE_ATTACHED` 수동 결합, `.agy-ctx-statusbar` 외부의 독립 런처(`#agy-mcp-remote-launcher`)로 `antigravity-statusbar` 및 `ko-thought-translator`와 충돌 없이 공존합니다.
 
 ---
 
-## 데스크톱 앱 설치 및 사용법 (로컬 PC)
+## 데스크톱 앱 설치, 제거 및 ASAR 원복 안내
 
 ```bash
 git clone https://github.com/jaeseongs95/antigravity-mcp-manager.git
 cd antigravity-mcp-manager
 
-# 1. 단위·통합 및 실브라우저 헤드리스 크롬 E2E 테스트 실행 (36/36 통과)
+# 1. 런타임 + 자립형 패처 번들 빌드 및 11개 계층별 단위·통합·실브라우저 Chromium E2E 스위트 실행
 npm test
 
-# 2. dist/mcp_manager_autoinject.js 빌드, ~/.gemini/antigravity 설치, app.asar 패치 및 CDP 즉시 주입
+# 2. ~/.gemini/antigravity 설치, V5 ASAR 패치(asar_v5_backup.json 기록) 및 실시간 CDP 반영
 npm run install-mcp-manager
 
-# 3. ASAR 패치 및 실시간 CDP 주입 상태 확인
+# 3. 비변이 패치 및 동반 플러그인 상태 점검
 npm run status
+
+# 4. MCP 매니저 제거 (동반 플러그인 잔존 시 공유 ASAR 패치 보존, 단독 설치 시 app.asar 완전 원복)
+npm run uninstall-mcp-manager
+
+# 5. 전용 ASAR 바이너리 원복 (동반 파일 삭제 없이 originalAsarSha256 및 patchedHeaderSha256 3중 검증 후 원복)
+npm run restore-asar
 ```
+
+> **구버전(`v1.5.0`) 백업 유의사항**: `v2.0.0`부터는 `install` 시 원본 엔트리 버퍼와 전체 아카이브 SHA-256 해시를 `~/.gemini/antigravity/asar_v5_backup.json`에 기록하여 3중 무결성 검증 후 원복합니다. 만약 `asar_v5_backup.json` 없이 `v1.5.0` 이하 패처로 패치된 상태라면 `--restore`는 임의 파일 덮어쓰기를 막기 위해 `RESTORE_BACKUP_MISSING`으로 안전 중단되므로, 이 경우 Antigravity `resources/` 폴더의 기존 `app.asar.v*.orig` 백업본으로 먼저 수동 복원한 뒤 `v2.0.0`을 설치하세요.
 
 ---
 
-## 원격 제어 웹(Remote Control) 북마클릿 & 유저스크립트 안내
+## 원격 제어 웹 북마클릿 & 유저스크립트 안내
 
-외부 PC나 태블릿·스마트폰 브라우저(Chrome / Safari / Edge)에서 **`https://antigravity.google.com/r/...`** 원격 제어 웹으로 접속할 때는 로컬 PC의 Electron `preload.js`가 원격 브라우저에서 자동 실행되지 않습니다. 아래 **북마클릿(Bookmarklet)**을 북마크바에 한 번 등록해 두면 **클릭 한 번으로 커스텀 MCP 서버 매니저와 호스트에 설치된 동반 플러그인들을 원격 웹에서도 그대로 사용**할 수 있습니다.
-
-### 방법 1: 원클릭 북마클릿 (모바일 및 데스크톱 크롬 권장)
-
-아래 한 줄짜리 `javascript:` 코드를 복사하여 브라우저 북마크(즐겨찾기)의 **URL(주소)** 칸에 붙여넣으세요:
+원격 제어 웹(**`https://antigravity.google.com/r/...`**) 접속 시 아래 한 줄 북마클릿 코드를 브라우저 북마크의 **URL** 칸에 저장해 실행하세요:
 
 ```javascript
 javascript:(()=>{fetch('https://raw.githubusercontent.com/jaeseongs95/antigravity-mcp-manager/main/dist/mcp_manager_autoinject.js?t='+Date.now()).then(r=>{if(!r.ok)throw new Error(r.status);return r.text()}).then(c=>{const s=document.createElement('script'),n=[...document.querySelectorAll('script,style,link')].map(x=>x.nonce||x.getAttribute('nonce')).find(Boolean),t=window.trustedTypes;let p=null;if(t?.createPolicy){for(const k of['agy-mcp-bm','agy-mcp-'+Date.now()])try{let u=1;p=t.createPolicy(k,{createScript:x=>{if(!u)throw new TypeError();u=0;return x}});break}catch{}}if(t&&!p)return;if(n){s.nonce=n;s.setAttribute('nonce',n)}s.text=p?p.createScript(c):c;document.head.appendChild(s)})})();
 ```
 
-#### 데스크톱 브라우저(Chrome / Edge / Brave) 북마크바 등록 및 실행 방법
-1. 브라우저 상단 **북마크바(즐겨찾기 모음)**를 우클릭하고 **페이지 추가...**(또는 **북마크 추가**)를 클릭합니다(단축키: `Ctrl+Shift+O` 북마크 관리자).
-2. **이름**에 `AGY MCP 매니저` (원하는 이름)를 입력합니다.
-3. **URL** 칸에 위 `javascript:(()=>{...})();` 코드 전체를 붙여넣고 **저장**을 누릅니다.
-4. Antigravity 원격 제어 웹(`https://antigravity.google.com/r/...`)에 접속한 뒤, 북마크바의 **`AGY MCP 매니저`** 버튼을 한 번 클릭합니다.
-5. 즉시 `Settings(설정)` 모달의 `MCP 서버` 탭, `Customizations`의 `+ 커스텀 MCP` 버튼, 우측 상단 **`MCP Servers`** 원격 런처가 활성화되며, 호스트 PC에 `antigravity-statusbar`나 `ko-thought-translator`가 설치되어 있다면 자동으로 함께 로드됩니다.
-
-#### 모바일 크롬(Android / iOS) 북마크 등록 및 실행 방법
-1. 모바일 크롬에서 아무 페이지나 북마크(⭐)한 뒤 **수정(Edit)**을 누릅니다.
-2. **이름**을 `AGY MCP 매니저`로 바꾸고, **URL** 칸의 기존 주소를 지운 뒤 위 `javascript:(()=>{...})();` 코드를 붙여넣어 저장합니다.
-3. 원격 제어 웹(`https://antigravity.google.com/r/...`) 화면이 열린 상태에서 **상단 주소창을 터치**하고 `AGY MCP 매니저`를 입력합니다.
-4. 자동 완성 목록에 나타나는 **`⭐ AGY MCP 매니저`** 북마크 항목을 터치하면 현재 화면에서 즉시 북마클릿이 실행됩니다. *(모바일 크롬에서는 북마크 메뉴가 아니라 주소창 검색 제안에서 `javascript:` 북마크를 눌러야 현재 탭에서 실행됩니다.)*
-
-### 방법 2: Tampermonkey / AdGuard 유저스크립트 자동 실행
-
-`dist/mcp_manager_autoinject.js` 상단에는 `https://antigravity.google.com/*`에서 동작하는 `// ==UserScript==` 헤더가 기본 내장되어 있습니다.
-
-1. Tampermonkey(또는 Violentmonkey / AdGuard 유저스크립트) 대시보드에서 **URL로부터 설치**를 엽니다.
-2. 아래 주소를 입력하고 **설치**를 클릭하면, 앞으로 `https://antigravity.google.com/r/...`에 접속할 때마다 클릭 없이 자동으로 로드됩니다:
-   ```text
-   https://raw.githubusercontent.com/jaeseongs95/antigravity-mcp-manager/main/dist/mcp_manager_autoinject.js
-   ```
+또는 Tampermonkey / Violentmonkey / AdGuard 유저스크립트에 `https://raw.githubusercontent.com/jaeseongs95/antigravity-mcp-manager/main/dist/mcp_manager_autoinject.js` 주소를 등록해 자동 실행할 수 있습니다.
 
 ---
 
@@ -104,34 +71,19 @@ javascript:(()=>{fetch('https://raw.githubusercontent.com/jaeseongs95/antigravit
 
 | 진입 경로 | 여는 방법 | 제공 기능 |
 | :--- | :--- | :--- |
-| **`Settings(설정)` 모달 -> `MCP Servers(MCP 서버)` 탭** | 좌측 하단 `Settings(⚙️)` 열기 -> 좌측 사이드바에서 **`MCP 서버`** 클릭 | 설정창 내부에서 `⚡ 빠른 자동 추가`, 서버 카드 목록, OAuth 연결, 도구(Tools) 개별 토글, `mcp_config.json` 원문 편집을 한눈에 수행합니다. |
-| **`Customizations(맞춤 설정)` -> `MCP Servers` 섹션** | `Customizations` -> `MCP Servers` 이동 | 섹션 헤더의 **`+ 커스텀 MCP`** 버튼 및 각 서버 행 우측의 **`⚙️ 설정 수정`** / **`🔗 OAuth 연결`** 버튼을 제공합니다. |
-| **원격 호스트 상단 런처 (`#agy-mcp-remote-launcher`)** | `https://antigravity.google.com/r/...` 우측 상단 **`MCP Servers`** 캡슐 클릭 | 하단 상태바(`.agy-ctx-statusbar`)에 개입하지 않고 원격 호스트 페이지에서 즉시 매니저 모달을 띄웁니다(모바일 터치 및 엄격한 CSP 환경 지원). |
-| **독립 매니저 모달 (`Ctrl+Alt+M`)** | 화면 어디서나 **`Ctrl+Alt+M`** 입력 | 커스텀 MCP 서버 매니저 전체 모달을 즉시 띄웁니다(VS Code 기본 문제 패널 단축키인 `Ctrl+Shift+M`과 충돌하지 않도록 `Ctrl+Alt+M`을 사용합니다). |
+| **`Settings(설정)` 모달 -> `MCP Servers` 탭** | Antigravity `Settings` 열기 -> 좌측 **`MCP Servers`** (`settings-nav-item-McpManager`) 클릭 | 빠른 자동 추가, 서버 카드 목록, OAuth 연결, 편집 팝업을 제공하며 다른 설정 탭으로 이탈 시 입력 중인 민감 초안을 자동 소거합니다. |
+| **`Customizations` -> `MCP Servers` 섹션** | `Customizations` -> `MCP Servers` 이동 | `+ Add MCP` 옆의 **`Edit MCP Servers`** 버튼으로 기존 서버를 즉시 수정·삭제합니다. |
+| **원격 호스트 상단 런처 (`#agy-mcp-remote-launcher`)** | `https://antigravity.google.com/r/...` 우측 **`MCP Servers`** 버튼 클릭 | `.agy-ctx-statusbar`에 개입하지 않고 데스크톱·모바일 브라우저에서 독립 모달을 엽니다. |
+| **단축키 (`Ctrl+Alt+M`)** | 화면 어디서나 **`Ctrl+Alt+M`** 입력 | 독립 커스텀 MCP 서버 매니저 모달을 여닫습니다(VS Code 기본 `Ctrl+Shift+M` 보존). |
 
 ---
 
-## OAuth 및 커스텀 MCP 서버 등록 방법
+## 보안 및 설정 무결성 보장
 
-1. **원격 OAuth MCP 서버 (`Server URL` + `OAuth`)**:
-   - **`+ 커스텀 MCP 서버 추가`** 버튼을 클릭하거나 **`⚡ 빠른 자동 추가`** 입력창에 서버 URL을 붙여넣습니다.
-   - 연결 방식을 **`서버 URL (원격 HTTP / SSE)`**로 두고 서버 이름과 URL을 입력한 뒤 인증 방식을 기본값인 **`OAuth`**로 유지합니다.
-   - 서버에 별도 고정 `Client ID`, `Client Secret`, `기본 스코프(Scopes)`가 필요한 경우에만 하단 **`고급 OAuth 설정 >`** 아코디언을 열어 입력합니다.
-   - **`저장 및 적용`**을 누르면 OAuth Discovery가 실행되며, **`<서버이름> 연결`** 모달이 자동으로 열립니다. **`<서버이름> 연결 ↗`** 버튼을 눌러 브라우저 인증을 완료하거나, 리다이렉트된 콜백 URL/인가 코드를 입력칸에 붙여넣어 즉시 연결할 수 있습니다.
-2. **Bearer 토큰 / API Key 헤더 / Basic 인증 원격 서버**:
-   - 연결 방식을 **`서버 URL`**로 선택하고 인증 방식에서 **`Bearer 토큰`**, **`API 키 헤더`**, **`Basic 인증`** 중 하나를 골라 토큰/키를 입력합니다.
-3. **로컬 / 터널 `Stdio` MCP 서버 (`npx`, `uvx`, `node`, `python`, `docker`, `deno`, `bun`, `pnpx`)**:
-   - 연결 방식을 **`로컬 / 터널 (Stdio 프로세스)`**로 전환하거나, **`⚡ 빠른 자동 추가`** 칸에 실행 명령어 전체를 붙여넣고 **`양식 자동 채우기`**를 클릭합니다.
-   - 실행 명령어(Command), 인자(Args), 환경 변수(`KEY=VALUE`)를 확인한 뒤 **`저장 및 적용`**을 클릭합니다.
-
----
-
-## 호스트 설치 맞춤형 동반 플러그인 자동 로드
-
-원격 웹(`https://antigravity.google.com/r/...`)에서 `antigravity-mcp-manager` 북마클릿을 실행하면 `LanguageServerService`(`GetCustomizationStates` / `GetAllSkills` / `ReadFile`)를 통해 호스트 PC의 `~/.gemini/antigravity/statusbar_autoinject.js` 및 설치 목록을 먼저 확인합니다:
-
-- **호스트에 `antigravity-mcp-manager` 1개만 단독 설치된 경우**: `antigravity-mcp-manager`만 로드하며, 설치하지 않은 다른 플러그인을 강제로 불러오지 않습니다.
-- **호스트에 `antigravity-statusbar` 및/또는 `ko-thought-translator`가 함께 설치된 경우**: 단일 소유권 프레임 승격(`window.__agyMountMcpManager` 핸드오프 및 참조 카운트 기반 `onIframeLoad` 억제)을 조율하며 호스트에 설치된 동반 플러그인만 자동으로 함께 로드합니다.
+1. **전 `Stdio` 명령 및 `PATH` 확인 게이트**: 빠른 추가(Quick Auto-Add)에서 모든 로컬 명령 스펙(`command`, `npx`/`uvx` 패키지·GitHub URL, 다중 서버 JSON 내 `command`)과 `PATH` 재정의는 분해된 `command`·`args`·`env` 키를 먼저 표시하고 사용자 확인 후에만 저장·기동합니다.
+2. **단일 정규 URL 강제 및 평문 HTTP 자격증명 차단**: 서로 다른 `url`/`serverUrl`(Split-URL) 및 `command`+`url` 혼합 스펙을 즉시 거부하며, 비루프백 평문 `http://` 엔드포인트에는 자격증명 저장 및 일괄 병합(`applyAuthToAllHttp`)을 원천 차단하고 레거시 `localStorage` 평문 백업을 기동 시 즉시 삭제합니다.
+3. **SHA-256 CAS 및 엄격한 `ENOENT` 분리**: 쓰기 직전 SHA-256 재검증으로 외부 편집 덮어쓰기(`CONFLICT`)를 방지하고 JSONC 주석과 0바이트 `mcp_config.json` 복구 흐름을 보존하며, HTTP `404` / `"Instance not found"` 전송 오류를 파일 미존재로 오인하지 않습니다.
+4. **일회용 범위 제한 `TrustedTypes`**: 공용 정책 이름을 절대 침범하지 않고 `createHTML` 미정의, 일회용 토큰 즉시 폐기, `Window`별 `WeakMap` 부정 캐시를 적용합니다.
 
 ---
 
@@ -140,31 +92,21 @@ javascript:(()=>{fetch('https://raw.githubusercontent.com/jaeseongs95/antigravit
 ```text
 antigravity-mcp-manager/
 ├── src/
-│   ├── host-adapter-config.js     # RPC 접두사·원격 도메인·정적 CDN·동반 스크립트 URL 설정 경계
-│   ├── mcp-config-schema.js       # 프리셋 템플릿, 스마트 자동 파서(URL/curl/JSON/Stdio), OAuth 및 설정 스키마 검증
-│   ├── remote-runtime.js          # 격리된 RemoteControlComponent 리스 및 동반 블록 매니페스트 파서
-│   ├── companion-loader.js        # 범위 제한 TrustedTypes 정책, CSP 논스 전파 및 동반 스크립트 로더
-│   ├── remote-frame-promoter.js   # 원격 제어 워크벤치 프레임 승격·롤백 유한 상태 기계(FSM)
-│   ├── host-mcp-bridge.js         # React Fiber & 원격 proxyCommand RPC 브릿지, OAuth Discovery 및 직렬화된 설정 입출력
-│   ├── modal-ui.js                # TrustedTypes 안전 모달 UI (서버 추가/수정, OAuth 연결, Settings 탭 화면, JSON 편집기)
-│   ├── native-dom-integrator.js   # Settings 사이드바 탭, Customizations 버튼 및 비파괴 원격 호스트 런처 통합기
-│   └── index.js                   # 수명 주기 오케스트레이터, Ctrl+Alt+M 단축키 및 __agyMountMcpManager 핸드오프
-├── dist/
-│   └── mcp_manager_autoinject.js  # Electron / CDP / UserScript 겸용 단일 파일 런타임 번들 산출물
+│   ├── core/                      # 순수 ECMAScript 도메인, 포트, AsyncMutex, SHA-256, JSONC 및 보안 스키마
+│   ├── security/                  # 일회용 범위 제한 TrustedTypes 정책 및 CSP 논스 헬퍼
+│   ├── shared/                    # 줄 시작 앵커 마커 매니페스트 및 Window 바인딩 DOM 수명 래퍼
+│   ├── ui/                        # 안전 DOM 빌더, 반응형 스타일 토큰, 모달 컨트롤러 및 5개 모듈형 뷰
+│   ├── adapters/antigravity/      # Fiber 게이트웨이, RemoteControl 리스, RPC, 포트 어댑터 및 원격 워크벤치 FSM
+│   └── index.js                   # 조립 루트 (window.agyMcpManager, version: '2.0.0')
 ├── scripts/
-│   ├── build.js                   # 무의존성 CommonJS 번들러 (src/ -> dist/mcp_manager_autoinject.js)
-│   ├── ensure_statusbar_patch.js  # 오프셋 보존 ASAR 패처 + 원자적 app_storage 동기화 + 실시간 CDP 주입기
-│   └── install.js                 # 번들 빌드 후 ~/.gemini/antigravity 설치 및 패처 실행
-├── docs/
-│   ├── TEST_CASES.md              # 사전 테스트케이스 명세서
-│   └── templates/                 # 한·영 공개 문서 및 통합 릴리즈노트 템플릿
-├── test/
-│   └── mcp-manager.test.js        # 개별 모듈 단위·번들 통합 및 실브라우저 헤드리스 크롬 E2E 테스트 (36/36)
-├── .gitattributes                 # 운영체제 간 LF 줄바꿈 정규화 설정
-├── README.md                      # 기본 영문 안내 문서 (English)
-├── README.ko.md                   # 국문 안내 문서 (Korean)
-├── LICENSE                        # MIT 라이선스
-└── package.json
+│   ├── lib/                       # js-lexer, file-lock, 순수 asar-patcher, rfc6455-ws 및 cdp-injector
+│   ├── patcher-entry.js           # 자립형 패처 CLI (--status, --restore, --uninstall, hook)
+│   ├── build.js                   # 이중 번들러 -> dist/mcp_manager_autoinject.js & dist/ensure_statusbar_patch.js
+│   ├── install.js                 # 양방향 ASAR 역롤백을 갖춘 2단계 트랜잭션 설치/제거기
+│   └── run-tests.js               # 3-OS 호환 재귀 Node 테스트 실행기
+├── dist/                          # 단일 파일 런타임 및 자립형 패처 번들 산출물
+├── docs/TEST_CASES.md             # MCP-TC-001 ~ MCP-TC-050 한/영 사전 테스트케이스 명세서
+└── test/                          # 11개 계층별 단위·보안·어댑터·UI·스크립트·실브라우저 Chromium E2E 스위트
 ```
 
 ---
@@ -172,10 +114,9 @@ antigravity-mcp-manager/
 ## 검증 및 테스트
 
 ```bash
-# dist/mcp_manager_autoinject.js 빌드 및 36/36개 단위·통합·실브라우저 E2E 회귀 테스트 실행
 npm test
 ```
 
 ## 라이선스
 
-MIT
+MIT License — [LICENSE](./LICENSE) 참조.

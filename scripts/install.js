@@ -2,158 +2,229 @@
 'use strict';
 
 /**
- * Installer for Antigravity Custom MCP Server Manager.
+ * Transactional Installer & Companion-Aware Uninstaller (`scripts/install.js`).
  *
- * 1. Builds `dist/mcp_manager_autoinject.js`
- * 2. Copies standalone bundle to `~/.gemini/antigravity/mcp_manager_autoinject.js`
- * 3. Chains the marked `AGY_MCP_MANAGER_V1` block into `~/.gemini/antigravity/statusbar_autoinject.js`
- *    (before `BEGIN_AGY_KO_THOUGHT_LOCALIZER_V2` if present, preserving both Statusbar and KO localizer)
- * 4. Executes `ensure_statusbar_patch.js --worker` (or direct CDP injection fallback) so active Antigravity
- *    windows immediately load the MCP Manager without restarting.
+ * Guarantees (`Rev 6 F1` & `5095348c-F3`):
+ * 1. Two-stage atomic `installMcpManager`:
+ *    - Stage 1: Applies exact-size V5 ASAR transformation (`patchAsarOnDisk`), recording
+ *      `didPatchAsarInThisRun` and `didCreateAsarBackupInThisRun` (aborts immediately on failure).
+ *    - Stage 2: Snapshots target files, writes `mcp_manager_autoinject.js`, companion-merged
+ *      `statusbar_autoinject.js`, standalone `ensure_statusbar_patch.js`, and synchronizes
+ *      `app_storage.json['agy-statusbar-code']` under `APP_STORAGE_LOCK_PATH`.
+ *    - Stage 2 failure rollback order (`5095348c-F3`):
+ *      (a) Restore Stage 2 file snapshots ->
+ *      (b) If `didPatchAsarInThisRun === true`, call `restoreAsarOnDisk` ->
+ *      (c) Only if `didCreateAsarBackupInThisRun === true`, delete newly created `asar_v5_backup.json`.
+ * 2. `--uninstall` delegates to `uninstallMcpManager` (`patcher-entry.js`), preserving companion
+ *    plugins when present or performing bidirectional ASAR reverse-rollback on sole uninstall.
+ * 3. `--restore` delegates to `runDedicatedAsarRestore` (`patcher-entry.js`).
  */
 
 const fs = require('fs');
-const http = require('http');
-const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
-const { buildBundle } = require('./build');
+const { mergeMcpManagerBlock } = require('../src/shared/marker-manifest');
+const {
+  createLockToken,
+  acquireFileLock,
+  releaseFileLock,
+  writeFileAtomicSync,
+  captureFileSnapshots,
+  restoreFileSnapshots,
+  syncAppStorageCode,
+} = require('./lib/file-lock');
+const { patchAsarOnDisk, restoreAsarOnDisk } = require('./lib/asar-patcher');
+const { injectViaCdpLive } = require('./lib/cdp-injector');
+const {
+  resolveHostPatchPaths,
+  getPatchStatus,
+  runDedicatedAsarRestore,
+  uninstallMcpManager,
+} = require('./patcher-entry');
+const { buildAllBundles, OUT_FILE, PATCHER_OUT_FILE } = require('./build');
 
-const HOME_DIR = process.env.USERPROFILE || process.env.HOME || os.homedir();
-const AGY_DIR = path.join(HOME_DIR, '.gemini', 'antigravity');
-const TARGET_STANDALONE = path.join(AGY_DIR, 'mcp_manager_autoinject.js');
-const TARGET_AUTOINJECT = path.join(AGY_DIR, 'statusbar_autoinject.js');
-const TARGET_PATCHER = path.join(AGY_DIR, 'ensure_statusbar_patch.js');
-const SRC_PATCHER = path.join(__dirname, 'ensure_statusbar_patch.js');
+/**
+ * Runs transactional installation of MCP Server Manager (`v2.0.0`).
+ *
+ * @param {ReturnType<typeof resolveHostPatchPaths>} [customPaths]
+ * @param {{
+ *   runtimeBundleSource?: string,
+ *   patcherBundleSource?: string,
+ *   skipBuildIfPresent?: boolean,
+ *   skipCdp?: boolean,
+ *   __injectStage2Failure?: () => void
+ * }} [options]
+ */
+async function installMcpManager(customPaths, options = {}) {
+  const paths = customPaths || resolveHostPatchPaths();
 
-const MCP_BEGIN = '// === BEGIN_AGY_MCP_MANAGER_V1 ===';
-const MCP_END = '// === END_AGY_MCP_MANAGER_V1 ===';
-const KO_BEGIN = '// === BEGIN_AGY_KO_THOUGHT_LOCALIZER_V2 ===';
+  let runtimeBundle = options.runtimeBundleSource || '';
+  let patcherBundle = options.patcherBundleSource || '';
 
-const MCP_BEGIN_RE = /^(?:\/\/ === BEGIN_AGY_MCP_MANAGER(?:_V\d+)? ===|\/\* === BEGIN_AGY_MCP_MANAGER(?:_V\d+)? === \*\/)[ \t]*$/gm;
-const MCP_END_RE = /^(?:\/\/ === END_AGY_MCP_MANAGER(?:_V\d+)? ===|\/\* === END_AGY_MCP_MANAGER(?:_V\d+)? === \*\/)[ \t]*$/gm;
-const KO_BEGIN_RE = /^(?:\/\/ === BEGIN_AGY_KO_THOUGHT_LOCALIZER(?:_V\d+)? ===|\/\* === BEGIN_AGY_KO_THOUGHT_LOCALIZER(?:_V\d+)? === \*\/)[ \t]*$/gm;
-
-function findAnchoredSpan(text, beginRe, endRe) {
-  beginRe.lastIndex = 0;
-  const bMatch = beginRe.exec(text);
-  if (!bMatch) return null;
-  const start = bMatch.index;
-  endRe.lastIndex = bMatch.index + bMatch[0].length;
-  const eMatch = endRe.exec(text);
-  if (!eMatch) return null;
-  let end = eMatch.index + eMatch[0].length;
-  while (true) {
-    const after = text.slice(end);
-    const nl = /^\n+/.exec(after);
-    if (!nl) break;
-    const nextIdx = end + nl[0].length;
-    endRe.lastIndex = nextIdx;
-    const nextEnd = endRe.exec(text);
-    if (nextEnd && nextEnd.index === nextIdx) {
-      end = nextEnd.index + nextEnd[0].length;
+  if (!runtimeBundle || !patcherBundle) {
+    if (options.skipBuildIfPresent && fs.existsSync(OUT_FILE) && fs.existsSync(PATCHER_OUT_FILE)) {
+      runtimeBundle = runtimeBundle || fs.readFileSync(OUT_FILE, 'utf8');
+      patcherBundle = patcherBundle || fs.readFileSync(PATCHER_OUT_FILE, 'utf8');
     } else {
-      break;
+      const built = buildAllBundles({ write: false });
+      runtimeBundle = runtimeBundle || built.runtime.bundle;
+      patcherBundle = patcherBundle || built.patcher.bundle;
     }
   }
-  return { start, end };
+
+  const lockToken = createLockToken('install');
+  if (!acquireFileLock(paths.lockPath, lockToken)) {
+    return {
+      ok: false,
+      stage: 'LOCK',
+      status: 'LOCK_BUSY',
+      error: 'Another patch/install operation is currently holding statusbar_patch.lock.',
+    };
+  }
+
+  try {
+    fs.mkdirSync(paths.agyDir, { recursive: true });
+
+    // Stage 1: ASAR V5 transformation
+    const patchRes = patchAsarOnDisk(paths.asarPath, paths.asarBackupPath);
+    if (!patchRes.ok) {
+      return {
+        ok: false,
+        stage: 'STAGE_1_ASAR_PATCH',
+        status: patchRes.status,
+        rolledBack: false,
+        error: patchRes.error || `ASAR patch failed (${patchRes.status})`,
+      };
+    }
+
+    const didPatchAsarInThisRun = Boolean(patchRes.didPatch);
+    const didCreateAsarBackupInThisRun = Boolean(patchRes.didCreateBackup);
+
+    // Stage 2: Deploy bundles + companion-merged statusbar_autoinject.js + app_storage.json
+    const snapshots = captureFileSnapshots([
+      paths.mcpAutoinjectPath,
+      paths.autoinjectPath,
+      paths.patcherScriptPath,
+      paths.appStoragePath,
+    ]);
+
+    try {
+      const existingAutoinject = fs.existsSync(paths.autoinjectPath)
+        ? fs.readFileSync(paths.autoinjectPath, 'utf8')
+        : '';
+      const mergedAutoinject = mergeMcpManagerBlock(existingAutoinject, runtimeBundle);
+
+      writeFileAtomicSync(paths.mcpAutoinjectPath, runtimeBundle);
+      writeFileAtomicSync(paths.autoinjectPath, mergedAutoinject);
+      writeFileAtomicSync(paths.patcherScriptPath, patcherBundle);
+
+      const syncRes = syncAppStorageCode({
+        autoinjectPath: paths.autoinjectPath,
+        appStoragePath: paths.appStoragePath,
+        appStorageLockPath: paths.appStorageLockPath,
+        codeOverride: mergedAutoinject,
+      });
+      if (!syncRes.ok) {
+        throw new Error(syncRes.error || 'Failed to synchronize app_storage.json');
+      }
+
+      if (typeof options.__injectStage2Failure === 'function') {
+        options.__injectStage2Failure();
+      }
+    } catch (stage2Err) {
+      // Exact 5095348c-F3 rollback order:
+      // 1) Restore Stage 2 file snapshots
+      restoreFileSnapshots(snapshots);
+
+      // 2) If Stage 1 patched app.asar in this run, restore app.asar using backup
+      let reversedAsarPatch = false;
+      if (didPatchAsarInThisRun) {
+        const rev = restoreAsarOnDisk(paths.asarPath, paths.asarBackupPath);
+        reversedAsarPatch = Boolean(rev.ok);
+      }
+
+      // 3) Only if Stage 1 newly created asar_v5_backup.json in this run, unlink it
+      if (didCreateAsarBackupInThisRun && fs.existsSync(paths.asarBackupPath)) {
+        try {
+          fs.unlinkSync(paths.asarBackupPath);
+        } catch {
+          // Ignore
+        }
+      }
+
+      return {
+        ok: false,
+        stage: 'STAGE_2_DEPLOY',
+        status: 'STAGE_2_ROLLED_BACK',
+        rolledBack: true,
+        reversedAsarPatch,
+        error: stage2Err?.message || String(stage2Err),
+      };
+    }
+
+    // Stage 3: Live CDP evaluation after Stages 1 & 2 have durably committed
+    const cdpRes = options.skipCdp
+      ? { attempted: false, skipped: true }
+      : await injectViaCdpLive(paths);
+
+    return {
+      ok: true,
+      status: 'INSTALLED',
+      asar: patchRes,
+      cdp: cdpRes,
+      deployedFiles: {
+        mcpAutoinjectPath: paths.mcpAutoinjectPath,
+        autoinjectPath: paths.autoinjectPath,
+        patcherScriptPath: paths.patcherScriptPath,
+      },
+    };
+  } finally {
+    releaseFileLock(paths.lockPath, lockToken);
+  }
 }
 
-function mergeMcpManagerBlock(existingContent, mcpBundleText) {
-  const cleanMcp = mcpBundleText.replace(/\r\n?/g, '\n').trim();
-  const wrappedBlock = `${MCP_BEGIN}\n${cleanMcp}\n${MCP_END}`;
+async function runInstallCli(argv = process.argv.slice(2), customPaths = undefined) {
+  const args = Array.isArray(argv) ? argv : [];
+  const paths = customPaths || resolveHostPatchPaths();
 
-  let text = (existingContent || '').replace(/\r\n?/g, '\n');
-
-  // Remove any previous column-0 anchored MCP_MANAGER block(s)
-  let mcpSpan = findAnchoredSpan(text, MCP_BEGIN_RE, MCP_END_RE);
-  while (mcpSpan) {
-    const before = text.slice(0, mcpSpan.start).trimEnd();
-    const after = text.slice(mcpSpan.end).trimStart();
-    text = before && after ? `${before}\n\n${after}` : (before || after);
-    mcpSpan = findAnchoredSpan(text, MCP_BEGIN_RE, MCP_END_RE);
+  if (args.includes('--status')) {
+    const st = getPatchStatus(paths);
+    process.stdout.write(`${JSON.stringify(st, null, 2)}\n`);
+    return { exitCode: 0, result: st };
   }
 
-  // Also clean up any corrupted orphan BEGIN_AGY_MCP_MANAGER marker missing an END marker
-  MCP_BEGIN_RE.lastIndex = 0;
-  const orphanBegin = MCP_BEGIN_RE.exec(text);
-  if (orphanBegin) {
-    KO_BEGIN_RE.lastIndex = orphanBegin.index + orphanBegin[0].length;
-    const nextKo = KO_BEGIN_RE.exec(text);
-    const before = text.slice(0, orphanBegin.index).trimEnd();
-    const after = nextKo ? text.slice(nextKo.index).trimStart() : '';
-    text = before && after ? `${before}\n\n${after}` : (before || after);
+  if (args.includes('--restore')) {
+    const res = runDedicatedAsarRestore(paths);
+    process.stdout.write(`${JSON.stringify(res, null, 2)}\n`);
+    return { exitCode: res.ok ? 0 : 1, result: res };
   }
 
-  // Insert before column-0 anchored KO_BEGIN if present so ko-thought-translator's baseCode preservation keeps MCP Manager too
-  KO_BEGIN_RE.lastIndex = 0;
-  const koMatch = KO_BEGIN_RE.exec(text);
-  if (koMatch) {
-    const beforeKo = text.slice(0, koMatch.index).trimEnd();
-    const fromKo = text.slice(koMatch.index).trimStart();
-    if (!beforeKo) {
-      return `${wrappedBlock}\n\n${fromKo}\n`;
-    }
-    return `${beforeKo}\n\n${wrappedBlock}\n\n${fromKo}\n`;
+  if (args.includes('--uninstall')) {
+    const res = await uninstallMcpManager(paths);
+    process.stdout.write(`${JSON.stringify(res, null, 2)}\n`);
+    return { exitCode: res.ok ? 0 : 1, result: res };
   }
 
-  if (!text.trim()) {
-    return `${wrappedBlock}\n`;
-  }
-  return `${text.trimEnd()}\n\n${wrappedBlock}\n`;
-}
-
-function install() {
-  const { bundle } = buildBundle();
-  fs.mkdirSync(AGY_DIR, { recursive: true });
-  fs.writeFileSync(TARGET_STANDALONE, bundle, 'utf8');
-
-  const existing = fs.existsSync(TARGET_AUTOINJECT)
-    ? fs.readFileSync(TARGET_AUTOINJECT, 'utf8')
-    : '';
-  const merged = mergeMcpManagerBlock(existing, bundle);
-  fs.writeFileSync(TARGET_AUTOINJECT, merged, 'utf8');
-
-  if (fs.existsSync(SRC_PATCHER)) {
-    fs.copyFileSync(SRC_PATCHER, TARGET_PATCHER);
-  }
-
-  if (fs.existsSync(TARGET_PATCHER)) {
-    const workerRes = spawnSync(process.execPath, [TARGET_PATCHER, '--worker'], {
-      encoding: 'utf8',
-      windowsHide: true,
-    });
-    if (workerRes.stderr) {
-      process.stderr.write(workerRes.stderr);
-    }
-    if (workerRes.error) {
-      process.stderr.write(String(workerRes.error.message || workerRes.error) + '\n');
-    }
-    const statusRes = spawnSync(process.execPath, [TARGET_PATCHER, '--status'], {
-      encoding: 'utf8',
-      windowsHide: true,
-    });
-    if (statusRes.stdout) {
-      process.stdout.write(statusRes.stdout);
-    }
-    if (statusRes.stderr) {
-      process.stderr.write(statusRes.stderr);
-    }
-    return typeof workerRes.status === 'number' ? workerRes.status : 1;
-  }
-
-  process.stdout.write(`Installed MCP Manager bundle to ${TARGET_STANDALONE} and ${TARGET_AUTOINJECT}\n`);
-  return 0;
+  const res = await installMcpManager(paths, { skipBuildIfPresent: false });
+  process.stdout.write(`${JSON.stringify(res, null, 2)}\n`);
+  return { exitCode: res.ok ? 0 : 1, result: res };
 }
 
 if (require.main === module) {
-  const code = install();
-  process.exit(code);
+  runInstallCli().then(
+    ({ exitCode }) => {
+      if (exitCode !== 0) process.exitCode = exitCode;
+    },
+    (err) => {
+      process.stderr.write(`${err?.stack || err}\n`);
+      process.exitCode = 1;
+    }
+  );
 }
 
 module.exports = {
-  MCP_BEGIN,
-  MCP_END,
-  mergeMcpManagerBlock,
-  install,
+  installMcpManager,
+  uninstallMcpManager,
+  runDedicatedAsarRestore,
+  runInstallCli,
+  resolveHostPatchPaths,
 };

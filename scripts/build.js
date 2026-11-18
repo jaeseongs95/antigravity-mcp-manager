@@ -2,37 +2,75 @@
 'use strict';
 
 /**
- * Zero-dependency bundler that assembles the modular CommonJS sources in `src/`
- * into a single self-contained runtime script (`dist/mcp_manager_autoinject.js`)
- * suitable for Electron `webFrame.executeJavaScript`, CDP `Runtime.evaluate`,
- * and chaining into `~/.gemini/antigravity/statusbar_autoinject.js`.
+ * Dual Zero-Dependency Bundler (`scripts/build.js`):
+ * 1. `dist/mcp_manager_autoinject.js` — Single-file browser/Electron/bookmarklet runtime bundle
+ *    with strict completeness check across all `src/**\/*.js` modules.
+ * 2. `dist/ensure_statusbar_patch.js` — Standalone zero-external-file Node CLI & library bundle
+ *    preserving `require.main === module` semantics (`5095348c-F1`) for `~/.gemini/antigravity/`.
  */
 
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { stripCommentsAndEmptyLines } = require('./lib/js-lexer');
 
 const ROOT_DIR = path.join(__dirname, '..');
 const SRC_DIR = path.join(ROOT_DIR, 'src');
 const DIST_DIR = path.join(ROOT_DIR, 'dist');
 const OUT_FILE = path.join(DIST_DIR, 'mcp_manager_autoinject.js');
+const PATCHER_OUT_FILE = path.join(DIST_DIR, 'ensure_statusbar_patch.js');
 
 const MODULE_ORDER = [
-  'host-adapter-config.js',
-  'mcp-config-schema.js',
-  'remote-runtime.js',
-  'companion-loader.js',
-  'remote-frame-promoter.js',
-  'host-mcp-bridge.js',
-  'modal-ui.js',
-  'native-dom-integrator.js',
+  'core/disposable.js',
+  'core/sha256.js',
+  'core/async-mutex.js',
+  'core/ports.js',
+  'core/security/url-policy.js',
+  'core/schema/jsonc-codec.js',
+  'core/schema/presets.js',
+  'core/schema/auth-codec.js',
+  'core/schema/server-spec.js',
+  'core/schema/smart-parser.js',
+  'core/mcp-manager-service.js',
+  'security/trusted-types.js',
+  'shared/marker-manifest.js',
+  'shared/dom-disposables.js',
+  'ui/design-tokens-styles.js',
+  'ui/dom-kit.js',
+  'ui/views/quick-add-bar.js',
+  'ui/views/server-card-list.js',
+  'ui/views/server-editor-form.js',
+  'ui/views/oauth-connect-dialog.js',
+  'ui/views/raw-json-editor.js',
+  'ui/modal-controller.js',
+  'adapters/antigravity/host-config.js',
+  'adapters/antigravity/react-fiber-gateway.js',
+  'adapters/antigravity/remote-control-lease.js',
+  'adapters/antigravity/rpc-transport.js',
+  'adapters/antigravity/antigravity-ports-adapter.js',
+  'adapters/antigravity/companion-coordinator.js',
+  'adapters/antigravity/native-dom-integrator.js',
+  'adapters/antigravity/remote-workbench/child-asset-adapter.js',
+  'adapters/antigravity/remote-workbench/cdn-worker-bridge.js',
+  'adapters/antigravity/remote-workbench/frame-promoter-fsm.js',
   'index.js',
+];
+
+const PATCHER_MODULE_ORDER = [
+  'src/shared/marker-manifest.js',
+  'scripts/lib/js-lexer.js',
+  'scripts/lib/file-lock.js',
+  'scripts/lib/asar-patcher.js',
+  'scripts/lib/rfc6455-ws.js',
+  'scripts/lib/cdp-injector.js',
+  'scripts/patcher-entry.js',
 ];
 
 function collectSrcJsFiles(dir, prefix = '') {
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   const files = [];
-  for (const entry of entries) {
+  for (let i = 0; i < entries.length; i += 1) {
+    const entry = entries[i];
     const isDir = typeof entry === 'object' && entry !== null ? entry.isDirectory() : false;
     const name = typeof entry === 'object' && entry !== null ? entry.name : String(entry);
     const rel = prefix ? `${prefix}/${name}` : name;
@@ -42,341 +80,53 @@ function collectSrcJsFiles(dir, prefix = '') {
       files.push(rel);
     }
   }
-  return files;
-}
-
-function countTrailingBackslashes(str) {
-  let count = 0;
-  for (let i = str.length - 1; i >= 0 && str[i] === '\\'; i--) {
-    count += 1;
-  }
-  return count;
+  return files.sort();
 }
 
 function normalizeId(relPath) {
-  return './' + relPath.replace(/\\/g, '/').replace(/\.js$/, '');
+  return `./${relPath.replace(/\\/g, '/').replace(/\.js$/, '')}`;
 }
 
-const REGEX_KEYWORDS = new Set([
-  'return', 'throw', 'case', 'delete', 'void', 'typeof',
-  'instanceof', 'in', 'of', 'new', 'yield', 'await', 'else', 'do',
-]);
-
-function stripCommentsAndEmptyLines(source) {
-  const lines = source.split('\n');
-  const out = [];
-  const stack = [
-    { mode: 'CODE', braceDepth: 0, regexAllowed: true, prevWasDot: false, lastControlKw: false, parenStack: [] },
-  ];
-  let inBlockComment = false;
-  let inSingle = false;
-  let inDouble = false;
-
-  for (const line of lines) {
-    const startsInTemplate = stack[stack.length - 1].mode === 'TEMPLATE';
-    const startsInString = inSingle || inDouble;
-    const startsInBlockComment = inBlockComment;
-
-    let i = 0;
-    let inRegex = false;
-    let inRegexCharClass = false;
-
-    while (i < line.length) {
-      const ch = line[i];
-      const next = line[i + 1] || '';
-      const top = stack[stack.length - 1];
-
-      if (top.mode === 'TEMPLATE') {
-        if (ch === '\\') {
-          i += 2;
-          continue;
-        }
-        if (ch === '`') {
-          stack.pop();
-          const outer = stack[stack.length - 1];
-          outer.regexAllowed = false;
-          outer.prevWasDot = false;
-          outer.lastControlKw = false;
-          i += 1;
-          continue;
-        }
-        if (ch === '$' && next === '{') {
-          stack.push({
-            mode: 'TEMPLATE_EXPR',
-            braceDepth: 1,
-            regexAllowed: true,
-            prevWasDot: false,
-            lastControlKw: false,
-            parenStack: [],
-          });
-          i += 2;
-          continue;
-        }
-        i += 1;
-        continue;
-      }
-
-      if (inBlockComment) {
-        if (ch === '*' && next === '/') {
-          inBlockComment = false;
-          i += 2;
-          continue;
-        }
-        i += 1;
-        continue;
-      }
-
-      if (inSingle) {
-        if (ch === '\\') {
-          i += 2;
-          continue;
-        }
-        if (ch === "'") {
-          inSingle = false;
-          top.regexAllowed = false;
-          top.prevWasDot = false;
-          top.lastControlKw = false;
-        }
-        i += 1;
-        continue;
-      }
-
-      if (inDouble) {
-        if (ch === '\\') {
-          i += 2;
-          continue;
-        }
-        if (ch === '"') {
-          inDouble = false;
-          top.regexAllowed = false;
-          top.prevWasDot = false;
-          top.lastControlKw = false;
-        }
-        i += 1;
-        continue;
-      }
-
-      if (inRegex) {
-        if (ch === '\\') {
-          i += 2;
-          continue;
-        }
-        if (inRegexCharClass) {
-          if (ch === ']') {
-            inRegexCharClass = false;
-          }
-          i += 1;
-          continue;
-        }
-        if (ch === '[') {
-          inRegexCharClass = true;
-          i += 1;
-          continue;
-        }
-        if (ch === '/') {
-          inRegex = false;
-          i += 1;
-          while (i < line.length && /[A-Za-z]/.test(line[i])) {
-            i += 1;
-          }
-          top.regexAllowed = false;
-          top.prevWasDot = false;
-          top.lastControlKw = false;
-          continue;
-        }
-        i += 1;
-        continue;
-      }
-
-      if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\f' || ch === '\v') {
-        i += 1;
-        continue;
-      }
-
-      if (ch === '/' && next === '/') {
-        break;
-      }
-      if (ch === '/' && next === '*') {
-        inBlockComment = true;
-        i += 2;
-        continue;
-      }
-      if (ch === '/' && top.regexAllowed) {
-        inRegex = true;
-        inRegexCharClass = false;
-        i += 1;
-        continue;
-      }
-      if (ch === "'") {
-        inSingle = true;
-        i += 1;
-        continue;
-      }
-      if (ch === '"') {
-        inDouble = true;
-        i += 1;
-        continue;
-      }
-      if (ch === '`') {
-        stack.push({ mode: 'TEMPLATE' });
-        i += 1;
-        continue;
-      }
-
-      if (/[A-Za-z_$]/.test(ch)) {
-        let end = i + 1;
-        while (end < line.length && /[A-Za-z0-9_$]/.test(line[end])) {
-          end += 1;
-        }
-        const word = line.slice(i, end);
-        const wasDot = top.prevWasDot;
-        top.regexAllowed = !wasDot && REGEX_KEYWORDS.has(word);
-        top.lastControlKw = !wasDot && (word === 'if' || word === 'while' || word === 'for' || word === 'with');
-        top.prevWasDot = false;
-        i = end;
-        continue;
-      }
-
-      if (/[0-9]/.test(ch) || (ch === '.' && /[0-9]/.test(next))) {
-        let end = i + 1;
-        while (end < line.length && /[0-9A-Za-z_.]/.test(line[end])) {
-          end += 1;
-        }
-        top.regexAllowed = false;
-        top.prevWasDot = false;
-        top.lastControlKw = false;
-        i = end;
-        continue;
-      }
-
-      if (ch === '(') {
-        top.parenStack.push(top.lastControlKw);
-        top.regexAllowed = true;
-        top.prevWasDot = false;
-        top.lastControlKw = false;
-        i += 1;
-        continue;
-      }
-      if (ch === ')') {
-        const afterControl = Boolean(top.parenStack.pop());
-        top.regexAllowed = afterControl;
-        top.prevWasDot = false;
-        top.lastControlKw = false;
-        i += 1;
-        continue;
-      }
-      if (ch === '[') {
-        top.regexAllowed = true;
-        top.prevWasDot = false;
-        top.lastControlKw = false;
-        i += 1;
-        continue;
-      }
-      if (ch === ']') {
-        top.regexAllowed = false;
-        top.prevWasDot = false;
-        top.lastControlKw = false;
-        i += 1;
-        continue;
-      }
-      if (ch === '{') {
-        if (top.mode === 'TEMPLATE_EXPR') {
-          top.braceDepth += 1;
-        }
-        top.regexAllowed = true;
-        top.prevWasDot = false;
-        top.lastControlKw = false;
-        i += 1;
-        continue;
-      }
-      if (ch === '}') {
-        if (top.mode === 'TEMPLATE_EXPR') {
-          top.braceDepth -= 1;
-          if (top.braceDepth === 0) {
-            stack.pop();
-            i += 1;
-            continue;
-          }
-        }
-        top.regexAllowed = true;
-        top.prevWasDot = false;
-        top.lastControlKw = false;
-        i += 1;
-        continue;
-      }
-      if ((ch === '+' && next === '+') || (ch === '-' && next === '-')) {
-        top.regexAllowed = false;
-        top.prevWasDot = false;
-        top.lastControlKw = false;
-        i += 2;
-        continue;
-      }
-      if (ch === '.' && next === '.' && line[i + 2] === '.') {
-        top.regexAllowed = true;
-        top.prevWasDot = false;
-        top.lastControlKw = false;
-        i += 3;
-        continue;
-      }
-      if (ch === '.') {
-        top.regexAllowed = false;
-        top.prevWasDot = true;
-        top.lastControlKw = false;
-        i += 1;
-        continue;
-      }
-
-      top.regexAllowed = true;
-      top.prevWasDot = false;
-      top.lastControlKw = false;
-      i += 1;
-    }
-
-    if (inSingle && countTrailingBackslashes(line) % 2 === 0) inSingle = false;
-    if (inDouble && countTrailingBackslashes(line) % 2 === 0) inDouble = false;
-
-    if (startsInTemplate || startsInString) {
-      out.push(line);
-      continue;
-    }
-
-    const t = line.trim();
-    if (!t) continue;
-    if (!startsInBlockComment && t.startsWith('//')) continue;
-    out.push(`    ${line}`);
-  }
-
-  return out.join('\n');
+function stripShebang(source) {
+  return String(source || '').replace(/^#![^\n]*\n/, '');
 }
 
+/**
+ * Builds `dist/mcp_manager_autoinject.js`.
+ *
+ * @param {{ write?: boolean, verifySrcCompleteness?: boolean }} [options]
+ */
 function buildBundle(options = {}) {
   const write = options.write !== false;
-  if (typeof fs.readdirSync === 'function') {
+  const verifySrcCompleteness = options.verifySrcCompleteness !== false;
+
+  if (verifySrcCompleteness && typeof fs.readdirSync === 'function') {
     const discovered = collectSrcJsFiles(SRC_DIR);
     const orderedSet = new Set(MODULE_ORDER);
     const missing = discovered.filter((f) => !orderedSet.has(f));
     if (missing.length > 0) {
-      throw new Error(`MODULE_ORDER is missing src/*.js file(s): ${missing.join(', ')}`);
+      throw new Error(`MODULE_ORDER is missing src/**/*.js file(s): ${missing.join(', ')}`);
     }
   }
-  const modulesCode = [];
 
-  for (const rel of MODULE_ORDER) {
+  const modulesCode = [];
+  for (let i = 0; i < MODULE_ORDER.length; i += 1) {
+    const rel = MODULE_ORDER[i];
     const abs = path.join(SRC_DIR, rel);
     const id = normalizeId(rel);
     const dir = path.posix.dirname(id);
-    const source = fs.readFileSync(abs, 'utf8').replace(/\r\n/g, '\n');
+    const source = stripShebang(fs.readFileSync(abs, 'utf8').replace(/\r\n/g, '\n'));
 
     modulesCode.push(
       `  ${JSON.stringify(id)}: function(module, exports, __require) {\n` +
-      `    const require = (spec) => __require(${JSON.stringify(dir)}, spec);\n` +
-      stripCommentsAndEmptyLines(source) +
-      `\n  }`
+        `    const require = (spec) => __require(${JSON.stringify(dir)}, spec);\n` +
+        stripCommentsAndEmptyLines(source) +
+        `\n  }`
     );
   }
 
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
-  const pkgVersion = pkg.version || '1.4.3';
+  const pkgVersion = pkg.version || '2.0.0';
 
   const header =
     `// ==UserScript==\n` +
@@ -432,9 +182,109 @@ function buildBundle(options = {}) {
   return { outFile: OUT_FILE, size: Buffer.byteLength(bundle, 'utf8'), bundle };
 }
 
-if (require.main === module) {
-  const { outFile, size } = buildBundle();
-  process.stdout.write(`Built ${outFile} (${size} bytes)\n`);
+/**
+ * Builds standalone `dist/ensure_statusbar_patch.js` (`5095348c-F1`).
+ *
+ * When executed directly via `node dist/ensure_statusbar_patch.js`, `localRequire.main`
+ * equals the synthetic `entryModule` so `require.main === module` is `true` inside
+ * `patcher-entry.js`. When imported via `require('./dist/ensure_statusbar_patch.js')`,
+ * `localRequire.main` points to the outer `require.main` so CLI does NOT auto-run.
+ *
+ * @param {{ write?: boolean }} [options]
+ */
+function buildPatcherBundle(options = {}) {
+  const write = options.write !== false;
+  const modulesCode = [];
+
+  for (let i = 0; i < PATCHER_MODULE_ORDER.length; i += 1) {
+    const rel = PATCHER_MODULE_ORDER[i];
+    const abs = path.join(ROOT_DIR, rel);
+    const id = normalizeId(rel);
+    const dir = path.posix.dirname(id);
+    const source = stripShebang(fs.readFileSync(abs, 'utf8').replace(/\r\n/g, '\n'));
+
+    modulesCode.push(
+      `  ${JSON.stringify(id)}: function(module, exports, require) {\n` +
+        stripCommentsAndEmptyLines(source) +
+        `\n  }`
+    );
+  }
+
+  const entryId = './scripts/patcher-entry';
+  const bundle =
+    `#!/usr/bin/env node\n` +
+    `'use strict';\n` +
+    `((outerModule, outerRequire) => {\n` +
+    `  const __modules = {\n` +
+    modulesCode.join(',\n') +
+    `\n  };\n` +
+    `  const __cache = {};\n` +
+    `  const __entryModule = { exports: {} };\n` +
+    `  const __localMain = outerRequire.main === outerModule ? __entryModule : outerRequire.main;\n` +
+    `  function __resolve(baseDir, spec) {\n` +
+    `    const cleanSpec = spec.replace(/\\.js$/, '');\n` +
+    `    const parts = (baseDir + '/' + cleanSpec).split('/');\n` +
+    `    const out = [];\n` +
+    `    for (const p of parts) {\n` +
+    `      if (!p || p === '.') continue;\n` +
+    `      if (p === '..') out.pop();\n` +
+    `      else out.push(p);\n` +
+    `    }\n` +
+    `    return './' + out.join('/');\n` +
+    `  }\n` +
+    `  function __makeScopedRequire(baseDir) {\n` +
+    `    const localRequire = (spec) => {\n` +
+    `      if (!spec.startsWith('.')) return outerRequire(spec);\n` +
+    `      return __loadModule(__resolve(baseDir, spec));\n` +
+    `    };\n` +
+    `    localRequire.main = __localMain;\n` +
+    `    return localRequire;\n` +
+    `  }\n` +
+    `  function __loadModule(id) {\n` +
+    `    if (__cache[id]) return __cache[id].exports;\n` +
+    `    const fn = __modules[id];\n` +
+    `    if (!fn) throw new Error('Patcher module not found: ' + id);\n` +
+    `    const mod = id === ${JSON.stringify(entryId)} ? __entryModule : { exports: {} };\n` +
+    `    __cache[id] = mod;\n` +
+    `    const lastSlash = id.lastIndexOf('/');\n` +
+    `    const dir = lastSlash > 0 ? id.slice(0, lastSlash) : '.';\n` +
+    `    fn(mod, mod.exports, __makeScopedRequire(dir));\n` +
+    `    return mod.exports;\n` +
+    `  }\n` +
+    `  outerModule.exports = __loadModule(${JSON.stringify(entryId)});\n` +
+    `})(module, require);\n`;
+
+  new vm.Script(stripShebang(bundle), { filename: 'ensure_statusbar_patch.js' });
+
+  if (write) {
+    fs.mkdirSync(DIST_DIR, { recursive: true });
+    fs.writeFileSync(PATCHER_OUT_FILE, bundle, 'utf8');
+  }
+  return { outFile: PATCHER_OUT_FILE, size: Buffer.byteLength(bundle, 'utf8'), bundle };
 }
 
-module.exports = { buildBundle, stripCommentsAndEmptyLines, OUT_FILE, MODULE_ORDER };
+function buildAllBundles(options = {}) {
+  const runtime = buildBundle(options);
+  const patcher = buildPatcherBundle(options);
+  return { runtime, patcher };
+}
+
+if (require.main === module) {
+  const { runtime, patcher } = buildAllBundles();
+  process.stdout.write(
+    `Built ${runtime.outFile} (${runtime.size} bytes)\n` +
+      `Built ${patcher.outFile} (${patcher.size} bytes)\n`
+  );
+}
+
+module.exports = {
+  OUT_FILE,
+  PATCHER_OUT_FILE,
+  MODULE_ORDER,
+  PATCHER_MODULE_ORDER,
+  collectSrcJsFiles,
+  stripCommentsAndEmptyLines,
+  buildBundle,
+  buildPatcherBundle,
+  buildAllBundles,
+};

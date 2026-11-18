@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
@@ -29,5 +29,11 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Run unit tests
+      - name: Setup Chrome for Headless E2E
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Build bundles & run full test suite (Unit, Security, Adapter, UI, ASAR, Live Chromium E2E)
+        env:
+          CHROME_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
         run: npm test
