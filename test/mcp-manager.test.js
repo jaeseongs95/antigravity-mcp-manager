@@ -4413,7 +4413,13 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
     } else if (u.pathname.includes('strict-tt-preflight')) {
       cspHeaders.push('trusted-types ogb-qtm#html agy-mcp-bm');
     }
+    const isStrictStyleNonce = u.pathname.includes('strict-style-nonce');
+    if (isStrictStyleNonce) {
+      cspHeaders.push(`style-src 'nonce-${hostNonce}'`);
+    }
     res.setHeader('Content-Security-Policy', cspHeaders);
+    const bodyStyleAttr = isStrictStyleNonce ? '' : ' style="background:#0d0d0d;color:#fff;margin:0"';
+    const iframeStyleAttr = isStrictStyleNonce ? '' : ' style="width:100%;height:720px;border:0"';
     res.end(`<!doctype html><html><head>
       <script nonce="${hostNonce}">
         window.__e2eCspViolations = [];
@@ -4427,10 +4433,10 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
         window.addEventListener('error', (e) => { window.__e2eErrors.push(String(e.message || e)); });
         window.addEventListener('unhandledrejection', (e) => { window.__e2eErrors.push(String(e.reason || e)); });
       </script>
-    </head><body style="background:#0d0d0d;color:#fff;margin:0">
+    </head><body${bodyStyleAttr}>
       <ga-remote-control>
         <div class="app-container">
-          <iframe src="https://antigravity.static.usercontent.goog/web/2.33.0/?hostTheme=dark&iframe=true" style="width:100%;height:720px;border:0"></iframe>
+          <iframe src="https://antigravity.static.usercontent.goog/web/2.33.0/?hostTheme=dark&iframe=true"${iframeStyleAttr}></iframe>
         </div>
       </ga-remote-control>
       <script nonce="${hostNonce}">
@@ -4581,7 +4587,7 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
     }
     if (u.pathname.endsWith('/__e2e_worker.js')) {
       res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-      res.end('self.postMessage("CDN_WORKER_READY");');
+      res.end('self.addEventListener && self.addEventListener("message", (e) => self.postMessage("ECHO:" + e.data)); self.postMessage("CDN_WORKER_READY");');
       return;
     }
     if (u.pathname.endsWith('/__e2e_pixel.svg')) {
@@ -4884,11 +4890,49 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
               img.onerror = () => resolve('');
               img.src = './__e2e_pixel.svg';
             });
-            const [chunkLoaded, setAttrChunkLoaded, imgLoadedSrc] = await Promise.all([p1, p2, p3]);
+            let sDotFinalSrc = '';
+            const p4 = new Promise((resolve) => {
+              cw.__e2eChunkLoaded = false;
+              const sDot = cd.createElement('script');
+              sDot.onload = () => resolve(Boolean(cw.__e2eChunkLoaded));
+              sDot.onerror = () => resolve(false);
+              sDot.src = './sub/../__e2e_dyn_chunk.js';
+              sDotFinalSrc = sDot.src;
+              cd.head.appendChild(sDot);
+            });
+            const p5 = new Promise((resolve) => {
+              const timer = setTimeout(() => resolve({ ready: false, echo: null, err: 'timeout' }), 4000);
+              try {
+                const w = new cw.Worker('./__e2e_worker.js');
+                const received = [];
+                w.onmessage = (ev) => {
+                  received.push(ev.data);
+                  if (ev.data === 'CDN_WORKER_READY') {
+                    w.postMessage('PING');
+                  } else if (ev.data === 'ECHO:PING') {
+                    clearTimeout(timer);
+                    w.terminate();
+                    resolve({ ready: received.includes('CDN_WORKER_READY'), echo: ev.data, received });
+                  }
+                };
+                w.onerror = (ev) => {
+                  clearTimeout(timer);
+                  resolve({ ready: false, echo: null, err: String(ev?.message || 'worker error') });
+                };
+              } catch (err) {
+                clearTimeout(timer);
+                resolve({ ready: false, echo: null, err: String(err) });
+              }
+            });
+            const [chunkLoaded, setAttrChunkLoaded, imgLoadedSrc, dotChunkLoaded, workerResult] = await Promise.all([p1, p2, p3, p4, p5]);
+            await new Promise((r) => setTimeout(r, 80));
             return {
               chunkLoaded,
               setAttrChunkLoaded,
               imgLoadedSrc,
+              dotChunkLoaded,
+              sDotFinalSrc,
+              workerResult,
               s1FinalSrc,
               s1NonceLen: s1Nonce.length,
               s2FinalSrc,
@@ -4903,12 +4947,16 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
         sessionId
       )
     )?.result?.value;
-    assert.deepEqual(adapterResA?.cspViolations, [], `MCP-TC-038(A): zero parent CSP violations during dynamic asset loads: ${JSON.stringify(adapterResA)}`);
-    assert.deepEqual(adapterResA?.childCsp, [], `MCP-TC-038(A): zero child CSP violations during dynamic asset loads: ${JSON.stringify(adapterResA)}`);
+    assert.deepEqual(adapterResA?.cspViolations, [], `MCP-TC-038(A): zero parent CSP violations during dynamic asset & worker loads: ${JSON.stringify(adapterResA)}`);
+    assert.deepEqual(adapterResA?.childCsp, [], `MCP-TC-038(A): zero child CSP violations during dynamic asset & worker loads (worker-src 'self'): ${JSON.stringify(adapterResA)}`);
     assert.deepEqual(adapterResA?.errors, [], `MCP-TC-038(A): zero runtime errors during dynamic asset loads: ${JSON.stringify(adapterResA)}`);
     assert.equal(adapterResA?.chunkLoaded, true, `MCP-TC-038(A): dynamic relative script.src must resolve to CDN with CSP nonce and TrustedScriptURL: ${JSON.stringify({ adapterResA, netEvents, cdnReqs: cdnReqs.slice(-25) })}`);
+    assert.equal(adapterResA?.dotChunkLoaded, true, `MCP-TC-038(A): dot-segment relative script.src (./sub/../__e2e_dyn_chunk.js) must resolve cleanly to CDN: ${JSON.stringify(adapterResA)}`);
+    assert.equal(adapterResA?.sDotFinalSrc, 'https://www.gstatic.com/antigravity/web/2.33.0/__e2e_dyn_chunk.js', 'MCP-TC-038(A): ./sub/../__e2e_dyn_chunk.js must normalize cleanly inside CDN base path');
     assert.equal(adapterResA?.setAttrChunkLoaded, true, `MCP-TC-038(A): Element.prototype.setAttribute("src", ...) on script must resolve to CDN with CSP nonce and TrustedScriptURL: ${JSON.stringify(adapterResA)}`);
     assert.equal(adapterResA?.imgLoadedSrc, 'https://www.gstatic.com/antigravity/web/2.33.0/__e2e_pixel.svg', 'MCP-TC-038(A): new Image().src relative path must rewrite to CDN');
+    assert.equal(adapterResA?.workerResult?.ready, true, `MCP-TC-038(A): CDN cross-origin Worker must load without blob: worker-src violation: ${JSON.stringify(adapterResA)}`);
+    assert.equal(adapterResA?.workerResult?.echo, 'ECHO:PING', `MCP-TC-038(A): CDN cross-origin Worker bidirectional postMessage must succeed: ${JSON.stringify(adapterResA)}`);
 
     // Open real Antigravity 2.33.0 Settings screen (?settingsOpen=true) inside promoted child & verify real settings-nav-item-McpManager tab + host reconnect!
     await sendCdp(
@@ -5055,14 +5103,19 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
       )
     )?.result?.value;
     assert.equal(snapC1?.aboutBlankLoads, 0, 'MCP-TC-038(C1): live cross-origin workbench must remain untouched when all custom policies are blocked');
+    const c1NonPolicyViolations = (snapC1?.cspViolations || []).filter((v) => !v.startsWith('trusted-types:trusted-types-policy'));
     assert.deepEqual(
-      (snapC1?.cspViolations || []).filter((v) => !v.startsWith('trusted-types:trusted-types-policy')),
+      c1NonPolicyViolations,
       [],
-      'MCP-TC-038(C1): bookmarklet must trigger ZERO sink/script-src violations (never assigning raw string to script.text)'
+      `MCP-TC-038(C1): bookmarklet must trigger ZERO sink/script-src/style-src violations: ${JSON.stringify(snapC1)}`
+    );
+    assert.ok(
+      (snapC1?.cspViolations || []).length <= 4,
+      `MCP-TC-038(C1): first invocation policy probes must stay bounded (<= 4), got ${JSON.stringify(snapC1?.cspViolations)}`
     );
     assert.deepEqual(snapC1?.errors, [], 'MCP-TC-038(C1): zero uncaught TypeError or rejection when policy creation fails');
 
-    // === Scenario C2: trusted-types ogb-qtm#html agy-mcp-bm (bookmarklet bootstrap allowed, agy-mcp-manager ScriptURL blocked) -> ONLY bookmarkletExpr used, preflight preserves iframe & #agy-mcp-remote-launcher / Ctrl+Alt+M work ===
+    // === Scenario C2: trusted-types ogb-qtm#html agy-mcp-bm (bookmarklet bootstrap allowed, agy-mcp-manager ScriptURL blocked) -> repeat calls emit ZERO additional CSP reports ===
     await sendCdp('Page.navigate', { url: 'https://antigravity.google.com/r/strict-tt-preflight-v2' }, sessionId);
     for (let i = 0; i < 80; i++) {
       const r = await sendCdp('Runtime.evaluate', { expression: 'window.__e2ePortUnaryPaths?.length || 0', returnByValue: true }, sessionId);
@@ -5082,15 +5135,26 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
         'Runtime.evaluate',
         {
           expression: `(() => {
+            const countBeforeModal = (window.__e2eCspViolations || []).length;
             const launcher = document.getElementById('agy-mcp-remote-launcher');
             const insideStatusbar = Boolean(launcher && launcher.closest('.agy-ctx-statusbar'));
             launcher?.click();
             const modalOpenedByLauncher = Boolean(document.getElementById('agy-mcp-manager-modal-backdrop'));
+            const styleEl = document.getElementById('agy-mcp-manager-styles');
+            const styleNonce = styleEl ? (styleEl.nonce || styleEl.getAttribute('nonce') || '') : '';
             window.agyMcpManager?.closeModal();
             window.dispatchEvent(new KeyboardEvent('keydown', { key: 'm', ctrlKey: true, altKey: true, bubbles: true }));
+            const countAfterModal = (window.__e2eCspViolations || []).length;
+            window.agyMcpManager?.closeModal();
+            window.agyMcpManager?.openModal?.();
+            const countAfterSecondModal = (window.__e2eCspViolations || []).length;
             return {
               aboutBlankLoads: window.__e2eAboutBlankLoads || 0,
               cspViolations: window.__e2eCspViolations || [],
+              countBeforeModal,
+              countAfterModal,
+              countAfterSecondModal,
+              styleNonce,
               errors: window.__e2eErrors || [],
               hasLauncher: Boolean(launcher),
               insideStatusbar,
@@ -5107,13 +5171,67 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
     assert.deepEqual(
       (snapC2?.cspViolations || []).filter((v) => !v.startsWith('trusted-types:trusted-types-policy')),
       [],
-      'MCP-TC-038(C2): zero sink/script-src CSP violations during preflight abort via real bookmarklet'
+      `MCP-TC-038(C2): zero sink/script-src CSP violations during preflight abort via real bookmarklet: ${JSON.stringify(snapC2)}`
     );
+    assert.ok(
+      (snapC2?.cspViolations || []).length <= 4,
+      `MCP-TC-038(C2): first policy probe count must stay bounded (<= 4), got ${JSON.stringify(snapC2?.cspViolations)}`
+    );
+    assert.equal(
+      snapC2?.countAfterModal,
+      snapC2?.countBeforeModal,
+      'MCP-TC-038(C2): opening modal must trigger ZERO additional createPolicy CSP violations (negative policy cache)'
+    );
+    assert.equal(
+      snapC2?.countAfterSecondModal,
+      snapC2?.countBeforeModal,
+      'MCP-TC-038(C2): repeated modal openings must trigger ZERO additional createPolicy CSP violations'
+    );
+    assert.equal(snapC2?.styleNonce, hostNonce, 'MCP-TC-038(C2): #agy-mcp-manager-styles must carry active host CSP nonce');
     assert.deepEqual(snapC2?.errors, [], 'MCP-TC-038(C2): zero uncaught errors during preflight abort via real bookmarklet');
     assert.equal(snapC2?.hasLauncher, true, 'MCP-TC-038(C2): #agy-mcp-remote-launcher must render on strict-CSP remote host page via real bookmarklet');
     assert.equal(snapC2?.insideStatusbar, false, 'MCP-TC-038(C2): #agy-mcp-remote-launcher must NEVER be placed inside .agy-ctx-statusbar');
     assert.equal(snapC2?.modalOpenedByLauncher, true, 'MCP-TC-038(C2): clicking #agy-mcp-remote-launcher must open the standalone MCP Server Manager modal for mobile/touch users');
     assert.equal(snapC2?.modalOpen, true, 'MCP-TC-038(C2): Ctrl+Alt+M must also open the full MCP Server Manager modal on the parent host page');
+
+    // === Scenario D: Strict style-src 'nonce-...' host header + bookmarklet modal mount -> ZERO style-src CSP violations ===
+    await sendCdp('Page.navigate', { url: 'https://antigravity.google.com/r/strict-style-nonce-v2' }, sessionId);
+    for (let i = 0; i < 80; i++) {
+      const r = await sendCdp('Runtime.evaluate', { expression: 'window.__e2ePortUnaryPaths?.length || 0', returnByValue: true }, sessionId);
+      if (r?.result?.value >= 1) break;
+      await new Promise((res) => setTimeout(res, 60));
+    }
+    const bmEvalD = await sendCdp('Runtime.evaluate', { expression: bookmarkletExpr, returnByValue: true }, sessionId);
+    assert.equal(bmEvalD.exceptionDetails, undefined, 'MCP-TC-038(D): bookmarkletExpr must not throw under strict style-src nonce');
+    for (let i = 0; i < 60; i++) {
+      const r = await sendCdp('Runtime.evaluate', { expression: 'Boolean(document.getElementById("agy-mcp-remote-launcher"))', returnByValue: true }, sessionId);
+      if (r?.result?.value === true) break;
+      await new Promise((res) => setTimeout(res, 60));
+    }
+    const snapD = (
+      await sendCdp(
+        'Runtime.evaluate',
+        {
+          expression: `(() => {
+            document.getElementById('agy-mcp-remote-launcher')?.click();
+            const styleEl = document.getElementById('agy-mcp-manager-styles');
+            return {
+              hasModal: Boolean(document.getElementById('agy-mcp-manager-modal-backdrop')),
+              hasStyle: Boolean(styleEl),
+              styleNonce: styleEl ? (styleEl.nonce || styleEl.getAttribute('nonce') || '') : '',
+              cspViolations: window.__e2eCspViolations || [],
+              errors: window.__e2eErrors || []
+            };
+          })()`,
+          returnByValue: true,
+        },
+        sessionId
+      )
+    )?.result?.value;
+    assert.equal(snapD?.hasModal, true, 'MCP-TC-038(D): standalone modal must open under strict style-src nonce');
+    assert.equal(snapD?.styleNonce, hostNonce, 'MCP-TC-038(D): #agy-mcp-manager-styles must carry active host nonce');
+    assert.deepEqual(snapD?.cspViolations, [], `MCP-TC-038(D): zero CSP violations under strict style-src 'nonce-...': ${JSON.stringify(snapD)}`);
+    assert.deepEqual(snapD?.errors, [], `MCP-TC-038(D): zero uncaught errors under strict style-src 'nonce-...': ${JSON.stringify(snapD)}`);
   } finally {
     try { cdpWs?.close(); } catch {}
     try { chromeProc?.kill(); } catch {}
@@ -5244,15 +5362,55 @@ test('MCP-TC-039: v1.5.0 redesigned SOLID modules (remote-runtime lease chaining
     setTimeout,
     clearTimeout,
   };
-  const makeChildNode = (t) => ({
-    tagName: String(t).toUpperCase(),
-    style: {},
-    attrs: {},
-    setAttribute(k, v) { this.attrs[k] = String(v); },
-    getAttribute(k) { return this.attrs[k] ?? null; },
-    appendChild() {},
-    removeChild() {},
-  });
+  const helperScriptsLoaded = [];
+  const makeChildNode = (t) => {
+    const tag = String(t).toUpperCase();
+    const node = {
+      tagName: tag,
+      style: {},
+      attrs: {},
+      children: [],
+      setAttribute(k, v) { this.attrs[k] = String(v); },
+      getAttribute(k) { return this.attrs[k] ?? null; },
+      appendChild(ch) { this.children.push(ch); },
+      removeChild(ch) { this.children = this.children.filter((x) => x !== ch); },
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    if (tag === 'IFRAME') {
+      const wfWin = {
+        addEventListener() {},
+        removeEventListener() {},
+        dispatchEvent() { return true; },
+      };
+      const wfHead = {
+        appendChild(sc) {
+          helperScriptsLoaded.push({
+            src: sc.src,
+            type: sc.type || '',
+            nonce: sc.nonce || sc.getAttribute?.('nonce') || '',
+          });
+          sc._loadFn?.();
+        },
+      };
+      node.contentWindow = wfWin;
+      node.contentDocument = {
+        head: wfHead,
+        body: wfHead,
+        documentElement: wfHead,
+        open() {},
+        close() {},
+        createElement(subTag) {
+          const el = makeChildNode(subTag);
+          el.addEventListener = (ev, fn) => {
+            if (ev === 'load') el._loadFn = fn;
+          };
+          return el;
+        },
+      };
+    }
+    return node;
+  };
   const childAdapterDoc = {
     documentElement: makeChildNode('html'),
     head: makeChildNode('head'),
@@ -5298,7 +5456,7 @@ test('MCP-TC-039: v1.5.0 redesigned SOLID modules (remote-runtime lease chaining
     clearTimeout,
   };
   const hostAdapterDoc = {
-    querySelector: (s) => (s === 'script[nonce]' ? { nonce: 'n-test' } : null),
+    querySelector: (s) => (String(s).includes('script[nonce]') ? { nonce: 'n-test' } : null),
     querySelectorAll: () => [],
     createElement: (t) => makeChildNode(t),
   };
@@ -5308,11 +5466,20 @@ test('MCP-TC-039: v1.5.0 redesigned SOLID modules (remote-runtime lease chaining
   assert.equal(Object.prototype.hasOwnProperty.call(cleanRcInst, '__agyMcpOrigOnIframeLoad'), false, 'MCP-TC-039: zero __agyMcpOrigOnIframeLoad mutation on rcInst');
   mockReconnectIframe._onLoad();
 
-  new childAdapterWin.Worker('./worker-editor.js');
-  new childAdapterWin.Worker('/web/2.33.0/worker-mod.mjs', { type: 'module' });
-  assert.equal(workerCalls.length, 2, 'MCP-TC-039: Worker adapter must instantiate same-origin Blob workers');
-  assert.ok(createdBlobs[0].includes('importScripts("https://www.gstatic.com/antigravity/web/2.33.0/worker-editor.js")'));
-  assert.ok(createdBlobs[1].includes('import "https://www.gstatic.com/antigravity/web/2.33.0/worker-mod.mjs"'));
+  const wClassic = new childAdapterWin.Worker('./worker-editor.js');
+  const wMod = new childAdapterWin.Worker('/web/2.33.0/worker-mod.mjs', { type: 'module' });
+  assert.equal(workerCalls.length, 0, 'MCP-TC-039: cross-origin CDN Workers must NEVER invoke native blob: Worker (worker-src self)');
+  assert.equal(createdBlobs.length, 0, 'MCP-TC-039: cross-origin CDN Workers must NEVER allocate blob: URLs');
+  assert.deepEqual(
+    helperScriptsLoaded,
+    [
+      { src: 'https://www.gstatic.com/antigravity/web/2.33.0/worker-editor.js', type: '', nonce: 'n-test' },
+      { src: 'https://www.gstatic.com/antigravity/web/2.33.0/worker-mod.mjs', type: 'module', nonce: 'n-test' },
+    ],
+    'MCP-TC-039: helper iframe Worker bridge must load nonced TrustedScriptURL scripts'
+  );
+  wClassic.terminate();
+  wMod.terminate();
   assert.throws(() => new childAdapterWin.Worker('https://evil.example/pwn.js'), TypeError, 'MCP-TC-039: untrusted Worker URL must throw TypeError');
 
   const synthImg = childAdapterDoc.createElement('img');
@@ -5443,4 +5610,79 @@ test('MCP-TC-039: v1.5.0 redesigned SOLID modules (remote-runtime lease chaining
   handoffCtrl.destroy();
   assert.equal(parentDoc.getElementById(REMOTE_LAUNCHER_ID), null, 'MCP-TC-039: destroy() must remove #agy-mcp-remote-launcher');
   assert.equal(parentWin.__agyMountMcpManager, undefined, 'MCP-TC-039: destroy() must remove window.__agyMountMcpManager');
+});
+
+test('MCP-TC-040 (BLOCKING-B,C,E): resolveRelativeToCdnUrl dot-segment normalization, negative policy caching, and modal style nonce', () => {
+  const { resolveRelativeToCdnUrl } = require('../src/remote-frame-promoter');
+  const { getOrCreateTrustedTypesPolicy, disposeTrustedTypesPolicy } = require('../src/companion-loader');
+  const { ensureModalStyles } = require('../src/modal-ui');
+
+  const cdnBase = 'https://www.gstatic.com/antigravity/web/2.33.0';
+  const hostOrigin = 'https://antigravity.google.com';
+
+  assert.equal(
+    resolveRelativeToCdnUrl('./sub/../__e2e_dyn_chunk.js', cdnBase, hostOrigin),
+    'https://www.gstatic.com/antigravity/web/2.33.0/__e2e_dyn_chunk.js',
+    'MCP-TC-040: valid ./sub/../ dot-segment within /web/<ver>/ must normalize cleanly'
+  );
+  assert.equal(
+    resolveRelativeToCdnUrl('/web/2.33.0/sub/../chunk.js', cdnBase, hostOrigin),
+    'https://www.gstatic.com/antigravity/web/2.33.0/chunk.js',
+    'MCP-TC-040: valid /web/<ver>/sub/../ dot-segment must normalize cleanly'
+  );
+  assert.equal(
+    resolveRelativeToCdnUrl('../secret.js', cdnBase, hostOrigin),
+    null,
+    'MCP-TC-040: relative .. escaping /web/<ver>/ base must be rejected'
+  );
+  assert.equal(
+    resolveRelativeToCdnUrl('../../secret.js', cdnBase, hostOrigin),
+    null,
+    'MCP-TC-040: multi-level .. escaping CDN root must be rejected'
+  );
+  assert.equal(
+    resolveRelativeToCdnUrl('./sub/%2e%2e/secret.js', cdnBase, hostOrigin),
+    null,
+    'MCP-TC-040: percent-encoded %2e%2e traversal must be rejected'
+  );
+
+  let createCalls = 0;
+  const mockWin = {
+    trustedTypes: {
+      createPolicy(name) {
+        createCalls++;
+        throw new Error(`Refused policy ${name}`);
+      },
+    },
+  };
+  const firstCtrl = getOrCreateTrustedTypesPolicy(mockWin, {});
+  assert.equal(createCalls, 3, 'MCP-TC-040: first denied window probes the 3 candidate policy names once');
+  const secondCtrl = getOrCreateTrustedTypesPolicy(mockWin, {});
+  assert.equal(secondCtrl, firstCtrl, 'MCP-TC-040: denied policy controller is reused from cache');
+  assert.equal(createCalls, 3, 'MCP-TC-040: repeat calls must NOT re-trigger createPolicy CSP probes');
+  disposeTrustedTypesPolicy(mockWin);
+
+  const appended = [];
+  const mockDoc = {
+    head: { appendChild(el) { appended.push(el); } },
+    getElementById() { return null; },
+    querySelector(sel) {
+      if (String(sel).includes('nonce')) return { nonce: 'nonce-abc-123', getAttribute: () => 'nonce-abc-123' };
+      return null;
+    },
+    querySelectorAll() { return []; },
+    createElement(tag) {
+      const attrs = {};
+      return {
+        tagName: tag.toUpperCase(),
+        attrs,
+        setAttribute(k, v) { attrs[k] = v; },
+        getAttribute(k) { return attrs[k]; },
+      };
+    },
+  };
+  ensureModalStyles(mockDoc);
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].nonce, 'nonce-abc-123', 'MCP-TC-040: ensureModalStyles must attach CSP nonce property');
+  assert.equal(appended[0].getAttribute('nonce'), 'nonce-abc-123', 'MCP-TC-040: ensureModalStyles must attach CSP nonce attribute');
 });

@@ -186,8 +186,25 @@ function mountMcpManager(env = {}) {
       });
   }
 
+  const hasSettledChildManager = () => {
+    try {
+      const ifr = doc.querySelector?.('ga-remote-control iframe');
+      const cw = ifr?.contentWindow;
+      const cd = ifr?.contentDocument || cw?.document;
+      if (!cw || !cd || !cd.body || cw.agyMcpManager?.version !== MCP_MANAGER_VERSION) return false;
+      if (isRemoteHostPage) {
+        const root = cd.getElementById?.('root');
+        return Boolean(root && root.childElementCount > 0);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   let remoteIframePollTimer = null;
-  if (doc.querySelector?.('ga-remote-control') && !ensureRemoteIframeMounted()) {
+  const initialMounted = ensureRemoteIframeMounted();
+  if (!isChildFrame && doc.querySelector?.('ga-remote-control') && (!initialMounted || !hasSettledChildManager())) {
     let pollCount = 0;
     const setTimer =
       typeof win.setTimeout === 'function'
@@ -198,14 +215,14 @@ function mountMcpManager(env = {}) {
       if (destroyed) return;
       pollCount += 1;
       ensureRemoteIframeMounted();
-      if (pollCount >= 12 || !setTimer || destroyed) return;
-      remoteIframePollTimer = setTimer(pollIframe, 1000);
+      if (hasSettledChildManager() || pollCount >= 20 || !setTimer || destroyed) return;
+      remoteIframePollTimer = setTimer(pollIframe, 600);
       if (remoteIframePollTimer && typeof remoteIframePollTimer.unref === 'function') {
         remoteIframePollTimer.unref();
       }
     };
     if (setTimer) {
-      remoteIframePollTimer = setTimer(pollIframe, 500);
+      remoteIframePollTimer = setTimer(pollIframe, 400);
       if (remoteIframePollTimer && typeof remoteIframePollTimer.unref === 'function') {
         remoteIframePollTimer.unref();
       }

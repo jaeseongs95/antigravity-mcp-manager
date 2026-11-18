@@ -10,6 +10,7 @@ const {
   formatKeyValueForEditor,
   normalizeMcpConfigObject,
 } = require('./mcp-config-schema');
+const { getScriptNonce } = require('./companion-loader');
 
 const MODAL_ID = 'agy-mcp-manager-modal-backdrop';
 const EDIT_POPUP_ID = 'agy-mcp-edit-popup-backdrop';
@@ -566,13 +567,34 @@ const MODAL_STYLE_CSS = `
     }
   `.replace(/\s+/g, ' ').trim();
 
+function resolveModalStyleNonce(doc) {
+  if (!doc) return '';
+  let nonce = getScriptNonce(doc);
+  if (nonce) return nonce;
+  try {
+    const parentWin = doc.defaultView && doc.defaultView.parent;
+    if (parentWin && parentWin !== doc.defaultView && parentWin.document) {
+      nonce = getScriptNonce(parentWin.document);
+    }
+  } catch {}
+  return nonce || '';
+}
+
 function ensureModalStyles(doc) {
   if (!doc || !doc.head) return;
+  const nonce = resolveModalStyleNonce(doc);
   let style = doc.getElementById(STYLE_ID);
   if (!style) {
     style = doc.createElement('style');
     style.id = STYLE_ID;
+    if (nonce) {
+      style.nonce = nonce;
+      style.setAttribute?.('nonce', nonce);
+    }
     doc.head.appendChild(style);
+  } else if (nonce && !style.nonce && !style.getAttribute?.('nonce')) {
+    style.nonce = nonce;
+    style.setAttribute?.('nonce', nonce);
   }
   if (style.textContent !== MODAL_STYLE_CSS) {
     style.textContent = MODAL_STYLE_CSS;

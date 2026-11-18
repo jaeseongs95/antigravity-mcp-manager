@@ -44,6 +44,15 @@ function canAcquirePromotionOwnership(iframe, version) {
   return true;
 }
 
+function hasTraversalSegment(pathname) {
+  if (!pathname) return false;
+  if (pathname.includes('..') || /(^|\/)%2e%2e(\/|$)/i.test(pathname)) return true;
+  try {
+    if (decodeURIComponent(pathname).includes('..')) return true;
+  } catch {}
+  return false;
+}
+
 function resolveRelativeToCdnUrl(rawValue, cdnBaseUrl, hostOrigin) {
   if (typeof rawValue !== 'string') return null;
   const trimmed = rawValue.trim();
@@ -52,33 +61,64 @@ function resolveRelativeToCdnUrl(rawValue, cdnBaseUrl, hostOrigin) {
   if (!cleanCdnBase) return null;
   const cdnRoot = cleanCdnBase.replace(/\/web\/[^/]+$/, '');
 
+  let cdnParsed;
+  try {
+    cdnParsed = new URL(cleanCdnBase + '/');
+  } catch {
+    return null;
+  }
+  const cdnOrigin = cdnParsed.origin;
+  const cdnBasePrefix = cdnParsed.pathname;
+
   if (/^(?:blob:|data:|javascript:|mailto:|tel:|about:)/i.test(trimmed)) return null;
   if (/^https?:\/\//i.test(trimmed)) {
     if (hostOrigin) {
       try {
         const parsed = new URL(trimmed);
         const hOrig = new URL(String(hostOrigin)).origin;
-        if (parsed.origin === hOrig && /^\/web\/[^/]+\//.test(parsed.pathname) && !parsed.pathname.includes('..')) {
+        if (parsed.origin === hOrig && /^\/web\/[^/]+\//.test(parsed.pathname) && !hasTraversalSegment(parsed.pathname)) {
           return `${cdnRoot}${parsed.pathname}${parsed.search}${parsed.hash}`;
         }
       } catch {}
     }
     return null;
   }
-  if (trimmed.startsWith('//') || trimmed.startsWith('#') || trimmed.startsWith('?') || trimmed.includes('..')) {
+  if (trimmed.startsWith('//') || trimmed.startsWith('#') || trimmed.startsWith('?') || trimmed.includes('\\') || /%2e%2e/i.test(trimmed)) {
     return null;
   }
   if (trimmed.startsWith('/web/')) {
-    return `${cdnRoot}${trimmed}`;
+    const cdnRootBase = cdnRoot.endsWith('/') ? cdnRoot : cdnRoot + '/';
+    try {
+      const rootUrl = new URL(cdnRootBase);
+      const candidate = new URL(trimmed.slice(1), rootUrl);
+      if (
+        candidate.origin !== cdnOrigin ||
+        !candidate.pathname.startsWith(rootUrl.pathname) ||
+        !/^\/(?:[^/]+\/)*web\/[^/]+\//.test(candidate.pathname) ||
+        hasTraversalSegment(candidate.pathname)
+      ) {
+        return null;
+      }
+      return candidate.href;
+    } catch {
+      return null;
+    }
   }
-  if (trimmed.startsWith('/')) {
-    return `${cleanCdnBase}${trimmed}`;
-  }
-  if (trimmed.startsWith('./')) {
-    return `${cleanCdnBase}/${trimmed.slice(2)}`;
-  }
-  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) {
-    return `${cleanCdnBase}/${trimmed}`;
+  const relInput = trimmed.startsWith('/') ? trimmed.slice(1) : trimmed;
+  if (trimmed.startsWith('/') || !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) {
+    try {
+      const candidate = new URL(relInput, cdnParsed);
+      if (
+        candidate.origin !== cdnOrigin ||
+        !candidate.pathname.startsWith(cdnBasePrefix) ||
+        hasTraversalSegment(candidate.pathname)
+      ) {
+        return null;
+      }
+      return candidate.href;
+    } catch {
+      return null;
+    }
   }
   return null;
 }
@@ -214,6 +254,214 @@ function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolve
     } catch {}
   }
 
+  const origCreateEl = cd.createElement.bind(cd);
+
+  function createCdnWorkerBridge(resolvedUrl, workerOptions) {
+    let terminated = false;
+    let loaded = false;
+    const pendingInbound = [];
+    const listeners = { message: [], error: [], messageerror: [] };
+    let onmessageHandler = null;
+    let onerrorHandler = null;
+    let onmessageerrorHandler = null;
+
+    const dispatchHostEvent = (type, eventObj) => {
+      if (terminated) return;
+      const direct =
+        type === 'message'
+          ? onmessageHandler
+          : type === 'error'
+            ? onerrorHandler
+            : type === 'messageerror'
+              ? onmessageerrorHandler
+              : null;
+      if (typeof direct === 'function') {
+        try {
+          direct.call(shim, eventObj);
+        } catch {}
+      }
+      const list = (listeners[type] || []).slice();
+      for (let i = 0; i < list.length; i++) {
+        try {
+          const entry = list[i];
+          if (typeof entry.fn === 'function') entry.fn.call(shim, eventObj);
+          else if (entry.fn && typeof entry.fn.handleEvent === 'function') entry.fn.handleEvent(eventObj);
+        } catch {}
+        if (list[i].once) {
+          const idx = listeners[type].indexOf(list[i]);
+          if (idx >= 0) listeners[type].splice(idx, 1);
+        }
+      }
+    };
+
+    const emitHostMessage = (data) => {
+      if (terminated) return;
+      const deliver = () => {
+        if (terminated) return;
+        let ev;
+        try {
+          ev = typeof cw.MessageEvent === 'function' ? new cw.MessageEvent('message', { data }) : { type: 'message', data };
+        } catch {
+          ev = { type: 'message', data };
+        }
+        dispatchHostEvent('message', ev);
+      };
+      if (typeof queueMicrotask === 'function') queueMicrotask(deliver);
+      else Promise.resolve().then(deliver);
+    };
+
+    const emitHostError = (errInfo) => {
+      if (terminated) return;
+      const ev = {
+        type: 'error',
+        message: errInfo?.message || 'Worker script error',
+        filename: resolvedUrl,
+        error: errInfo?.error || null,
+      };
+      dispatchHostEvent('error', ev);
+    };
+
+    let workerFrame = null;
+    let wfw = null;
+    let wfd = null;
+
+    const terminateBridge = () => {
+      if (terminated) return;
+      terminated = true;
+      pendingInbound.length = 0;
+      if (workerFrame) {
+        try {
+          if (typeof workerFrame.remove === 'function') workerFrame.remove();
+          else if (workerFrame.parentNode) workerFrame.parentNode.removeChild(workerFrame);
+        } catch {}
+        workerFrame = null;
+      }
+    };
+
+    const deliverToWorkerScope = (msg) => {
+      if (terminated || !wfw) return;
+      try {
+        const ev =
+          typeof wfw.MessageEvent === 'function' ? new wfw.MessageEvent('message', { data: msg }) : { type: 'message', data: msg };
+        wfw.dispatchEvent?.(ev);
+      } catch {}
+    };
+
+    const shim = {
+      postMessage(msg) {
+        if (terminated) return;
+        if (!loaded) {
+          pendingInbound.push(msg);
+          return;
+        }
+        deliverToWorkerScope(msg);
+      },
+      terminate: terminateBridge,
+      addEventListener(type, fn, opts) {
+        if (!fn || !listeners[type]) return;
+        const once = Boolean(opts && (opts === true ? false : opts.once));
+        if (!listeners[type].some((item) => item.fn === fn)) {
+          listeners[type].push({ fn, once });
+        }
+      },
+      removeEventListener(type, fn) {
+        if (!listeners[type]) return;
+        listeners[type] = listeners[type].filter((item) => item.fn !== fn);
+      },
+      dispatchEvent(ev) {
+        if (!ev || !ev.type) return true;
+        dispatchHostEvent(ev.type, ev);
+        return true;
+      },
+    };
+    Object.defineProperties(shim, {
+      onmessage: {
+        get() { return onmessageHandler; },
+        set(fn) { onmessageHandler = typeof fn === 'function' ? fn : null; },
+        enumerable: true,
+        configurable: true,
+      },
+      onerror: {
+        get() { return onerrorHandler; },
+        set(fn) { onerrorHandler = typeof fn === 'function' ? fn : null; },
+        enumerable: true,
+        configurable: true,
+      },
+      onmessageerror: {
+        get() { return onmessageerrorHandler; },
+        set(fn) { onmessageerrorHandler = typeof fn === 'function' ? fn : null; },
+        enumerable: true,
+        configurable: true,
+      },
+    });
+    try {
+      Object.setPrototypeOf(shim, OrigWorker.prototype);
+    } catch {}
+
+    const hostParent = cd.body || cd.documentElement;
+    if (!hostParent || typeof hostParent.appendChild !== 'function') {
+      throw new TypeError('Unable to mount isolated CDN Worker helper frame');
+    }
+    workerFrame = origCreateEl('iframe');
+    workerFrame.src = 'about:blank';
+    workerFrame.setAttribute?.('aria-hidden', 'true');
+    if (workerFrame.style) {
+      workerFrame.style.cssText = 'display:none;width:0;height:0;border:0;position:absolute;left:-9999px;visibility:hidden;';
+    }
+    hostParent.appendChild(workerFrame);
+    wfw = workerFrame.contentWindow;
+    wfd = workerFrame.contentDocument;
+    if (!wfw || !wfd) {
+      terminateBridge();
+      throw new TypeError('Failed to initialize isolated CDN Worker helper frame');
+    }
+    try {
+      wfd.open();
+      wfd.close();
+    } catch {}
+
+    try {
+      Object.defineProperty(wfw, 'postMessage', {
+        value: (msg) => emitHostMessage(msg),
+        configurable: true,
+        writable: true,
+      });
+      Object.defineProperty(wfw, 'close', {
+        value: terminateBridge,
+        configurable: true,
+        writable: true,
+      });
+      if (workerOptions && workerOptions.name !== undefined) {
+        wfw.name = String(workerOptions.name);
+      }
+    } catch {}
+
+    const sc = wfd.createElement('script');
+    if (nonce) {
+      sc.nonce = nonce;
+      sc.setAttribute?.('nonce', nonce);
+    }
+    if (workerOptions && workerOptions.type === 'module') {
+      sc.type = 'module';
+    }
+    sc.src = ttPolicyCtrl ? ttPolicyCtrl.toScriptURL(resolvedUrl) : resolvedUrl;
+    sc.addEventListener?.('load', () => {
+      if (terminated) return;
+      loaded = true;
+      const queued = pendingInbound.splice(0, pendingInbound.length);
+      for (let i = 0; i < queued.length; i++) {
+        deliverToWorkerScope(queued[i]);
+      }
+    }, { once: true });
+    sc.addEventListener?.('error', (ev) => {
+      emitHostError(ev);
+    }, { once: true });
+    const frameTarget = wfd.head || wfd.body || wfd.documentElement;
+    frameTarget.appendChild(sc);
+
+    return shim;
+  }
+
   if (cw && typeof cw.Worker === 'function' && !cw.Worker.__agyWorkerAdapted) {
     const OrigWorker = cw.Worker;
     const AdaptedWorker = function (scriptURL, options) {
@@ -236,36 +484,19 @@ function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolve
       if (!isAllowedMcpScriptUrl(resolvedUrl, resolvedHostCfg)) {
         throw new TypeError('Untrusted Worker script URL rejected');
       }
-      const BlobCtor = cw.Blob || (typeof Blob === 'function' ? Blob : null);
-      const UrlApi = cw.URL || (typeof URL !== 'undefined' ? URL : null);
-      if (BlobCtor && UrlApi && typeof UrlApi.createObjectURL === 'function') {
-        const bootCode =
-          options && options.type === 'module'
-            ? `import ${JSON.stringify(resolvedUrl)};\n`
-            : `importScripts(${JSON.stringify(resolvedUrl)});\n`;
-        const blobUrl = UrlApi.createObjectURL(new BlobCtor([bootCode], { type: 'text/javascript' }));
-        ttPolicyCtrl?.allowBlob(blobUrl);
-        const safeBlobUrl = ttPolicyCtrl ? ttPolicyCtrl.toScriptURL(blobUrl) : blobUrl;
-        let worker;
-        try {
-          worker = options !== undefined ? new OrigWorker(safeBlobUrl, options) : new OrigWorker(safeBlobUrl);
-        } catch (err) {
-          ttPolicyCtrl?.revokeBlob(blobUrl);
-          try { UrlApi.revokeObjectURL?.(blobUrl); } catch {}
-          throw err;
-        }
-        const setTimer = typeof cw.setTimeout === 'function' ? cw.setTimeout.bind(cw) : (typeof setTimeout === 'function' ? setTimeout : null);
-        if (setTimer) {
-          const t = setTimer(() => {
-            ttPolicyCtrl?.revokeBlob(blobUrl);
-            try { UrlApi.revokeObjectURL?.(blobUrl); } catch {}
-          }, 5000);
-          if (t && typeof t.unref === 'function') t.unref();
-        }
-        return worker;
+      let sameOriginWithPage = false;
+      try {
+        const pageOrigin =
+          cw.location && cw.location.origin && cw.location.origin !== 'null'
+            ? cw.location.origin
+            : (hostOrigin ? new URL(String(hostOrigin)).origin : '');
+        sameOriginWithPage = Boolean(pageOrigin && new URL(resolvedUrl).origin === pageOrigin);
+      } catch {}
+      if (sameOriginWithPage) {
+        const safeDirect = ttPolicyCtrl ? ttPolicyCtrl.toScriptURL(resolvedUrl) : resolvedUrl;
+        return options !== undefined ? new OrigWorker(safeDirect, options) : new OrigWorker(safeDirect);
       }
-      const safeDirect = ttPolicyCtrl ? ttPolicyCtrl.toScriptURL(resolvedUrl) : resolvedUrl;
-      return options !== undefined ? new OrigWorker(safeDirect, options) : new OrigWorker(safeDirect);
+      return createCdnWorkerBridge(resolvedUrl, options);
     };
     AdaptedWorker.prototype = OrigWorker.prototype;
     try {
@@ -277,7 +508,6 @@ function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolve
     } catch {}
   }
 
-  const origCreateEl = cd.createElement.bind(cd);
   cd.createElement = function (tagName, options) {
     const el = options !== undefined ? origCreateEl(tagName, options) : origCreateEl(tagName);
     const lower = String(tagName || '').toLowerCase();
@@ -815,11 +1045,16 @@ function promoteCrossOriginRemoteIframe(win, doc, iframe, bridge, onReady, versi
     } catch {
       return;
     }
+    try {
+      if (typeof iframe.removeEventListener === 'function') {
+        iframe.removeEventListener('load', triggerBlankLoadOnce);
+      }
+    } catch {}
     clearFallbackTimer();
     onBlankLoad();
   };
   if (typeof iframe.addEventListener === 'function') {
-    iframe.addEventListener('load', triggerBlankLoadOnce, { once: true });
+    iframe.addEventListener('load', triggerBlankLoadOnce);
   }
   try {
     if (origSrcDesc && typeof origSrcDesc.set === 'function') {
