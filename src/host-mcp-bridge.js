@@ -2,6 +2,10 @@
 
 const { normalizeMcpConfigObject } = require('./mcp-config-schema');
 const { resolveHostAdapterConfig } = require('./host-adapter-config');
+const {
+  acquireRemoteRuntimeLease,
+  parseAutoinjectCompanionManifest,
+} = require('./remote-runtime');
 
 const STORAGE_FALLBACK_KEY = 'agy-custom-mcp-config-backup-v1';
 const STORAGE_URI_OVERRIDE_KEY = 'agy-custom-mcp-config-uri-v1';
@@ -114,6 +118,8 @@ function createHostMcpBridge(opts = {}) {
   const win = opts.window || opts.win || (typeof window !== 'undefined' ? window : null);
   const doc = opts.document || opts.doc || (win && win.document ? win.document : null);
   const resolvedHostConfig = resolveHostAdapterConfig(opts.hostConfig, win);
+  const runtimeLease = acquireRemoteRuntimeLease({ hostConfig: resolvedHostConfig, defaultWin: win });
+
   let ls = opts.localStorage || null;
   if (!ls && win) {
     try {
@@ -131,7 +137,6 @@ function createHostMcpBridge(opts = {}) {
   let sharedTextDecoder = null;
   // ceiling: 브릿지 인스턴스 내 비동기 직렬 잠금, 다중 프로세스 동시 편집이 필요하면 호스트 파일 잠금으로 확장
   let configMutationChain = Promise.resolve();
-  const hookedPrototypes = new Set();
 
   function withConfigMutationLock(fn) {
     const next = configMutationChain.then(fn, fn);
@@ -175,289 +180,8 @@ function createHostMcpBridge(opts = {}) {
     return null;
   }
 
-  function hookRemoteControlPrototype(w, proto) {
-    if (!proto || proto === Object.prototype) return;
-    hookedPrototypes.add(proto);
-    proto.__agyTargetWin = w;
-    if (Object.prototype.hasOwnProperty.call(proto, '__agyMcpRcHooked')) return;
-    proto.__agyMcpRcHooked = true;
-    const methodNames = [
-      'handleIframeMessage',
-      'handleUrlChanged',
-      'proxyCommand',
-      'streamProxyCommand',
-      'handlePortRequest',
-      'managePolling',
-      'shouldPoll',
-      'loadInstances',
-      'isDisconnected',
-      'onIframeLoad',
-      'onWindowOnline',
-      'onWindowOffline',
-      'isOffline',
-      'isDirectIngressMode',
-      'isTabHidden',
-      'getSelectedInstance',
-      'instanceInfos',
-      'remoteConversationsInfos',
-    ];
-    for (const mName of methodNames) {
-      if (typeof proto[mName] === 'function') {
-        const origKey = `__agyOrig_${mName}`;
-        const origFn = proto[origKey] || proto[mName];
-        proto[origKey] = origFn;
-        if (mName === 'handleIframeMessage') {
-          proto.__agyOrigHandleIframeMessage = origFn;
-        }
-        proto[mName] = function (ev) {
-          const targetWin = proto.__agyTargetWin || w;
-          if (targetWin && this && !this.destroyed) {
-            targetWin.__agyRemoteControlInstance = this;
-          }
-          if (mName === 'handleIframeMessage' && ev && ev.data === '__agy_probe__') return;
-          if (
-            targetWin?.__agyProbingRcInstance &&
-            (mName === 'handleUrlChanged' || mName === 'onIframeLoad' || mName === 'onWindowOnline' || mName === 'loadInstances')
-          ) {
-            return;
-          }
-          return origFn.apply(this, arguments);
-        };
-      }
-    }
-  }
-
   function resolveRemoteControlInstance(w) {
-    if (!w) return null;
-    if (w.__agyRemoteControlInstance && !w.__agyRemoteControlInstance.destroyed) {
-      hookRemoteControlPrototype(w, Object.getPrototypeOf(w.__agyRemoteControlInstance));
-      return w.__agyRemoteControlInstance;
-    }
-
-    const isRcInstance = (obj) =>
-      Boolean(
-        obj &&
-          typeof obj === 'object' &&
-          !obj.destroyed &&
-          (typeof obj.proxyCommand === 'function' ||
-            typeof obj.onIframeLoad === 'function' ||
-            typeof obj.handleIframeMessage === 'function')
-      );
-
-    const extractFromLContext = (lCtx) => {
-      if (!lCtx || typeof lCtx !== 'object') return null;
-      if (isRcInstance(lCtx)) return lCtx;
-      if (isRcInstance(lCtx.component)) return lCtx.component;
-      const lView = lCtx.lView;
-      if (Array.isArray(lView)) {
-        try {
-          const tView = lView[1];
-          const nodeIndex = typeof lCtx.nodeIndex === 'number' ? lCtx.nodeIndex : -1;
-          const tNode = nodeIndex >= 0 && Array.isArray(tView?.data) ? tView.data[nodeIndex] : null;
-          if (
-            tNode &&
-            typeof tNode.directiveStart === 'number' &&
-            typeof tNode.componentOffset === 'number' &&
-            tNode.componentOffset > -1
-          ) {
-            const comp = lView[tNode.directiveStart + tNode.componentOffset];
-            if (isRcInstance(comp)) return comp;
-          }
-        } catch {}
-        for (let i = 0; i < Math.min(lView.length, 300); i++) {
-          if (isRcInstance(lView[i])) return lView[i];
-        }
-      }
-      return null;
-    };
-
-    const searchNgContext = (ctx) => {
-      if (!ctx || typeof ctx !== 'object') return null;
-      const direct = extractFromLContext(ctx);
-      if (direct) return direct;
-      const visited = new Set();
-      const queue = [ctx];
-      let steps = 0;
-      while (queue.length > 0 && steps < 400) {
-        const cur = queue.shift();
-        if (!cur || typeof cur !== 'object' || visited.has(cur)) continue;
-        visited.add(cur);
-        steps++;
-        const extracted = extractFromLContext(cur);
-        if (extracted) return extracted;
-        if (Array.isArray(cur)) {
-          const scanLen = Math.min(cur.length, 300);
-          for (let i = 0; i < scanLen; i++) {
-            if (isRcInstance(cur[i])) return cur[i];
-          }
-          for (let i = 0; i < scanLen; i++) {
-            const item = cur[i];
-            if (item && typeof item === 'object' && (Array.isArray(item) || isRcInstance(item.component))) {
-              queue.push(item);
-            }
-          }
-        } else {
-          for (const k of ['component', 'lView', 'data', 'context', '_lView']) {
-            if (cur[k] && typeof cur[k] === 'object') queue.push(cur[k]);
-          }
-        }
-      }
-      return null;
-    };
-
-    const wDoc = w.document;
-    const rcEl = wDoc?.querySelector?.('ga-remote-control') || null;
-    const gaRootEl = wDoc?.querySelector?.('ga-root') || null;
-
-    if (rcEl) {
-      const ngFn = w.ng && typeof w.ng.getComponent === 'function' ? w.ng.getComponent : null;
-      if (ngFn) {
-        try {
-          const comp = ngFn(rcEl);
-          if (isRcInstance(comp)) {
-            w.__agyRemoteControlInstance = comp;
-            hookRemoteControlPrototype(w, Object.getPrototypeOf(comp));
-            return comp;
-          }
-        } catch {}
-      }
-      const ctxKey = Object.keys(rcEl).find((k) => k.startsWith('__ngContext'));
-      const found = searchNgContext(rcEl.__ngContext__ || (ctxKey ? rcEl[ctxKey] : null));
-      if (found) {
-        w.__agyRemoteControlInstance = found;
-        hookRemoteControlPrototype(w, Object.getPrototypeOf(found));
-        return found;
-      }
-    }
-
-    if (gaRootEl) {
-      const rootCtxKey = Object.keys(gaRootEl).find((k) => k.startsWith('__ngContext'));
-      const foundFromRoot = searchNgContext(gaRootEl.__ngContext__ || (rootCtxKey ? gaRootEl[rootCtxKey] : null));
-      if (foundFromRoot) {
-        w.__agyRemoteControlInstance = foundFromRoot;
-        hookRemoteControlPrototype(w, Object.getPrototypeOf(foundFromRoot));
-        return foundFromRoot;
-      }
-    }
-
-    const nsRoot = w.default_GoogleAntigravity;
-    if (nsRoot && typeof nsRoot === 'object') {
-      const targetCandidates = [];
-      if (rcEl) {
-        targetCandidates.push(rcEl);
-        if (rcEl.firstElementChild) targetCandidates.push(rcEl.firstElementChild);
-        if (typeof rcEl.querySelector === 'function') {
-          const innerContainer = rcEl.querySelector('.app-container, .iframe-panel, iframe');
-          if (innerContainer && !targetCandidates.includes(innerContainer)) {
-            targetCandidates.push(innerContainer);
-          }
-        }
-      }
-      if (gaRootEl) {
-        targetCandidates.push(gaRootEl);
-        if (gaRootEl.firstElementChild) targetCandidates.push(gaRootEl.firstElementChild);
-      }
-
-      for (const k of Object.keys(nsRoot)) {
-        const mod = nsRoot[k];
-        if (!mod || (typeof mod !== 'object' && typeof mod !== 'function')) continue;
-        for (const targetEl of targetCandidates) {
-          if (!targetEl) continue;
-          try {
-            if (typeof mod.getDebugNode === 'function') {
-              const dbgNode = mod.getDebugNode(targetEl);
-              const dbgComp = dbgNode?.componentInstance || dbgNode?.context;
-              if (isRcInstance(dbgComp)) {
-                w.__agyRemoteControlInstance = dbgComp;
-                hookRemoteControlPrototype(w, Object.getPrototypeOf(dbgComp));
-                return dbgComp;
-              }
-              const foundFromDbg = searchNgContext(dbgComp || dbgNode);
-              if (foundFromDbg) {
-                w.__agyRemoteControlInstance = foundFromDbg;
-                hookRemoteControlPrototype(w, Object.getPrototypeOf(foundFromDbg));
-                return foundFromDbg;
-              }
-            }
-            if (typeof mod.getComponent === 'function') {
-              const comp = mod.getComponent(targetEl);
-              if (isRcInstance(comp)) {
-                w.__agyRemoteControlInstance = comp;
-                hookRemoteControlPrototype(w, Object.getPrototypeOf(comp));
-                return comp;
-              }
-            }
-            const getLCtx = mod['\u0275getLContext'] || mod.getLContext;
-            if (typeof getLCtx === 'function') {
-              const lCtx = getLCtx(targetEl);
-              const foundFromLCtx = extractFromLContext(lCtx) || searchNgContext(lCtx?.lView || lCtx);
-              if (foundFromLCtx) {
-                w.__agyRemoteControlInstance = foundFromLCtx;
-                hookRemoteControlPrototype(w, Object.getPrototypeOf(foundFromLCtx));
-                return foundFromLCtx;
-              }
-            }
-          } catch {}
-        }
-        const RC = mod.RemoteControlComponent || (typeof mod.prototype?.proxyCommand === 'function' ? mod : null);
-        if (RC && RC.prototype && typeof RC.prototype.proxyCommand === 'function') {
-          hookRemoteControlPrototype(w, RC.prototype);
-        }
-      }
-    }
-
-    w.__agyProbingRcInstance = true;
-    try {
-      const BaseEvt = w.Event || (typeof Event !== 'undefined' ? Event : null);
-      if (!w.__agyRemoteControlInstance && BaseEvt && typeof wDoc?.dispatchEvent === 'function') {
-        wDoc.dispatchEvent(new BaseEvt('visibilitychange'));
-      }
-      if (!w.__agyRemoteControlInstance && BaseEvt && typeof w.dispatchEvent === 'function') {
-        w.dispatchEvent(new BaseEvt('online'));
-      }
-      if (!w.__agyRemoteControlInstance && typeof w.dispatchEvent === 'function') {
-        const Evt = w.MessageEvent || (typeof MessageEvent !== 'undefined' ? MessageEvent : null);
-        if (Evt) {
-          const iframeEl = rcEl?.querySelector?.('iframe') || wDoc?.querySelector?.('ga-remote-control iframe') || null;
-          const iframeWin = iframeEl?.contentWindow || null;
-          const rawIframeSrc = iframeEl?.getAttribute?.('src') || iframeEl?.src || '';
-          const candidateOrigins = [];
-          const defaultRemoteOrigin = `https://${resolvedHostConfig.remoteHostDomains[0] || 'antigravity.google.com'}`;
-          try {
-            if (rawIframeSrc) {
-              candidateOrigins.push(new URL(rawIframeSrc, w.location?.href || defaultRemoteOrigin).origin);
-            }
-          } catch {}
-          if (w.location?.origin && !candidateOrigins.includes(w.location.origin)) {
-            candidateOrigins.push(w.location.origin);
-          }
-          for (const cdnOrig of resolvedHostConfig.staticCdnOrigins) {
-            if (cdnOrig && !candidateOrigins.includes(cdnOrig)) {
-              candidateOrigins.push(cdnOrig);
-            }
-          }
-          for (const orig of candidateOrigins) {
-            if (w.__agyRemoteControlInstance) break;
-            w.dispatchEvent(
-              new Evt('message', {
-                data: { type: 'URL_CHANGED', path: '' },
-                origin: orig,
-                source: iframeWin,
-              })
-            );
-          }
-          if (!w.__agyRemoteControlInstance) {
-            w.dispatchEvent(new Evt('message', { data: '__agy_probe__' }));
-          }
-        }
-      }
-    } catch {} finally {
-      w.__agyProbingRcInstance = false;
-    }
-
-    return w.__agyRemoteControlInstance && !w.__agyRemoteControlInstance.destroyed
-      ? w.__agyRemoteControlInstance
-      : null;
+    return runtimeLease.resolveRemoteControlInstance(w);
   }
 
   function getRemoteControlProxyAdapter() {
@@ -517,8 +241,18 @@ function createHostMcpBridge(opts = {}) {
             },
             async readFile(req) {
               const uri = typeof req === 'string' ? req : req?.uri;
-              const r = await callRpc(resolvedHostConfig.buildRpcPath('ReadFile'), { uri });
-              const b64 = typeof r?.content === 'string' ? r.content : (typeof r?.contents === 'string' ? r.contents : null);
+              const fsPath = uri ? toFsPathFromFileUri(uri) : '';
+              const payloadReq = fsPath
+                ? { uri, path: fsPath, filePath: fsPath, absolutePath: fsPath }
+                : { uri };
+              const r = await callRpc(resolvedHostConfig.buildRpcPath('ReadFile'), payloadReq);
+              if (typeof r?.text === 'string' && r.text.length > 0) {
+                return { content: encodeUtf8(r.text) };
+              }
+              const b64 =
+                typeof r?.content === 'string'
+                  ? r.content
+                  : (typeof r?.contents === 'string' ? r.contents : (typeof r?.data === 'string' ? r.data : null));
               if (b64 !== null) {
                 return { content: decodeBase64ToBytes(b64) };
               }
@@ -561,7 +295,6 @@ function createHostMcpBridge(opts = {}) {
         const startFiber = fk ? rootEl[fk] : null;
         if (!startFiber) continue;
 
-        // 1. Walk up `.return` chain first (fast path when starting from conversation-view or settings-modal-container)
         let up = startFiber;
         while (up) {
           inspectFiberValue(up.memoizedProps?.value);
@@ -574,7 +307,6 @@ function createHostMcpBridge(opts = {}) {
         }
         if (cachedService && !cachedService.__isRcProxyAdapter) return cachedService;
 
-        // 2. Bounded DFS down `.child` / `.sibling` when starting from root container (throttled to 10s per doc)
         const now = Date.now();
         if (d.__agyMcpLastDfsTs && now - d.__agyMcpLastDfsTs < 10000) {
           continue;
@@ -660,7 +392,6 @@ function createHostMcpBridge(opts = {}) {
       if (resolvedConfigUri) return resolvedConfigUri;
     }
 
-    // Try deriving from already loaded MCP server states (`spec.configPath` or `spec.pluginRoot`)
     if (svc && typeof svc.getMcpServerStates === 'function') {
       try {
         const res = await svc.getMcpServerStates();
@@ -678,7 +409,6 @@ function createHostMcpBridge(opts = {}) {
       } catch {}
     }
 
-    // Try deriving from `getStandaloneDir()` (`<home>/.gemini/antigravity/scratch`)
     if (svc && typeof svc.getStandaloneDir === 'function') {
       try {
         const res = await svc.getStandaloneDir();
@@ -690,7 +420,6 @@ function createHostMcpBridge(opts = {}) {
       } catch {}
     }
 
-    // Try deriving from `getLocalUserInfo()` (`homeDirUri` or `homeDir`)
     if (svc && typeof svc.getLocalUserInfo === 'function') {
       try {
         const uInfo = await svc.getLocalUserInfo();
@@ -705,7 +434,6 @@ function createHostMcpBridge(opts = {}) {
       } catch {}
     }
 
-    // Try deriving from `getCustomizationStates()`
     if (svc && typeof svc.getCustomizationStates === 'function') {
       try {
         const st = await svc.getCustomizationStates([]);
@@ -721,7 +449,6 @@ function createHostMcpBridge(opts = {}) {
       } catch {}
     }
 
-    // Fallback to environment variables if available in preload/node context
     try {
       const home =
         (typeof process !== 'undefined' && (process.env?.USERPROFILE || process.env?.HOME)) || null;
@@ -775,7 +502,6 @@ function createHostMcpBridge(opts = {}) {
       }
     }
 
-    // Fallback to localStorage backup when in pure web mock / test sandbox without readFile
     try {
       const raw = ls?.getItem?.(STORAGE_FALLBACK_KEY);
       if (raw) {
@@ -908,9 +634,6 @@ function createHostMcpBridge(opts = {}) {
       return { ok: false, error: 'Host OAuth service (completeMcpOAuth) is not available.' };
     }
     try {
-      // Native Antigravity `lB().completeMcpOAuth(serverName, authorizationCode)` takes 2 positional strings!
-      // Passing an object as first argument causes:
-      // `[internal] cannot encode field exa.language_server_pb.CompleteMcpOAuthRequest.server_name to JSON: expected string, got object`
       await svc.completeMcpOAuth(String(cleanName), String(code));
       await refreshServers(cleanName);
       return { ok: true };
@@ -929,7 +652,6 @@ function createHostMcpBridge(opts = {}) {
       return { ok: false, error: 'Host OAuth service (disconnectMcpOAuth) is not available.' };
     }
     try {
-      // Native Antigravity `lB().disconnectMcpOAuth(serverName, account)` takes 2 positional strings!
       await svc.disconnectMcpOAuth(String(cleanName), String(account || ''));
       await refreshServers(cleanName);
       return { ok: true };
@@ -990,9 +712,10 @@ function createHostMcpBridge(opts = {}) {
       }
       const { config } = readRes;
       const nextServers = { ...(config.mcpServers || {}) };
-      const names = Array.isArray(serverNames) && serverNames.length > 0
-        ? serverNames
-        : Object.keys(nextServers).filter((k) => Boolean(nextServers[k]?.url || nextServers[k]?.serverUrl));
+      const names =
+        Array.isArray(serverNames) && serverNames.length > 0
+          ? serverNames
+          : Object.keys(nextServers).filter((k) => Boolean(nextServers[k]?.url || nextServers[k]?.serverUrl));
 
       let updatedCount = 0;
       for (const name of names) {
@@ -1042,7 +765,6 @@ function createHostMcpBridge(opts = {}) {
           return { ok: false, error: e?.message || `Failed to toggle MCP server "${serverName}".` };
         }
       }
-      // Also persist `disabled` flag in mcp_config.json if this server is a custom server
       const readRes = await readMcpConfig();
       if (readRes.ok === false || !readRes.config) {
         return { ok: false, persisted: false, error: readRes.error || 'Failed to read mcp_config.json.' };
@@ -1340,72 +1062,12 @@ function createHostMcpBridge(opts = {}) {
       return null;
     }
 
-    const mcpBeginStr = ['BEGIN_AGY_MCP', 'MANAGER'].join('_');
-    const mcpEndStr = ['END_AGY_MCP', 'MANAGER'].join('_');
-    const koBeginStr = ['BEGIN_AGY_KO', 'THOUGHT_LOCALIZER'].join('_');
-    const koEndStr = ['END_AGY_KO', 'THOUGHT_LOCALIZER'].join('_');
-
-    const mcpBeginRe = new RegExp(`^(?:\\/\\/ === ${mcpBeginStr}(?:_V\\d+)? ===|\\/\\* === ${mcpBeginStr}(?:_V\\d+)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
-    const mcpEndRe = new RegExp(`^(?:\\/\\/ === ${mcpEndStr}(?:_V\\d+)? ===|\\/\\* === ${mcpEndStr}(?:_V\\d+)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
-    const koBeginRe = new RegExp(`^(?:\\/\\/ === ${koBeginStr}(?:_V\\d+)? ===|\\/\\* === ${koBeginStr}(?:_V\\d+)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
-    const koEndRe = new RegExp(`^(?:\\/\\/ === ${koEndStr}(?:_V\\d+)? ===|\\/\\* === ${koEndStr}(?:_V\\d+)? === \\*\\/)[ \\t]*\\r?$`, 'gm');
-
-    const findAnchoredSpan = (srcText, beginRe, endRe) => {
-      beginRe.lastIndex = 0;
-      const bMatch = beginRe.exec(srcText);
-      if (!bMatch) return { start: -1, end: -1 };
-      const start = bMatch.index;
-      endRe.lastIndex = bMatch.index + bMatch[0].length;
-      const eMatch = endRe.exec(srcText);
-      if (!eMatch) return { start, end: -1 };
-      let end = eMatch.index + eMatch[0].length;
-      while (true) {
-        const afterEnd = srcText.slice(end);
-        const nlMatch = /^(?:\r?\n)+/.exec(afterEnd);
-        if (!nlMatch) break;
-        const nextLineIdx = end + nlMatch[0].length;
-        endRe.lastIndex = nextLineIdx;
-        const nextEnd = endRe.exec(srcText);
-        if (nextEnd && nextEnd.index === nextLineIdx) {
-          end = nextEnd.index + nextEnd[0].length;
-        } else {
-          break;
-        }
-      }
-      return { start, end };
-    };
-
-    const mcpSpan = findAnchoredSpan(text, mcpBeginRe, mcpEndRe);
-    const koSpan = findAnchoredSpan(text, koBeginRe, koEndRe);
-    const mcpB = mcpSpan.start;
-    const mcpE = mcpSpan.end;
-    const koB = koSpan.start;
-    const koE = koSpan.end;
-
-    const firstMarkerIdx = [mcpB, koB].filter((i) => i !== -1).sort((a, b) => a - b)[0] ?? text.length;
-    const baseSegment = text.slice(0, firstMarkerIdx).trim();
-
-    const sbFuncRe = new RegExp(`^[ \\t]*function ${['mount', 'StatusBar'].join('')}\\s*\\(`, 'm');
-    const mcpFuncRe = new RegExp(`^[ \\t]*function ${['mount', 'McpManager'].join('')}\\s*\\(`, 'm');
-
-    const isBaseStatusbar = sbFuncRe.test(baseSegment);
-    const hasMcpMarker = (mcpB !== -1 && mcpE > mcpB) || (!isBaseStatusbar && mcpFuncRe.test(baseSegment));
-    const hasKoMarker = koB !== -1 && koE > koB;
-
-    const hasStatusbar = isBaseStatusbar || pluginNames.has('antigravity-statusbar');
-    const hasMcpManager = hasMcpMarker || pluginNames.has('antigravity-mcp-manager');
-    const hasKoTranslator = hasKoMarker || pluginNames.has('ko-thought-translator');
-
+    const manifest = parseAutoinjectCompanionManifest(text, pluginNames);
     cachedHostPluginInfo = {
       resolved: true,
       geminiRoot,
       autoinjectUri,
-      hasStatusbar,
-      hasMcpManager,
-      hasKoTranslator,
-      statusbarBlock: isBaseStatusbar ? baseSegment : '',
-      mcpBlock: mcpB !== -1 && mcpE > mcpB ? text.slice(mcpB, mcpE).trim() : '',
-      koBlock: koB !== -1 && koE > koB ? text.slice(koB, koE).trim() : '',
+      ...manifest,
     };
     return cachedHostPluginInfo;
   }
@@ -1435,40 +1097,7 @@ function createHostMcpBridge(opts = {}) {
     toFsPathFromFileUri,
     hostConfig: resolvedHostConfig,
     dispose() {
-      for (const proto of hookedPrototypes) {
-        try {
-          for (const mName of [
-            'handleIframeMessage',
-            'handleUrlChanged',
-            'proxyCommand',
-            'streamProxyCommand',
-            'handlePortRequest',
-            'managePolling',
-            'shouldPoll',
-            'loadInstances',
-            'isDisconnected',
-            'onIframeLoad',
-            'onWindowOnline',
-            'onWindowOffline',
-            'isOffline',
-            'isDirectIngressMode',
-            'isTabHidden',
-            'getSelectedInstance',
-            'instanceInfos',
-            'remoteConversationsInfos',
-          ]) {
-            const origKey = `__agyOrig_${mName}`;
-            if (proto[origKey]) {
-              proto[mName] = proto[origKey];
-              delete proto[origKey];
-            }
-          }
-          delete proto.__agyOrigHandleIframeMessage;
-          delete proto.__agyMcpRcHooked;
-          delete proto.__agyTargetWin;
-        } catch {}
-      }
-      hookedPrototypes.clear();
+      runtimeLease.release();
       try {
         if (win) {
           delete win.__agyProbingRcInstance;

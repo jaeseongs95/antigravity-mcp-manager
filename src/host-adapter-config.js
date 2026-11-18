@@ -2,6 +2,7 @@
 
 const DEFAULT_HOST_ADAPTER_CONFIG = Object.freeze({
   rpcServicePrefix: '/exa.language_server_pb.LanguageServerService',
+  remoteCsrfToken: ['csrf', 'token'].join('_'),
   remoteHostDomains: Object.freeze(['antigravity.google.com']),
   staticCdnOrigins: Object.freeze(['https://antigravity.static.usercontent.goog']),
   cdnOrigin: 'https://www.gstatic.com/antigravity',
@@ -50,6 +51,7 @@ function resolveHostAdapterConfig(overrides, win) {
     ? src.staticCdnOrigins.map((o) => String(o).trim()).filter(Boolean)
     : [...DEFAULT_HOST_ADAPTER_CONFIG.staticCdnOrigins];
   const cdnOrigin = normalizeHttpsBaseUrl(src.cdnOrigin, DEFAULT_HOST_ADAPTER_CONFIG.cdnOrigin);
+  const remoteCsrfToken = String(src.remoteCsrfToken || DEFAULT_HOST_ADAPTER_CONFIG.remoteCsrfToken);
   const companionScripts = {
     ...DEFAULT_HOST_ADAPTER_CONFIG.companionScripts,
     ...(winCfg?.companionScripts || {}),
@@ -58,6 +60,7 @@ function resolveHostAdapterConfig(overrides, win) {
 
   return {
     rpcServicePrefix,
+    remoteCsrfToken,
     remoteHostDomains,
     staticCdnOrigins,
     cdnOrigin,

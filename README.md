@@ -1,4 +1,4 @@
-# Antigravity Custom MCP Server Manager (`antigravity-mcp-manager` `v1.4.18`)
+# Antigravity Custom MCP Server Manager (`antigravity-mcp-manager` `v1.5.0`)
 
 **Languages:** **English ([README.md](./README.md))** | **[한국어 (README.ko.md)](./README.ko.md)**
 
@@ -24,6 +24,10 @@ Add, edit, authenticate (`OAuth` / `Bearer` / `API Key` / `Basic`), toggle, and 
 - **Native & Remote Control Web `Settings` Sidebar `"MCP Servers"` Tab**:
   - Injects a dedicated **`"MCP Servers"` (`settings-nav-item-McpManager`)** tab into Antigravity's Settings modal (`.settings-modal-container`) right below the `"Models"` / `"KoTranslator"` tab—both in the native desktop app and inside Remote Control web (`ga-remote-control iframe`).
   - Clicking `"MCP Servers"` renders a full management dashboard inside the Settings modal with real-time status banners (`.agy-mcp-status-banner`), `⚡ Quick Auto-Add`, `+ Add Custom MCP Server`, `⚙️ Edit Server Settings`, `🔗 Connect <ServerName> ↗`, per-tool toggles, and `{ } Edit mcp_config.json`.
+- **FSM-Based Remote Frame Promoter & Non-Invasive Remote Host Launcher (`v1.5.0` Redesign)**:
+  - Splits Remote Control runtime leasing (`src/remote-runtime.js`), strict `TrustedTypes`/CSP companion loading (`src/companion-loader.js`), cross-origin workbench frame adaptation (`src/remote-frame-promoter.js`), and DOM integration (`src/native-dom-integrator.js`) into cohesive single-responsibility modules.
+  - Promotes `about:blank` child document URLs via zero-argument `cd.open(); cd.close();` (WHATWG HTML §8.4, zero `TrustedHTML` sink calls) with child `History` and dynamic chunk asset adapters so Antigravity `2.33.0+` TanStack Router `history.replaceState` and dynamic CDN chunks boot with zero `SecurityError` or black screens.
+  - Renders a non-invasive floating **`MCP Servers` (`#agy-mcp-remote-launcher`)** capsule on Remote Control host pages (outside `.agy-ctx-statusbar`) so mobile and strict-CSP (`trusted-types`) users can open the manager with a single tap even without iframe promotion or physical keyboards.
 - **OAuth-First Custom MCP Registration & Auto `Connect <ServerName> ↗` Modal**:
   - Enter your remote MCP portal/server URL. Antigravity's `language_server.exe` runs RFC 9728 / RFC 8414 OAuth discovery (`/.well-known/oauth-protected-resource` & `/.well-known/oauth-authorization-server`).
   - As soon as `state.authUrl` is detected, `antigravity-mcp-manager` automatically opens the **`Connect <ServerName>` OAuth Connect Modal** (`Connect <ServerName> ↗` button) and supports both automatic browser callback and manual authorization code / callback URL submission (`completeMcpOAuth(serverName, code)`).
@@ -37,7 +41,7 @@ Add, edit, authenticate (`OAuth` / `Bearer` / `API Key` / `Basic`), toggle, and 
 - **English Default UI + Automatic Korean Localization via `ko-thought-translator`**:
   - Ships with English UI defaults (`MCP Servers`, `Add Custom MCP Server`, `Connect <ServerName> ↗`, `Advanced OAuth Settings`, etc.) and localizes into Korean when `ko-thought-translator` is active.
 - **Standalone Zero-Offset `app.asar` Patcher & Host-Aware Remote Companion Loader**:
-  - Includes its own lexical-context-aware `scripts/ensure_statusbar_patch.js` (`v2.26.x` – `v2.32.x+`) so it runs standalone (1 plugin only) or alongside `antigravity-statusbar` and `ko-thought-translator` (2 or 3 plugins).
+  - Includes its own lexical-context-aware `scripts/ensure_statusbar_patch.js` (`v2.26.x` – `v2.33.x+`) so it runs standalone (1 plugin only) or alongside `antigravity-statusbar` and `ko-thought-translator` (2 or 3 plugins).
 
 ---
 
@@ -47,7 +51,7 @@ Add, edit, authenticate (`OAuth` / `Bearer` / `API Key` / `Basic`), toggle, and 
 git clone https://github.com/jaeseongs95/antigravity-mcp-manager.git
 cd antigravity-mcp-manager
 
-# 1. Run unit & bundle integration tests (31/31 tests)
+# 1. Run unit, integration & headless browser E2E tests (36/36 tests)
 npm test
 
 # 2. Build dist/mcp_manager_autoinject.js, install to ~/.gemini/antigravity, patch app.asar & live-inject via CDP
@@ -68,7 +72,7 @@ When accessing your Antigravity session remotely via **`https://antigravity.goog
 Copy the single-line JavaScript code below and save it as the **URL** of a browser bookmark:
 
 ```javascript
-javascript:(()=>{fetch('https://raw.githubusercontent.com/jaeseongs95/antigravity-mcp-manager/main/dist/mcp_manager_autoinject.js?t='+Date.now()).then(r=>r.text()).then(c=>{const s=document.createElement('script'),n=document.querySelector('script[nonce]')?.nonce,p=window.trustedTypes?.createPolicy('agy-mcp-'+Date.now(),{createScript:x=>x});if(n)s.nonce=n;s.text=p?p.createScript(c):c;document.head.appendChild(s)})})();
+javascript:(()=>{fetch('https://raw.githubusercontent.com/jaeseongs95/antigravity-mcp-manager/main/dist/mcp_manager_autoinject.js?t='+Date.now()).then(r=>{if(!r.ok)throw new Error(r.status);return r.text()}).then(c=>{const s=document.createElement('script'),n=[...document.scripts].map(x=>x.nonce||x.getAttribute('nonce')).find(Boolean);let p=null;try{p=window.trustedTypes?.createPolicy('agy-mcp-'+Date.now(),{createScript:x=>x})}catch{}if(n){s.nonce=n;s.setAttribute('nonce',n)}s.text=p?p.createScript(c):c;document.head.appendChild(s)})})();
 ```
 
 #### How to Add & Run on Desktop Chrome / Edge / Brave
@@ -76,7 +80,7 @@ javascript:(()=>{fetch('https://raw.githubusercontent.com/jaeseongs95/antigravit
 2. Set **Name** to `AGY MCP Manager` (or any name you prefer).
 3. Paste the `javascript:(()=>{...})();` code above into the **URL** field and click **Save**.
 4. Open your Antigravity Remote Control web session (`https://antigravity.google.com/r/...`) and click the **`AGY MCP Manager`** bookmark once.
-5. The `"MCP Servers"` tab in Settings and `+ Custom MCP` buttons in Customizations will immediately activate, and any companion plugins installed on your host PC (`antigravity-statusbar`, `ko-thought-translator`) will automatically load together.
+5. The `"MCP Servers"` tab in Settings, `+ Custom MCP` buttons in Customizations, and the top-right **`MCP Servers`** remote host launcher will immediately activate, and any companion plugins installed on your host PC (`antigravity-statusbar`, `ko-thought-translator`) will automatically load together.
 
 #### How to Add & Run on Mobile Chrome (Android / iOS)
 1. Bookmark any page in Mobile Chrome, then tap **Edit** on that bookmark.
@@ -102,6 +106,7 @@ javascript:(()=>{fetch('https://raw.githubusercontent.com/jaeseongs95/antigravit
 | :--- | :--- | :--- |
 | **Settings Modal -> `"MCP Servers"` Tab** | Open Antigravity `Settings` (`⚙️`) -> Click **`MCP Servers`** (`MCP 서버`) in the left sidebar | Embedded management pane with `⚡ Quick Auto-Add`, server cards, OAuth connect, tool toggles, and raw JSON editor. |
 | **Customizations -> `MCP Servers` Section** | Open `Customizations` -> `MCP Servers` | Click **`+ Custom MCP`** in the header or **`⚙️ Edit Settings`** / **`🔗 Connect OAuth`** on individual server rows. |
+| **Remote Host Floating Launcher (`#agy-mcp-remote-launcher`)** | Click **`MCP Servers`** capsule near top-right on `https://antigravity.google.com/r/...` | Opens the standalone manager directly on the Remote Control host page (works on mobile touch devices and strict-CSP pages without touching `.agy-ctx-statusbar`). |
 | **Standalone Manager Modal (`Ctrl+Alt+M`)** | Press **`Ctrl+Alt+M`** anywhere in the app | Opens the full standalone Custom MCP Server Manager modal directly (uses `Ctrl+Alt+M` so VS Code's native `Ctrl+Shift+M` Problems shortcut is preserved). |
 
 ---
@@ -126,7 +131,7 @@ javascript:(()=>{fetch('https://raw.githubusercontent.com/jaeseongs95/antigravit
 When you run the `antigravity-mcp-manager` bookmarklet on Remote Control web (`https://antigravity.google.com/r/...`), it inspects the host PC via `LanguageServerService` (`GetCustomizationStates` / `GetAllSkills` / `ReadFile` on `~/.gemini/antigravity/statusbar_autoinject.js`):
 
 - **Standalone Host Installation (`antigravity-mcp-manager` only)**: Loads only `antigravity-mcp-manager` without pulling uninstalled scripts.
-- **Multi-Plugin Host Installation (with `antigravity-statusbar` and/or `ko-thought-translator`)**: Automatically loads the companion plugins installed on your host PC (with TrustedTypes multi-policy + Blob URL fallback and offline host-bundle extraction).
+- **Multi-Plugin Host Installation (with `antigravity-statusbar` and/or `ko-thought-translator`)**: Coordinates single-owner frame promotion (`window.__agyMountMcpManager` handoff + reference-counted `onIframeLoad` suppression) and loads only the companion plugins installed on your host PC.
 
 ---
 
@@ -136,10 +141,14 @@ When you run the `antigravity-mcp-manager` bookmarklet on Remote Control web (`h
 antigravity-mcp-manager/
 ├── src/
 │   ├── host-adapter-config.js     # Configurable RPC prefix, remote domains, CDN origins & companion URLs
-│   ├── index.js                   # Settings sidebar tab, Customizations button injection, Ctrl+Alt+M & companion loader
+│   ├── mcp-config-schema.js       # Presets, Smart Auto-Parser (URL/curl/JSON/Stdio), OAuth & mcp_config.json schema
+│   ├── remote-runtime.js          # Isolated RemoteControlComponent lease & anchored companion manifest parser
+│   ├── companion-loader.js        # Scoped TrustedTypes policy, CSP nonce propagation & companion script loader
+│   ├── remote-frame-promoter.js   # Explicit FSM for Remote Control workbench frame promotion & rollback
 │   ├── host-mcp-bridge.js         # React Fiber & Remote proxyCommand RPC bridge, OAuth discovery & serialized config I/O
 │   ├── modal-ui.js                # Trusted-Types-safe modals (Add/Edit Server, OAuth Connect, Settings pane, Raw JSON)
-│   └── mcp-config-schema.js       # Presets, Smart Auto-Parser (URL/curl/JSON/Stdio), OAuth & mcp_config.json schema
+│   ├── native-dom-integrator.js   # Settings sidebar tab, Customizations buttons & non-invasive remote host launcher
+│   └── index.js                   # Lifecycle orchestrator, Ctrl+Alt+M shortcut & __agyMountMcpManager handoff
 ├── dist/
 │   └── mcp_manager_autoinject.js  # Built single-file runtime bundle (with ==UserScript== header)
 ├── scripts/
@@ -150,7 +159,7 @@ antigravity-mcp-manager/
 │   ├── TEST_CASES.md              # Pre-test verification specification & test matrix
 │   └── templates/                 # Bilingual README & Release Notes templates
 ├── test/
-│   └── mcp-manager.test.js        # Module unit tests + runtime bundle integration & regression tests (31/31)
+│   └── mcp-manager.test.js        # Module unit, bundle integration & real headless Chromium E2E tests (36/36)
 ├── .gitattributes                 # LF line-ending normalization across OS checkouts
 ├── README.md                      # Primary English documentation
 ├── README.ko.md                   # Korean documentation
@@ -163,7 +172,7 @@ antigravity-mcp-manager/
 ## Verification & Testing
 
 ```bash
-# Build dist/mcp_manager_autoinject.js and run all 31/31 unit + integration tests
+# Build dist/mcp_manager_autoinject.js and run all 36/36 unit, integration & Chromium E2E tests
 npm test
 ```
 
