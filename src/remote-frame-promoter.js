@@ -53,13 +53,28 @@ function hasTraversalSegment(pathname) {
   return false;
 }
 
+function isNativeTrustedUrlObject(cw, val) {
+  if (!val || typeof val !== 'object') return false;
+  if (typeof val.href === 'string') return false;
+  try {
+    if (cw && typeof cw.TrustedScriptURL === 'function' && val instanceof cw.TrustedScriptURL) {
+      return true;
+    }
+  } catch {}
+  try {
+    return Object.prototype.toString.call(val) === '[object TrustedScriptURL]';
+  } catch {
+    return false;
+  }
+}
+
 function resolveRelativeToCdnUrl(rawValue, cdnBaseUrl, hostOrigin) {
   if (typeof rawValue !== 'string') return null;
   const trimmed = rawValue.trim();
   if (!trimmed) return null;
   const cleanCdnBase = String(cdnBaseUrl || '').replace(/\/+$/, '');
   if (!cleanCdnBase) return null;
-  const cdnRoot = cleanCdnBase.replace(/\/web\/[^/]+$/, '');
+  const cdnRoot = cleanCdnBase.replace(/\/web\/.*$/, '');
 
   let cdnParsed;
   try {
@@ -68,28 +83,43 @@ function resolveRelativeToCdnUrl(rawValue, cdnBaseUrl, hostOrigin) {
     return null;
   }
   const cdnOrigin = cdnParsed.origin;
-  const cdnBasePrefix = cdnParsed.pathname;
+  let rootUrl;
+  try {
+    rootUrl = new URL(cdnRoot.endsWith('/') ? cdnRoot : cdnRoot + '/');
+  } catch {
+    return null;
+  }
+  const effectiveRootPrefix =
+    rootUrl.pathname !== '/'
+      ? rootUrl.pathname
+      : (/^\/web\//.test(cdnParsed.pathname) ? '/web/' : '/');
 
   if (/^(?:blob:|data:|javascript:|mailto:|tel:|about:)/i.test(trimmed)) return null;
   if (/^https?:\/\//i.test(trimmed)) {
-    if (hostOrigin) {
-      try {
-        const parsed = new URL(trimmed);
+    try {
+      const parsed = new URL(trimmed);
+      if (
+        parsed.protocol === 'https:' &&
+        parsed.origin === cdnOrigin &&
+        parsed.pathname.startsWith(effectiveRootPrefix) &&
+        !hasTraversalSegment(parsed.pathname)
+      ) {
+        return parsed.href;
+      }
+      if (hostOrigin) {
         const hOrig = new URL(String(hostOrigin)).origin;
         if (parsed.origin === hOrig && /^\/web\/[^/]+\//.test(parsed.pathname) && !hasTraversalSegment(parsed.pathname)) {
           return `${cdnRoot}${parsed.pathname}${parsed.search}${parsed.hash}`;
         }
-      } catch {}
-    }
+      }
+    } catch {}
     return null;
   }
   if (trimmed.startsWith('//') || trimmed.startsWith('#') || trimmed.startsWith('?') || trimmed.includes('\\') || /%2e%2e/i.test(trimmed)) {
     return null;
   }
   if (trimmed.startsWith('/web/')) {
-    const cdnRootBase = cdnRoot.endsWith('/') ? cdnRoot : cdnRoot + '/';
     try {
-      const rootUrl = new URL(cdnRootBase);
       const candidate = new URL(trimmed.slice(1), rootUrl);
       if (
         candidate.origin !== cdnOrigin ||
@@ -110,7 +140,7 @@ function resolveRelativeToCdnUrl(rawValue, cdnBaseUrl, hostOrigin) {
       const candidate = new URL(relInput, cdnParsed);
       if (
         candidate.origin !== cdnOrigin ||
-        !candidate.pathname.startsWith(cdnBasePrefix) ||
+        !candidate.pathname.startsWith(effectiveRootPrefix) ||
         hasTraversalSegment(candidate.pathname)
       ) {
         return null;
@@ -187,11 +217,12 @@ function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolve
               this.nonce = nonce;
             } catch {}
           }
-          if (val && typeof val === 'object') {
+          if (isNativeTrustedUrlObject(cw, val)) {
             desc.set.call(this, val);
             return;
           }
-          const nextVal = isScriptProp ? toSafeScriptUrl(val) : rewriteAssetUrl(val);
+          const rawStr = val && typeof val === 'object' && typeof val.href === 'string' ? val.href : val;
+          const nextVal = isScriptProp ? toSafeScriptUrl(rawStr) : rewriteAssetUrl(rawStr);
           desc.set.call(this, nextVal);
         },
       });
@@ -223,10 +254,11 @@ function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolve
               origElemSetAttr.call(this, 'nonce', nonce);
             } catch {}
           }
-          if (value && typeof value === 'object') {
+          if (isNativeTrustedUrlObject(cw, value)) {
             return origElemSetAttr.call(this, name, value);
           }
-          const safeVal = toSafeScriptUrl(value);
+          const rawVal = value && typeof value === 'object' && typeof value.href === 'string' ? value.href : value;
+          const safeVal = toSafeScriptUrl(rawVal);
           if (scriptSrcDesc && typeof scriptSrcDesc.set === 'function') {
             scriptSrcDesc.set.call(this, safeVal);
             return undefined;
@@ -234,7 +266,8 @@ function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolve
           return origElemSetAttr.call(this, name, safeVal);
         }
         if (attrLower === 'src' && (tagUpper === 'IMG' || tagUpper === 'SOURCE' || tagUpper === 'AUDIO' || tagUpper === 'VIDEO')) {
-          return origElemSetAttr.call(this, name, value && typeof value === 'object' ? value : rewriteAssetUrl(value));
+          const rawImg = value && typeof value === 'object' && typeof value.href === 'string' ? value.href : value;
+          return origElemSetAttr.call(this, name, isNativeTrustedUrlObject(cw, value) ? value : rewriteAssetUrl(rawImg));
         }
         if (attrLower === 'href' && tagUpper === 'LINK') {
           if (nonce) {
@@ -243,7 +276,8 @@ function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolve
               origElemSetAttr.call(this, 'nonce', nonce);
             } catch {}
           }
-          return origElemSetAttr.call(this, name, value && typeof value === 'object' ? value : rewriteAssetUrl(value));
+          const rawLink = value && typeof value === 'object' && typeof value.href === 'string' ? value.href : value;
+          return origElemSetAttr.call(this, name, isNativeTrustedUrlObject(cw, value) ? value : rewriteAssetUrl(rawLink));
         }
         return origElemSetAttr.call(this, name, value);
       };
@@ -259,11 +293,15 @@ function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolve
   function createCdnWorkerBridge(resolvedUrl, workerOptions) {
     let terminated = false;
     let loaded = false;
+    let pendingAsyncImports = 0;
     const pendingInbound = [];
     const listeners = { message: [], error: [], messageerror: [] };
     let onmessageHandler = null;
     let onerrorHandler = null;
     let onmessageerrorHandler = null;
+    const channel = typeof cw.MessageChannel === 'function' ? new cw.MessageChannel() : null;
+    const hostPort = channel ? channel.port1 : null;
+    const workerPort = channel ? channel.port2 : null;
 
     const dispatchHostEvent = (type, eventObj) => {
       if (terminated) return;
@@ -294,20 +332,28 @@ function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolve
       }
     };
 
-    const emitHostMessage = (data) => {
+    const emitHostMessage = (data, ports) => {
       if (terminated) return;
       const deliver = () => {
         if (terminated) return;
         let ev;
         try {
-          ev = typeof cw.MessageEvent === 'function' ? new cw.MessageEvent('message', { data }) : { type: 'message', data };
+          ev =
+            typeof cw.MessageEvent === 'function'
+              ? new cw.MessageEvent('message', { data, ports: ports || [] })
+              : { type: 'message', data, ports: ports || [] };
         } catch {
-          ev = { type: 'message', data };
+          ev = { type: 'message', data, ports: ports || [] };
         }
         dispatchHostEvent('message', ev);
       };
-      if (typeof queueMicrotask === 'function') queueMicrotask(deliver);
-      else Promise.resolve().then(deliver);
+      if (hostPort) {
+        deliver();
+      } else if (typeof queueMicrotask === 'function') {
+        queueMicrotask(deliver);
+      } else {
+        Promise.resolve().then(deliver);
+      }
     };
 
     const emitHostError = (errInfo) => {
@@ -329,6 +375,12 @@ function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolve
       if (terminated) return;
       terminated = true;
       pendingInbound.length = 0;
+      if (hostPort) {
+        try { hostPort.onmessage = null; hostPort.close(); } catch {}
+      }
+      if (workerPort) {
+        try { workerPort.onmessage = null; workerPort.close(); } catch {}
+      }
       if (workerFrame) {
         try {
           if (typeof workerFrame.remove === 'function') workerFrame.remove();
@@ -338,21 +390,84 @@ function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolve
       }
     };
 
-    const deliverToWorkerScope = (msg) => {
+    const deliverToWorkerScope = (msg, ports) => {
       if (terminated || !wfw) return;
       try {
         const ev =
-          typeof wfw.MessageEvent === 'function' ? new wfw.MessageEvent('message', { data: msg }) : { type: 'message', data: msg };
-        wfw.dispatchEvent?.(ev);
+          typeof wfw.MessageEvent === 'function'
+            ? new wfw.MessageEvent('message', { data: msg, ports: ports || [] })
+            : { type: 'message', data: msg, ports: ports || [] };
+        const prevOnMsg = typeof wfw.onmessage === 'function' ? wfw.onmessage : null;
+        let onMsgRan = false;
+        let sentinel = null;
+        if (prevOnMsg) {
+          sentinel = function () {
+            onMsgRan = true;
+            return prevOnMsg.apply(this, arguments);
+          };
+          try {
+            wfw.onmessage = sentinel;
+          } catch {
+            sentinel = null;
+          }
+        }
+        try {
+          wfw.dispatchEvent?.(ev);
+        } finally {
+          if (sentinel) {
+            try {
+              if (wfw.onmessage === sentinel) wfw.onmessage = prevOnMsg;
+            } catch {}
+          }
+        }
+        if (prevOnMsg && !onMsgRan) {
+          try {
+            prevOnMsg.call(wfw, ev);
+          } catch {}
+        }
       } catch {}
     };
 
+    const flushInboundQueueIfReady = () => {
+      if (terminated || !loaded || pendingAsyncImports > 0) return;
+      const queued = pendingInbound.splice(0, pendingInbound.length);
+      for (let i = 0; i < queued.length; i++) {
+        const item = queued[i];
+        if (hostPort) {
+          try {
+            if (item.transfer !== undefined) hostPort.postMessage(item.msg, item.transfer);
+            else hostPort.postMessage(item.msg);
+            continue;
+          } catch {}
+        }
+        deliverToWorkerScope(item.msg);
+      }
+    };
+
+    if (hostPort && workerPort) {
+      hostPort.onmessage = (ev) => {
+        emitHostMessage(ev.data, ev.ports);
+      };
+      workerPort.onmessage = (ev) => {
+        deliverToWorkerScope(ev.data, ev.ports);
+      };
+      try { hostPort.start?.(); } catch {}
+      try { workerPort.start?.(); } catch {}
+    }
+
     const shim = {
-      postMessage(msg) {
+      postMessage(msg, transfer) {
         if (terminated) return;
-        if (!loaded) {
-          pendingInbound.push(msg);
+        if (!loaded || pendingAsyncImports > 0) {
+          pendingInbound.push({ msg, transfer });
           return;
+        }
+        if (hostPort) {
+          try {
+            if (transfer !== undefined) hostPort.postMessage(msg, transfer);
+            else hostPort.postMessage(msg);
+            return;
+          } catch {}
         }
         deliverToWorkerScope(msg);
       },
@@ -400,6 +515,7 @@ function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolve
 
     const hostParent = cd.body || cd.documentElement;
     if (!hostParent || typeof hostParent.appendChild !== 'function') {
+      terminateBridge();
       throw new TypeError('Unable to mount isolated CDN Worker helper frame');
     }
     workerFrame = origCreateEl('iframe');
@@ -420,14 +536,118 @@ function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolve
       wfd.close();
     } catch {}
 
+    let workerScriptDir = cdnBaseUrl;
+    try {
+      workerScriptDir = new URL('.', resolvedUrl).href.replace(/\/+$/, '');
+    } catch {}
+
+    const resolveImportUrl = (rawArg) => {
+      if (isNativeTrustedUrlObject(cw, rawArg) || isNativeTrustedUrlObject(wfw, rawArg)) {
+        const str = String(rawArg).trim();
+        if (isAllowedMcpScriptUrl(str, resolvedHostCfg)) return str;
+        throw new (wfw.TypeError || TypeError)('Untrusted importScripts URL rejected');
+      }
+      const rawImport = String(
+        rawArg && typeof rawArg === 'object' && typeof rawArg.href === 'string'
+          ? rawArg.href
+          : (rawArg ?? '')
+      ).trim();
+      if (!rawImport) {
+        throw new (wfw.TypeError || TypeError)('Empty importScripts URL rejected');
+      }
+      const candidate = resolveRelativeToCdnUrl(rawImport, workerScriptDir, hostOrigin) || rawImport;
+      if (!isAllowedMcpScriptUrl(candidate, resolvedHostCfg)) {
+        throw new (wfw.TypeError || TypeError)(`Untrusted importScripts URL rejected: ${rawImport}`);
+      }
+      return candidate;
+    };
+
+    const loadImportedScriptSyncOrQueued = (safeImportUrl) => {
+      const targetEl = wfd.head || wfd.body || wfd.documentElement;
+      if (!targetEl) throw new (wfw.Error || Error)('Worker helper document unavailable');
+      if (typeof wfw.XMLHttpRequest === 'function' && (nonce || !ttPolicyCtrl?.hasNativePolicy)) {
+        const xhr = new wfw.XMLHttpRequest();
+        xhr.open('GET', safeImportUrl, false);
+        xhr.send(null);
+        if (xhr.status < 200 || xhr.status >= 300) {
+          throw new (wfw.Error || Error)(`Failed to importScripts (${xhr.status}): ${safeImportUrl}`);
+        }
+        const code = String(xhr.responseText || '');
+        const depEl = wfd.createElement('script');
+        if (nonce) {
+          depEl.nonce = nonce;
+          depEl.setAttribute?.('nonce', nonce);
+        }
+        if (ttPolicyCtrl) {
+          ttPolicyCtrl.allowInline(code);
+          depEl.text = ttPolicyCtrl.toScript(code);
+          try {
+            targetEl.appendChild(depEl);
+          } finally {
+            ttPolicyCtrl.revokeInline(code);
+          }
+        } else {
+          depEl.text = code;
+          targetEl.appendChild(depEl);
+        }
+        return;
+      }
+
+      pendingAsyncImports += 1;
+      const depEl = wfd.createElement('script');
+      if (nonce) {
+        depEl.nonce = nonce;
+        depEl.setAttribute?.('nonce', nonce);
+      }
+      depEl.async = false;
+      depEl.src = ttPolicyCtrl ? ttPolicyCtrl.toScriptURL(safeImportUrl) : safeImportUrl;
+      depEl.addEventListener?.('load', () => {
+        pendingAsyncImports = Math.max(0, pendingAsyncImports - 1);
+        flushInboundQueueIfReady();
+      }, { once: true });
+      depEl.addEventListener?.('error', (ev) => {
+        pendingAsyncImports = Math.max(0, pendingAsyncImports - 1);
+        emitHostError(ev);
+        flushInboundQueueIfReady();
+      }, { once: true });
+      targetEl.appendChild(depEl);
+    };
+
     try {
       Object.defineProperty(wfw, 'postMessage', {
-        value: (msg) => emitHostMessage(msg),
+        value: (msg, transfer) => {
+          if (terminated) return;
+          if (workerPort) {
+            try {
+              if (transfer !== undefined) workerPort.postMessage(msg, transfer);
+              else workerPort.postMessage(msg);
+              return;
+            } catch {}
+          }
+          emitHostMessage(msg);
+        },
         configurable: true,
         writable: true,
       });
       Object.defineProperty(wfw, 'close', {
         value: terminateBridge,
+        configurable: true,
+        writable: true,
+      });
+      Object.defineProperty(wfw, 'importScripts', {
+        value: (...urls) => {
+          if (terminated) return;
+          if (workerOptions && workerOptions.type === 'module') {
+            throw new (wfw.TypeError || TypeError)("Module scripts don't support importScripts().");
+          }
+          const resolvedUrls = [];
+          for (let i = 0; i < urls.length; i++) {
+            resolvedUrls.push(resolveImportUrl(urls[i]));
+          }
+          for (let i = 0; i < resolvedUrls.length; i++) {
+            loadImportedScriptSyncOrQueued(resolvedUrls[i]);
+          }
+        },
         configurable: true,
         writable: true,
       });
@@ -448,10 +668,7 @@ function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolve
     sc.addEventListener?.('load', () => {
       if (terminated) return;
       loaded = true;
-      const queued = pendingInbound.splice(0, pendingInbound.length);
-      for (let i = 0; i < queued.length; i++) {
-        deliverToWorkerScope(queued[i]);
-      }
+      flushInboundQueueIfReady();
     }, { once: true });
     sc.addEventListener?.('error', (ev) => {
       emitHostError(ev);
@@ -465,16 +682,18 @@ function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolve
   if (cw && typeof cw.Worker === 'function' && !cw.Worker.__agyWorkerAdapted) {
     const OrigWorker = cw.Worker;
     const AdaptedWorker = function (scriptURL, options) {
-      if (scriptURL && typeof scriptURL === 'object') {
-        return options !== undefined ? new OrigWorker(scriptURL, options) : new OrigWorker(scriptURL);
-      }
-      const rawStr = String(scriptURL ?? '').trim();
+      const isTrustedUrlObj = isNativeTrustedUrlObject(cw, scriptURL);
+      const rawStr = String(
+        scriptURL && typeof scriptURL === 'object' && typeof scriptURL.href === 'string'
+          ? scriptURL.href
+          : (scriptURL ?? '')
+      ).trim();
       if (rawStr.startsWith('blob:')) {
         if (hostOrigin && !rawStr.startsWith(`blob:${hostOrigin}/`)) {
           throw new TypeError('Cross-origin blob Worker URL rejected');
         }
         let safeBlob = scriptURL;
-        if (ttPolicyCtrl) {
+        if (!isTrustedUrlObj && ttPolicyCtrl) {
           ttPolicyCtrl.allowBlob(rawStr);
           safeBlob = ttPolicyCtrl.toScriptURL(rawStr);
         }
@@ -493,7 +712,7 @@ function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolve
         sameOriginWithPage = Boolean(pageOrigin && new URL(resolvedUrl).origin === pageOrigin);
       } catch {}
       if (sameOriginWithPage) {
-        const safeDirect = ttPolicyCtrl ? ttPolicyCtrl.toScriptURL(resolvedUrl) : resolvedUrl;
+        const safeDirect = isTrustedUrlObj ? scriptURL : (ttPolicyCtrl ? ttPolicyCtrl.toScriptURL(resolvedUrl) : resolvedUrl);
         return options !== undefined ? new OrigWorker(safeDirect, options) : new OrigWorker(safeDirect);
       }
       return createCdnWorkerBridge(resolvedUrl, options);
@@ -555,11 +774,12 @@ function installChildAssetAdapter(cw, cd, nonce, cdnBaseUrl, hostOrigin, resolve
               return innerVal;
             },
             set(val) {
-              if (val && typeof val === 'object') {
+              if (isNativeTrustedUrlObject(cw, val)) {
                 innerVal = val;
                 return;
               }
-              innerVal = lower === 'script' ? toSafeScriptUrl(val) : rewriteAssetUrl(val);
+              const rawInner = val && typeof val === 'object' && typeof val.href === 'string' ? val.href : val;
+              innerVal = lower === 'script' ? toSafeScriptUrl(rawInner) : rewriteAssetUrl(rawInner);
             },
           });
         } catch {}

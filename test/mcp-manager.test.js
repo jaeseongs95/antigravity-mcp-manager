@@ -4402,6 +4402,15 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
       res.end();
       return;
     }
+    if (u.pathname === '/r/style-nonce-only') {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Content-Security-Policy', [
+        `script-src 'nonce-${hostNonce}';style-src 'nonce-${hostNonce}';connect-src *;worker-src 'self'`,
+        "require-trusted-types-for 'script'",
+      ]);
+      res.end(`<!doctype html><html><head><style nonce="${hostNonce}">body{margin:0;background:#111;color:#fff}</style></head><body><div id="style-only-host">ok</div></body></html>`);
+      return;
+    }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     // Verbatim observed Content-Security-Policy headers from live https://antigravity.google.com/r/...-v2
     const cspHeaders = [
@@ -4588,6 +4597,21 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
     if (u.pathname.endsWith('/__e2e_worker.js')) {
       res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
       res.end('self.addEventListener && self.addEventListener("message", (e) => self.postMessage("ECHO:" + e.data)); self.postMessage("CDN_WORKER_READY");');
+      return;
+    }
+    if (u.pathname.endsWith('/__e2e_worker_dep.js')) {
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      res.end('self.__e2eImportedFactor = 77;');
+      return;
+    }
+    if (u.pathname.endsWith('/__e2e_worker_onmsg.js')) {
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      res.end('importScripts("./__e2e_worker_dep.js"); self.onmessage = function (e) { self.postMessage("ONMSG:" + e.data + ":" + (self.__e2eImportedFactor || 0)); }; self.postMessage("ONMSG_BOOT:" + (self.__e2eImportedFactor || 0));');
+      return;
+    }
+    if (u.pathname === '/web/shared/helper.js' || u.pathname === '/antigravity/web/shared/helper.js') {
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      res.end('window.__e2eSharedHelperLoaded = true;');
       return;
     }
     if (u.pathname.endsWith('/__e2e_pixel.svg')) {
@@ -4924,7 +4948,63 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
                 resolve({ ready: false, echo: null, err: String(err) });
               }
             });
-            const [chunkLoaded, setAttrChunkLoaded, imgLoadedSrc, dotChunkLoaded, workerResult] = await Promise.all([p1, p2, p3, p4, p5]);
+            const p6 = new Promise((resolve) => {
+              const timer = setTimeout(() => resolve({ ok: false, err: 'timeout-onmsg' }), 4000);
+              try {
+                const wUrlRel = new cw.Worker(new cw.URL('./__e2e_worker_onmsg.js', cw.location.href));
+                const seen = [];
+                wUrlRel.onmessage = (ev) => {
+                  seen.push(ev.data);
+                  if (ev.data === 'ONMSG_BOOT:77') {
+                    wUrlRel.postMessage('Z');
+                  } else if (ev.data === 'ONMSG:Z:77') {
+                    wUrlRel.terminate();
+                    clearTimeout(timer);
+                    resolve({ ok: true, seen });
+                  }
+                };
+                wUrlRel.onerror = (ev) => {
+                  clearTimeout(timer);
+                  resolve({ ok: false, seen, err: String(ev?.message || 'worker-url-err') });
+                };
+              } catch (err) {
+                clearTimeout(timer);
+                resolve({ ok: false, err: String(err) });
+              }
+            });
+            const p7 = new Promise((resolve) => {
+              const timer = setTimeout(() => resolve({ ok: false, err: 'timeout-abs-url' }), 4000);
+              try {
+                const wUrlAbs = new cw.Worker(new cw.URL('https://www.gstatic.com/antigravity/web/2.33.0/__e2e_worker_onmsg.js'));
+                wUrlAbs.onmessage = (ev) => {
+                  if (ev.data === 'ONMSG_BOOT:77') {
+                    wUrlAbs.postMessage('ABS');
+                  } else if (ev.data === 'ONMSG:ABS:77') {
+                    wUrlAbs.terminate();
+                    clearTimeout(timer);
+                    resolve({ ok: true, last: ev.data });
+                  }
+                };
+                wUrlAbs.onerror = (ev) => {
+                  clearTimeout(timer);
+                  resolve({ ok: false, err: String(ev?.message || 'worker-abs-url-err') });
+                };
+              } catch (err) {
+                clearTimeout(timer);
+                resolve({ ok: false, err: String(err) });
+              }
+            });
+            let sharedFinalSrc = '';
+            const p8 = new Promise((resolve) => {
+              cw.__e2eSharedHelperLoaded = false;
+              const sShared = cd.createElement('script');
+              sShared.onload = () => resolve(Boolean(cw.__e2eSharedHelperLoaded));
+              sShared.onerror = () => resolve(false);
+              sShared.src = '../shared/helper.js';
+              sharedFinalSrc = sShared.src;
+              cd.head.appendChild(sShared);
+            });
+            const [chunkLoaded, setAttrChunkLoaded, imgLoadedSrc, dotChunkLoaded, workerResult, workerUrlRelResult, workerUrlAbsResult, sharedLoaded] = await Promise.all([p1, p2, p3, p4, p5, p6, p7, p8]);
             await new Promise((r) => setTimeout(r, 80));
             return {
               chunkLoaded,
@@ -4933,6 +5013,10 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
               dotChunkLoaded,
               sDotFinalSrc,
               workerResult,
+              workerUrlRelResult,
+              workerUrlAbsResult,
+              sharedLoaded,
+              sharedFinalSrc,
               s1FinalSrc,
               s1NonceLen: s1Nonce.length,
               s2FinalSrc,
@@ -4957,6 +5041,10 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
     assert.equal(adapterResA?.imgLoadedSrc, 'https://www.gstatic.com/antigravity/web/2.33.0/__e2e_pixel.svg', 'MCP-TC-038(A): new Image().src relative path must rewrite to CDN');
     assert.equal(adapterResA?.workerResult?.ready, true, `MCP-TC-038(A): CDN cross-origin Worker must load without blob: worker-src violation: ${JSON.stringify(adapterResA)}`);
     assert.equal(adapterResA?.workerResult?.echo, 'ECHO:PING', `MCP-TC-038(A): CDN cross-origin Worker bidirectional postMessage must succeed: ${JSON.stringify(adapterResA)}`);
+    assert.equal(adapterResA?.workerUrlRelResult?.ok, true, `MCP-TC-038(A): new Worker(new URL('./__e2e_worker_onmsg.js', cw.location.href)) with importScripts + self.onmessage must succeed: ${JSON.stringify(adapterResA?.workerUrlRelResult)}`);
+    assert.equal(adapterResA?.workerUrlAbsResult?.ok, true, `MCP-TC-038(A): new Worker(new URL('https://www.gstatic.com/...')) with importScripts + self.onmessage must succeed: ${JSON.stringify(adapterResA?.workerUrlAbsResult)}`);
+    assert.equal(adapterResA?.sharedLoaded, true, `MCP-TC-038(A): parent-relative ../shared/helper.js must load cleanly from CDN root: ${JSON.stringify(adapterResA)}`);
+    assert.equal(adapterResA?.sharedFinalSrc, 'https://www.gstatic.com/antigravity/web/shared/helper.js', 'MCP-TC-038(A): ../shared/helper.js must resolve under /antigravity/web/shared/');
 
     // Open real Antigravity 2.33.0 Settings screen (?settingsOpen=true) inside promoted child & verify real settings-nav-item-McpManager tab + host reconnect!
     await sendCdp(
@@ -5232,6 +5320,32 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
     assert.equal(snapD?.styleNonce, hostNonce, 'MCP-TC-038(D): #agy-mcp-manager-styles must carry active host nonce');
     assert.deepEqual(snapD?.cspViolations, [], `MCP-TC-038(D): zero CSP violations under strict style-src 'nonce-...': ${JSON.stringify(snapD)}`);
     assert.deepEqual(snapD?.errors, [], `MCP-TC-038(D): zero uncaught errors under strict style-src 'nonce-...': ${JSON.stringify(snapD)}`);
+
+    // === Scenario E (BLOCKING-3): README.md verbatim bookmarklet on host page with ONLY <style nonce="..."> ===
+    await sendCdp('Page.navigate', { url: 'https://antigravity.google.com/r/style-nonce-only' }, sessionId);
+    for (let i = 0; i < 40; i++) {
+      const r = await sendCdp('Runtime.evaluate', { expression: 'Boolean(document.getElementById("style-only-host"))', returnByValue: true }, sessionId);
+      if (r?.result?.value === true) break;
+      await new Promise((res) => setTimeout(res, 50));
+    }
+    const bmEvalE = await sendCdp('Runtime.evaluate', { expression: bookmarkletExpr, returnByValue: true }, sessionId);
+    assert.equal(bmEvalE.exceptionDetails, undefined, 'MCP-TC-038(E): README bookmarklet must not throw on <style nonce>-only page');
+    let snapE = null;
+    for (let i = 0; i < 50; i++) {
+      const r = await sendCdp(
+        'Runtime.evaluate',
+        {
+          expression: '(() => { const s = document.getElementById("agy-mcp-manager-styles"); return { hasMgr: Boolean(window.agyMcpManager && window.__agyMcpManagerActive), styleNonce: s ? (s.nonce || s.getAttribute?.("nonce") || "") : "", styleTags: document.querySelectorAll("style").length, scriptCount: document.scripts.length }; })()',
+          returnByValue: true,
+        },
+        sessionId
+      );
+      snapE = r?.result?.value;
+      if (snapE?.hasMgr) break;
+      await new Promise((res) => setTimeout(res, 60));
+    }
+    assert.equal(snapE?.hasMgr, true, `MCP-TC-038(E): README bookmarklet must activate mcp-manager when host page only has <style nonce>: ${JSON.stringify(snapE)}`);
+    assert.equal(snapE?.styleNonce, hostNonce, 'MCP-TC-038(E): injected style tag must reuse <style nonce> on style-nonce-only page');
   } finally {
     try { cdpWs?.close(); } catch {}
     try { chromeProc?.kill(); } catch {}
@@ -5631,12 +5745,17 @@ test('MCP-TC-040 (BLOCKING-B,C,E): resolveRelativeToCdnUrl dot-segment normaliza
     'MCP-TC-040: valid /web/<ver>/sub/../ dot-segment must normalize cleanly'
   );
   assert.equal(
-    resolveRelativeToCdnUrl('../secret.js', cdnBase, hostOrigin),
-    null,
-    'MCP-TC-040: relative .. escaping /web/<ver>/ base must be rejected'
+    resolveRelativeToCdnUrl('../shared/helper.js', cdnBase, hostOrigin),
+    'https://www.gstatic.com/antigravity/web/shared/helper.js',
+    'MCP-TC-040: parent-relative sibling path within /antigravity/web/ must resolve cleanly'
   );
   assert.equal(
-    resolveRelativeToCdnUrl('../../secret.js', cdnBase, hostOrigin),
+    resolveRelativeToCdnUrl('../../assets/icon.svg', cdnBase, hostOrigin),
+    'https://www.gstatic.com/antigravity/assets/icon.svg',
+    'MCP-TC-040: valid relative path within CDN root (/antigravity/) must resolve cleanly'
+  );
+  assert.equal(
+    resolveRelativeToCdnUrl('../../../secret.js', cdnBase, hostOrigin),
     null,
     'MCP-TC-040: multi-level .. escaping CDN root must be rejected'
   );
