@@ -2262,7 +2262,6 @@
       function createCdnWorkerBridge(resolvedUrl, workerOptions) {
         let terminated = false;
         let loaded = false;
-        let pendingAsyncImports = 0;
         const pendingInbound = [];
         const listeners = { message: [], error: [], messageerror: [] };
         let onmessageHandler = null;
@@ -2391,7 +2390,7 @@
           } catch {}
         };
         const flushInboundQueueIfReady = () => {
-          if (terminated || !loaded || pendingAsyncImports > 0) return;
+          if (terminated || !loaded) return;
           const queued = pendingInbound.splice(0, pendingInbound.length);
           for (let i = 0; i < queued.length; i++) {
             const item = queued[i];
@@ -2418,7 +2417,7 @@
         const shim = {
           postMessage(msg, transfer) {
             if (terminated) return;
-            if (!loaded || pendingAsyncImports > 0) {
+            if (!loaded) {
               pendingInbound.push({ msg, transfer });
               return;
             }
@@ -2495,9 +2494,24 @@
           wfd.close();
         } catch {}
         let workerScriptDir = cdnBaseUrl;
+        let parsedWorkerUrl = null;
         try {
+          parsedWorkerUrl = new URL(resolvedUrl);
           workerScriptDir = new URL('.', resolvedUrl).href.replace(/\/+$/, '');
         } catch {}
+        const rewriteWorkerAssetUrl = (rawArg) => {
+          const rawStr = String(
+            rawArg && typeof rawArg === 'object' && typeof rawArg.href === 'string'
+              ? rawArg.href
+              : (rawArg ?? '')
+          ).trim();
+          if (!rawStr) return rawStr;
+          if (/^(?:https?:|blob:|data:|about:)/i.test(rawStr) || rawStr.startsWith('//')) {
+            return rawStr;
+          }
+          const relBase = rawStr.startsWith('/') ? cdnBaseUrl : workerScriptDir;
+          return resolveRelativeToCdnUrl(rawStr, relBase, hostOrigin) || rawStr;
+        };
         const resolveImportUrl = (rawArg) => {
           if (isNativeTrustedUrlObject(cw, rawArg) || isNativeTrustedUrlObject(wfw, rawArg)) {
             const str = String(rawArg).trim();
@@ -2518,56 +2532,197 @@
           }
           return candidate;
         };
-        const loadImportedScriptSyncOrQueued = (safeImportUrl) => {
+        const origXhrProto = wfw.XMLHttpRequest && wfw.XMLHttpRequest.prototype;
+        const origXhrOpen = origXhrProto && typeof origXhrProto.open === 'function' ? origXhrProto.open : null;
+        if (origXhrOpen) {
+          try {
+            origXhrProto.open = function (method, url, ...rest) {
+              const rewrittenUrl =
+                typeof url === 'string' || (url && typeof url.href === 'string')
+                  ? rewriteWorkerAssetUrl(url)
+                  : url;
+              return origXhrOpen.call(this, method, rewrittenUrl, ...rest);
+            };
+          } catch {}
+        }
+        if (typeof wfw.fetch === 'function') {
+          try {
+            const origWfwFetch = wfw.fetch.bind(wfw);
+            wfw.fetch = (input, init) => {
+              if (
+                typeof input === 'string' ||
+                (input && typeof input.href === 'string' && !(wfw.Request && input instanceof wfw.Request))
+              ) {
+                return origWfwFetch(rewriteWorkerAssetUrl(input), init);
+              }
+              return origWfwFetch(input, init);
+            };
+          } catch {}
+        }
+        if (typeof wfw.Request === 'function' && typeof (wfw.Proxy || Proxy) === 'function') {
+          try {
+            const OrigWfwRequest = wfw.Request;
+            const ProxyCtor = wfw.Proxy || Proxy;
+            wfw.Request = new ProxyCtor(OrigWfwRequest, {
+              construct(Target, args, newTarget) {
+                if (
+                  args.length > 0 &&
+                  (typeof args[0] === 'string' ||
+                    (args[0] && typeof args[0].href === 'string' && !(args[0] instanceof Target)))
+                ) {
+                  const nextArgs = args.slice();
+                  nextArgs[0] = rewriteWorkerAssetUrl(args[0]);
+                  return Reflect.construct(Target, nextArgs, newTarget);
+                }
+                return Reflect.construct(Target, args, newTarget);
+              },
+            });
+          } catch {}
+        }
+        let importSyncSeq = 0;
+        const loadImportedScriptSync = (safeImportUrl) => {
           const targetEl = wfd.head || wfd.body || wfd.documentElement;
           if (!targetEl) throw new (wfw.Error || Error)('Worker helper document unavailable');
-          if (typeof wfw.XMLHttpRequest === 'function' && (nonce || !ttPolicyCtrl?.hasNativePolicy)) {
-            const xhr = new wfw.XMLHttpRequest();
-            xhr.open('GET', safeImportUrl, false);
-            xhr.send(null);
-            if (xhr.status < 200 || xhr.status >= 300) {
-              throw new (wfw.Error || Error)(`Failed to importScripts (${xhr.status}): ${safeImportUrl}`);
-            }
-            const code = String(xhr.responseText || '');
-            const depEl = wfd.createElement('script');
-            if (nonce) {
-              depEl.nonce = nonce;
-              depEl.setAttribute?.('nonce', nonce);
-            }
-            if (ttPolicyCtrl) {
-              ttPolicyCtrl.allowInline(code);
-              depEl.text = ttPolicyCtrl.toScript(code);
-              try {
-                targetEl.appendChild(depEl);
-              } finally {
-                ttPolicyCtrl.revokeInline(code);
-              }
-            } else {
-              depEl.text = code;
-              targetEl.appendChild(depEl);
-            }
-            return;
+          if (typeof wfw.XMLHttpRequest !== 'function') {
+            throw new (wfw.Error || Error)('importScripts requires synchronous XMLHttpRequest');
           }
-          pendingAsyncImports += 1;
+          const xhr = new wfw.XMLHttpRequest();
+          if (origXhrOpen) origXhrOpen.call(xhr, 'GET', safeImportUrl, false);
+          else xhr.open('GET', safeImportUrl, false);
+          xhr.send(null);
+          if (xhr.status < 200 || xhr.status >= 300) {
+            throw new (wfw.Error || Error)(`Failed to importScripts (${xhr.status}): ${safeImportUrl}`);
+          }
+          const code = String(xhr.responseText || '');
+          const execFlag = `__agyImpSync_${++importSyncSeq}`;
+          const markedCode = `${code}\n;try{self[${JSON.stringify(execFlag)}]=1;}catch{}`;
           const depEl = wfd.createElement('script');
           if (nonce) {
             depEl.nonce = nonce;
             depEl.setAttribute?.('nonce', nonce);
           }
-          depEl.async = false;
-          depEl.src = ttPolicyCtrl ? ttPolicyCtrl.toScriptURL(safeImportUrl) : safeImportUrl;
-          depEl.addEventListener?.('load', () => {
-            pendingAsyncImports = Math.max(0, pendingAsyncImports - 1);
-            flushInboundQueueIfReady();
-          }, { once: true });
-          depEl.addEventListener?.('error', (ev) => {
-            pendingAsyncImports = Math.max(0, pendingAsyncImports - 1);
-            emitHostError(ev);
-            flushInboundQueueIfReady();
-          }, { once: true });
-          targetEl.appendChild(depEl);
+          let executedSync = false;
+          let syncRuntimeErr = null;
+          const onSyncErr = (ev) => {
+            syncRuntimeErr = ev?.error || new (wfw.Error || Error)(ev?.message || 'importScripts execution error');
+          };
+          wfw.addEventListener?.('error', onSyncErr);
+          try {
+            try { delete wfw[execFlag]; } catch {}
+            if (ttPolicyCtrl) {
+              ttPolicyCtrl.allowInline(markedCode);
+              depEl.text = ttPolicyCtrl.toScript(markedCode);
+              try {
+                targetEl.appendChild(depEl);
+              } finally {
+                ttPolicyCtrl.revokeInline(markedCode);
+              }
+            } else {
+              depEl.text = markedCode;
+              targetEl.appendChild(depEl);
+            }
+            executedSync = wfw[execFlag] === 1;
+          } finally {
+            wfw.removeEventListener?.('error', onSyncErr);
+            try { delete wfw[execFlag]; } catch {}
+          }
+          if (syncRuntimeErr) {
+            throw syncRuntimeErr;
+          }
+          if (!executedSync && typeof wfw.eval === 'function') {
+            try {
+              if (ttPolicyCtrl) {
+                ttPolicyCtrl.allowInline(markedCode);
+                try {
+                  (0, wfw.eval)(ttPolicyCtrl.toScript(markedCode));
+                } finally {
+                  ttPolicyCtrl.revokeInline(markedCode);
+                }
+              } else {
+                (0, wfw.eval)(markedCode);
+              }
+              executedSync = wfw[execFlag] === 1;
+            } finally {
+              try { delete wfw[execFlag]; } catch {}
+            }
+          }
+          if (!executedSync) {
+            throw new (wfw.Error || Error)(`importScripts blocked from synchronous execution: ${safeImportUrl}`);
+          }
         };
+        const workerLocationObj = parsedWorkerUrl
+          ? Object.freeze({
+              href: parsedWorkerUrl.href,
+              origin: parsedWorkerUrl.origin,
+              protocol: parsedWorkerUrl.protocol,
+              host: parsedWorkerUrl.host,
+              hostname: parsedWorkerUrl.hostname,
+              port: parsedWorkerUrl.port,
+              pathname: parsedWorkerUrl.pathname,
+              search: parsedWorkerUrl.search,
+              hash: parsedWorkerUrl.hash,
+              toString() {
+                return parsedWorkerUrl.href;
+              },
+              valueOf() {
+                return parsedWorkerUrl.href;
+              },
+            })
+          : wfw.location;
+        const WINDOW_RECEIVER_METHODS = new Set([
+          'addEventListener',
+          'removeEventListener',
+          'dispatchEvent',
+          'setTimeout',
+          'clearTimeout',
+          'setInterval',
+          'clearInterval',
+          'queueMicrotask',
+          'requestAnimationFrame',
+          'cancelAnimationFrame',
+          'atob',
+          'btoa',
+          'createImageBitmap',
+          'structuredClone',
+          'reportError',
+          'getComputedStyle',
+          'matchMedia',
+        ]);
+        let workerSelfProxy = wfw;
+        if (typeof (wfw.Proxy || Proxy) === 'function') {
+          const ProxyCtor = wfw.Proxy || Proxy;
+          const boundMethodCache = new WeakMap();
+          workerSelfProxy = new ProxyCtor(wfw, {
+            get(target, prop) {
+              if (prop === 'location') return workerLocationObj;
+              if (prop === 'self') return workerSelfProxy;
+              const val = Reflect.get(target, prop, target);
+              if (typeof val === 'function' && WINDOW_RECEIVER_METHODS.has(prop)) {
+                let bound = boundMethodCache.get(val);
+                if (!bound) {
+                  bound = val.bind(target);
+                  boundMethodCache.set(val, bound);
+                }
+                return bound;
+              }
+              return val;
+            },
+            set(target, prop, value) {
+              if (prop === 'location') return true;
+              return Reflect.set(target, prop, value, target);
+            },
+            has(target, prop) {
+              return prop === 'location' || prop === 'self' || Reflect.has(target, prop);
+            },
+          });
+        }
         try {
+          Object.defineProperty(wfw, 'self', {
+            value: workerSelfProxy,
+            configurable: true,
+            writable: true,
+            enumerable: true,
+          });
           Object.defineProperty(wfw, 'postMessage', {
             value: (msg, transfer) => {
               if (terminated) return;
@@ -2599,7 +2754,7 @@
                 resolvedUrls.push(resolveImportUrl(urls[i]));
               }
               for (let i = 0; i < resolvedUrls.length; i++) {
-                loadImportedScriptSyncOrQueued(resolvedUrls[i]);
+                loadImportedScriptSync(resolvedUrls[i]);
               }
             },
             configurable: true,
@@ -2609,6 +2764,13 @@
             wfw.name = String(workerOptions.name);
           }
         } catch {}
+        wfw.addEventListener?.('error', (ev) => {
+          if (terminated) return;
+          emitHostError({
+            message: ev?.message || 'Worker script error',
+            error: ev?.error || null,
+          });
+        });
         const sc = wfd.createElement('script');
         if (nonce) {
           sc.nonce = nonce;

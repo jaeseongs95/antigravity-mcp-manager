@@ -4411,6 +4411,75 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
       res.end(`<!doctype html><html><head><style nonce="${hostNonce}">body{margin:0;background:#111;color:#fff}</style></head><body><div id="style-only-host">ok</div></body></html>`);
       return;
     }
+    if (u.pathname === '/r/no-nonce-tt') {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Content-Security-Policy', [
+        "script-src 'self' https://www.gstatic.com https://antigravity.google.com 'unsafe-inline';object-src 'none';base-uri 'self';worker-src 'self'",
+        "require-trusted-types-for 'script'",
+      ]);
+      res.end(`<!doctype html><html><head><script>
+        window.__e2eCspViolations = [];
+        window.__e2eErrors = [];
+        document.addEventListener('securitypolicyviolation', (e) => {
+          window.__e2eCspViolations.push(e.violatedDirective + ':' + e.blockedURI);
+        });
+        window.addEventListener('error', (e) => { window.__e2eErrors.push(String(e.message || e)); });
+      </script></head><body><ga-remote-control><div class="app-container"><iframe src="https://antigravity.static.usercontent.goog/web/2.33.0/?hostTheme=dark&iframe=true"></iframe></div></ga-remote-control>
+      <script>
+        class NoNonceRemoteControlComponent {
+          constructor(iframeEl) {
+            this.destroyed = false;
+            this.hubFrame = { nativeElement: iframeEl };
+            this.proxyPortSessionCounter = 0;
+            this.proxyPort = null;
+            this.proxyPortSessionId = undefined;
+            this.iframeLoading = { set() {} };
+            this.iframeUiReady = { set() {} };
+            this.localUserInfo = { selectedGeminiDir: '/home/user/.gemini' };
+          }
+          selectedInstanceUuid() { return 'inst-nononce-0001'; }
+          iframeSrc() { return 'https://antigravity.static.usercontent.goog/web/2.33.0/?hostTheme=dark&iframe=true'; }
+          async initXChannelServer() { await Promise.resolve(); }
+          async handlePortRequest(msg) {
+            if (!msg || typeof msg !== 'object' || msg.sessionId !== this.proxyPortSessionId) return;
+            if (msg.kind === 'unary') {
+              this.proxyPort?.postMessage({
+                sessionId: msg.sessionId,
+                id: msg.id,
+                kind: 'data',
+                chunk: new TextEncoder().encode('{}'),
+                headers: { 'content-type': 'application/json' }
+              });
+            }
+          }
+          async onIframeLoad() {
+            const c = this.hubFrame.nativeElement;
+            await this.initXChannelServer();
+            const d = window.location.origin;
+            const f = (new URL(c.src)).origin;
+            if (this.proxyPort) { this.proxyPort.close(); }
+            const m = new MessageChannel();
+            this.proxyPort = m.port1;
+            this.proxyPortSessionId = 'rc-nn-' + (++this.proxyPortSessionCounter);
+            this.proxyPort.onmessage = (ev) => { this.handlePortRequest(ev.data); };
+            c.contentWindow.postMessage({
+              type: 'INITIAL_CONFIG',
+              parentOrigin: d,
+              instanceId: this.selectedInstanceUuid(),
+              initialPath: '/',
+              remoteControlVersion: 'v2',
+              messagePortEnabled: true,
+              portSessionId: this.proxyPortSessionId
+            }, f, [m.port2]);
+          }
+        }
+        const ifr = document.querySelector('ga-remote-control iframe');
+        const rcInst = new NoNonceRemoteControlComponent(ifr);
+        window.__agyRemoteControlInstance = rcInst;
+        ifr.addEventListener('load', () => rcInst.onIframeLoad());
+      </script></body></html>`);
+      return;
+    }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     // Verbatim observed Content-Security-Policy headers from live https://antigravity.google.com/r/...-v2
     const cspHeaders = [
@@ -4601,12 +4670,37 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
     }
     if (u.pathname.endsWith('/__e2e_worker_dep.js')) {
       res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-      res.end('self.__e2eImportedFactor = 77;');
+      res.end('function __e2eSyncGlobal() { return 123; } self.__e2eImportedFactor = 77;');
       return;
     }
     if (u.pathname.endsWith('/__e2e_worker_onmsg.js')) {
       res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
       res.end('importScripts("./__e2e_worker_dep.js"); self.onmessage = function (e) { self.postMessage("ONMSG:" + e.data + ":" + (self.__e2eImportedFactor || 0)); }; self.postMessage("ONMSG_BOOT:" + (self.__e2eImportedFactor || 0));');
+      return;
+    }
+    if (u.pathname.endsWith('/__e2e_worker_sync_strict.js')) {
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      res.end('importScripts("./__e2e_worker_dep.js"); postMessage("SYNC:" + __e2eSyncGlobal());');
+      return;
+    }
+    if (u.pathname.endsWith('/__e2e_worker_loc.js')) {
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      res.end('self.onmessage = function (e) { self.postMessage({ ping: e.data, href: self.location.href, origin: self.location.origin, chunk: new self.URL("./chunk.wasm", self.location.href).href, hasCreateObjUrl: typeof self.URL.createObjectURL }); }; self.postMessage({ boot: true, href: self.location.href, origin: self.location.origin, chunk: new self.URL("./chunk.wasm", self.location.href).href });');
+      return;
+    }
+    if (u.pathname.endsWith('/__e2e_mod_dep.mjs')) {
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      res.end('export const modAnswer = 84;');
+      return;
+    }
+    if (u.pathname.endsWith('/__e2e_mod_data.json')) {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify({ ok: true, v: 99 }));
+      return;
+    }
+    if (u.pathname.endsWith('/__e2e_mod_worker.mjs')) {
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      res.end('import { modAnswer } from "./__e2e_mod_dep.mjs"; const resp = await fetch("./__e2e_mod_data.json"); const data = await resp.json(); self.onmessage = (e) => { self.postMessage({ ping: e.data, modAnswer, jsonV: data.v, href: self.location.href, meta: import.meta.url }); }; self.postMessage({ boot: true, modAnswer, jsonV: data.v, href: self.location.href, meta: import.meta.url });');
       return;
     }
     if (u.pathname === '/web/shared/helper.js' || u.pathname === '/antigravity/web/shared/helper.js') {
@@ -5004,7 +5098,55 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
               sharedFinalSrc = sShared.src;
               cd.head.appendChild(sShared);
             });
-            const [chunkLoaded, setAttrChunkLoaded, imgLoadedSrc, dotChunkLoaded, workerResult, workerUrlRelResult, workerUrlAbsResult, sharedLoaded] = await Promise.all([p1, p2, p3, p4, p5, p6, p7, p8]);
+            const p9 = new Promise((resolve) => {
+              const timer = setTimeout(() => resolve({ ok: false, err: 'timeout-worker-loc' }), 4000);
+              try {
+                const wLoc = new cw.Worker('./__e2e_worker_loc.js');
+                let bootMsg = null;
+                wLoc.onmessage = (ev) => {
+                  if (ev.data && ev.data.boot) {
+                    bootMsg = ev.data;
+                    wLoc.postMessage('LOC_PING');
+                  } else {
+                    clearTimeout(timer);
+                    wLoc.terminate();
+                    resolve({ ok: true, bootMsg, pingMsg: ev.data });
+                  }
+                };
+                wLoc.onerror = (ev) => {
+                  clearTimeout(timer);
+                  resolve({ ok: false, err: String(ev?.message || 'worker-loc-err') });
+                };
+              } catch (err) {
+                clearTimeout(timer);
+                resolve({ ok: false, err: String(err) });
+              }
+            });
+            const p10 = new Promise((resolve) => {
+              const timer = setTimeout(() => resolve({ ok: false, err: 'timeout-mod-worker' }), 4000);
+              try {
+                const wMod = new cw.Worker('./__e2e_mod_worker.mjs', { type: 'module' });
+                let bootMsg = null;
+                wMod.onmessage = (ev) => {
+                  if (ev.data && ev.data.boot) {
+                    bootMsg = ev.data;
+                    wMod.postMessage('MOD_PING');
+                  } else {
+                    clearTimeout(timer);
+                    wMod.terminate();
+                    resolve({ ok: true, bootMsg, pingMsg: ev.data });
+                  }
+                };
+                wMod.onerror = (ev) => {
+                  clearTimeout(timer);
+                  resolve({ ok: false, err: String(ev?.message || 'mod-worker-err') });
+                };
+              } catch (err) {
+                clearTimeout(timer);
+                resolve({ ok: false, err: String(err) });
+              }
+            });
+            const [chunkLoaded, setAttrChunkLoaded, imgLoadedSrc, dotChunkLoaded, workerResult, workerUrlRelResult, workerUrlAbsResult, sharedLoaded, workerLocResult, modWorkerResult] = await Promise.all([p1, p2, p3, p4, p5, p6, p7, p8, p9, p10]);
             await new Promise((r) => setTimeout(r, 80));
             return {
               chunkLoaded,
@@ -5016,6 +5158,8 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
               workerUrlRelResult,
               workerUrlAbsResult,
               sharedLoaded,
+              workerLocResult,
+              modWorkerResult,
               sharedFinalSrc,
               s1FinalSrc,
               s1NonceLen: s1Nonce.length,
@@ -5034,6 +5178,35 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
     assert.deepEqual(adapterResA?.cspViolations, [], `MCP-TC-038(A): zero parent CSP violations during dynamic asset & worker loads: ${JSON.stringify(adapterResA)}`);
     assert.deepEqual(adapterResA?.childCsp, [], `MCP-TC-038(A): zero child CSP violations during dynamic asset & worker loads (worker-src 'self'): ${JSON.stringify(adapterResA)}`);
     assert.deepEqual(adapterResA?.errors, [], `MCP-TC-038(A): zero runtime errors during dynamic asset loads: ${JSON.stringify(adapterResA)}`);
+    assert.equal(adapterResA?.workerLocResult?.ok, true, `MCP-TC-038(A) BLOCKING-M2: Worker self.location test failed: ${JSON.stringify(adapterResA?.workerLocResult)}`);
+    assert.equal(
+      adapterResA?.workerLocResult?.pingMsg?.href,
+      'https://www.gstatic.com/antigravity/web/2.33.0/__e2e_worker_loc.js',
+      `MCP-TC-038(A) BLOCKING-M2: Worker self.location.href must match CDN worker script URL: ${JSON.stringify(adapterResA?.workerLocResult)}`
+    );
+    assert.equal(
+      adapterResA?.workerLocResult?.pingMsg?.origin,
+      'https://www.gstatic.com',
+      'MCP-TC-038(A) BLOCKING-M2: Worker self.location.origin must match CDN origin'
+    );
+    assert.equal(
+      adapterResA?.workerLocResult?.pingMsg?.chunk,
+      'https://www.gstatic.com/antigravity/web/2.33.0/chunk.wasm',
+      'MCP-TC-038(A) BLOCKING-M2: new URL("./chunk.wasm", self.location.href) must resolve against CDN worker URL'
+    );
+    assert.equal(
+      adapterResA?.workerLocResult?.pingMsg?.hasCreateObjUrl,
+      'function',
+      'MCP-TC-038(A) BLOCKING-M2: self.URL static methods (createObjectURL) must stay intact'
+    );
+    assert.equal(adapterResA?.modWorkerResult?.ok, true, `MCP-TC-038(A) BLOCKING-M1: ES module Worker failed: ${JSON.stringify(adapterResA?.modWorkerResult)}`);
+    assert.equal(adapterResA?.modWorkerResult?.pingMsg?.modAnswer, 84, 'MCP-TC-038(A) BLOCKING-M1: ES module Worker static import must load from CDN');
+    assert.equal(adapterResA?.modWorkerResult?.pingMsg?.jsonV, 99, 'MCP-TC-038(A) BLOCKING-M1: ES module Worker relative fetch() must resolve against CDN script URL');
+    assert.equal(
+      adapterResA?.modWorkerResult?.pingMsg?.href,
+      'https://www.gstatic.com/antigravity/web/2.33.0/__e2e_mod_worker.mjs',
+      'MCP-TC-038(A) BLOCKING-M1: ES module Worker self.location.href must match CDN module URL'
+    );
     assert.equal(adapterResA?.chunkLoaded, true, `MCP-TC-038(A): dynamic relative script.src must resolve to CDN with CSP nonce and TrustedScriptURL: ${JSON.stringify({ adapterResA, netEvents, cdnReqs: cdnReqs.slice(-25) })}`);
     assert.equal(adapterResA?.dotChunkLoaded, true, `MCP-TC-038(A): dot-segment relative script.src (./sub/../__e2e_dyn_chunk.js) must resolve cleanly to CDN: ${JSON.stringify(adapterResA)}`);
     assert.equal(adapterResA?.sDotFinalSrc, 'https://www.gstatic.com/antigravity/web/2.33.0/__e2e_dyn_chunk.js', 'MCP-TC-038(A): ./sub/../__e2e_dyn_chunk.js must normalize cleanly inside CDN base path');
@@ -5346,6 +5519,73 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
     }
     assert.equal(snapE?.hasMgr, true, `MCP-TC-038(E): README bookmarklet must activate mcp-manager when host page only has <style nonce>: ${JSON.stringify(snapE)}`);
     assert.equal(snapE?.styleNonce, hostNonce, 'MCP-TC-038(E): injected style tag must reuse <style nonce> on style-nonce-only page');
+
+    // === Scenario F (BLOCKING-M3): Nonce-less host CSP + require-trusted-types-for 'script' -> synchronous importScripts() MUST succeed with zero async fallback ===
+    await sendCdp('Page.navigate', { url: 'https://antigravity.google.com/r/no-nonce-tt' }, sessionId);
+    for (let i = 0; i < 40; i++) {
+      const r = await sendCdp('Runtime.evaluate', { expression: 'Boolean(document.querySelector("ga-remote-control iframe"))', returnByValue: true }, sessionId);
+      if (r?.result?.value === true) break;
+      await new Promise((res) => setTimeout(res, 50));
+    }
+    const injectResF = await sendCdp(
+      'Runtime.evaluate',
+      {
+        expression: builtBundle,
+        returnByValue: true,
+      },
+      sessionId
+    );
+    assert.equal(injectResF.exceptionDetails, undefined, `MCP-TC-038(F): bundle injection must not throw on nonceless host: ${JSON.stringify(injectResF.exceptionDetails)}`);
+    const rawEvalF = await sendCdp(
+      'Runtime.evaluate',
+      {
+        expression: `(async () => {
+          const ifr = document.querySelector('ga-remote-control iframe');
+          for (let i = 0; i < 80; i++) {
+            try {
+              const cw = ifr && ifr.contentWindow;
+              if (cw && cw.Worker && cw.Worker.__agyWorkerAdapted) break;
+            } catch {}
+            await new Promise((r) => setTimeout(r, 40));
+          }
+          let cw = null;
+          try {
+            cw = ifr ? ifr.contentWindow : null;
+            if (!cw || !cw.Worker || !cw.Worker.__agyWorkerAdapted) {
+              return { ok: false, err: 'worker-adapter-not-installed', ifrSrc: ifr ? ifr.src : '', hasCw: Boolean(cw) };
+            }
+          } catch (e) {
+            return { ok: false, err: 'cross-origin-after-wait:' + String(e), ifrSrc: ifr ? ifr.src : '' };
+          }
+          return await new Promise((resolve) => {
+            const timer = setTimeout(() => resolve({ ok: false, err: 'timeout-sync-nonceless' }), 4000);
+            try {
+              const wSync = new cw.Worker('./__e2e_worker_sync_strict.js');
+              wSync.onmessage = (ev) => {
+                clearTimeout(timer);
+                wSync.terminate();
+                resolve({ ok: true, data: ev.data, errors: window.__e2eErrors || [] });
+              };
+              wSync.onerror = (ev) => {
+                clearTimeout(timer);
+                resolve({ ok: false, err: String(ev?.message || 'worker-sync-err') });
+              };
+            } catch (err) {
+              clearTimeout(timer);
+              resolve({ ok: false, err: String(err) });
+            }
+          });
+        })()`,
+        awaitPromise: true,
+        returnByValue: true,
+      },
+      sessionId
+    );
+    assert.equal(rawEvalF.exceptionDetails, undefined, `MCP-TC-038(F): evaluation exception: ${JSON.stringify(rawEvalF.exceptionDetails)}`);
+    const syncResF = rawEvalF?.result?.value;
+    assert.equal(syncResF?.ok, true, `MCP-TC-038(F) BLOCKING-M3: nonceless TrustedTypes importScripts() failed: ${JSON.stringify(syncResF)}`);
+    assert.equal(syncResF?.data, 'SYNC:123', `MCP-TC-038(F) BLOCKING-M3: importScripts() must execute synchronously before next statement: ${JSON.stringify(syncResF)}`);
+    assert.deepEqual(syncResF?.errors, [], `MCP-TC-038(F) BLOCKING-M3: zero uncaught errors on nonceless importScripts(): ${JSON.stringify(syncResF)}`);
   } finally {
     try { cdpWs?.close(); } catch {}
     try { chromeProc?.kill(); } catch {}
@@ -5804,4 +6044,188 @@ test('MCP-TC-040 (BLOCKING-B,C,E): resolveRelativeToCdnUrl dot-segment normaliza
   assert.equal(appended.length, 1);
   assert.equal(appended[0].nonce, 'nonce-abc-123', 'MCP-TC-040: ensureModalStyles must attach CSP nonce property');
   assert.equal(appended[0].getAttribute('nonce'), 'nonce-abc-123', 'MCP-TC-040: ensureModalStyles must attach CSP nonce attribute');
+});
+
+test('MCP-TC-041 (BLOCKING-M4): Live real-site Chromium E2E on https://antigravity.google.com/r/00000000-0000-0000-0000-000000000000-v2 WITHOUT --host-resolver-rules', async (t) => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const os = require('node:os');
+  const { spawn } = require('node:child_process');
+  const { createRfc6455WebSocketClient } = require('../scripts/ensure_statusbar_patch');
+
+  const chromeBin = [
+    process.env.CHROME_BIN,
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  ]
+    .filter(Boolean)
+    .find((p) => fs.existsSync(p));
+  if (!chromeBin) {
+    t.skip('No local Chromium/Edge binary found for live-site E2E test');
+    return;
+  }
+
+  const distBundle = fs.readFileSync(path.join(__dirname, '..', 'dist', 'mcp_manager_autoinject.js'), 'utf8');
+  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-mcp-live-'));
+  let chromeProc = null;
+  let cdpWs = null;
+  try {
+    const wsUrlPromise = new Promise((resolve, reject) => {
+      const chromeEnv = { ...process.env };
+      delete chromeEnv.DBUS_SESSION_BUS_ADDRESS;
+      chromeProc = spawn(
+        chromeBin,
+        [
+          '--headless=new',
+          '--no-sandbox',
+          '--disable-gpu',
+          '--disable-dev-shm-usage',
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--remote-debugging-port=0',
+          `--user-data-dir=${profileDir}`,
+          'about:blank',
+        ],
+        { stdio: ['ignore', 'pipe', 'pipe'], env: chromeEnv }
+      );
+      let stderrBuf = '';
+      const timer = setTimeout(() => reject(new Error(`Chrome startup timeout: ${stderrBuf}`)), 15000);
+      chromeProc.stderr.on('data', (chunk) => {
+        stderrBuf += chunk.toString('utf8');
+        const m = stderrBuf.match(/DevTools listening on (ws:\/\/[^\r\n]+)/);
+        if (m) {
+          clearTimeout(timer);
+          resolve(m[1].trim());
+        }
+      });
+      chromeProc.once('exit', (code) => {
+        clearTimeout(timer);
+        reject(new Error(`Chrome exited early (${code}): ${stderrBuf}`));
+      });
+    });
+
+    const browserWsUrl = await wsUrlPromise;
+    cdpWs = createRfc6455WebSocketClient(browserWsUrl);
+    let msgId = 0;
+    const pending = new Map();
+    cdpWs.onmessage = (ev) => {
+      const msg = JSON.parse(typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString('utf8'));
+      if (msg.id && pending.has(msg.id)) {
+        const { resolve, reject } = pending.get(msg.id);
+        pending.delete(msg.id);
+        if (msg.error) reject(new Error(msg.error.message));
+        else resolve(msg.result);
+      }
+    };
+    await new Promise((res, rej) => {
+      cdpWs.onopen = res;
+      cdpWs.onerror = rej;
+    });
+    const sendCdp = (method, params = {}, sessionId = undefined) =>
+      new Promise((resolve, reject) => {
+        const id = ++msgId;
+        pending.set(id, { resolve, reject });
+        const payload = { id, method, params };
+        if (sessionId) payload.sessionId = sessionId;
+        cdpWs.send(JSON.stringify(payload));
+      });
+
+    const { targetInfos } = await sendCdp('Target.getTargets');
+    const pageTarget = targetInfos.find((ti) => ti.type === 'page');
+    assert.ok(pageTarget, 'MCP-TC-041: page target must exist');
+    const { sessionId } = await sendCdp('Target.attachToTarget', { targetId: pageTarget.targetId, flatten: true });
+    await sendCdp('Page.enable', {}, sessionId);
+    await sendCdp('Runtime.enable', {}, sessionId);
+
+    const liveUrl = 'https://antigravity.google.com/r/00000000-0000-0000-0000-000000000000-v2';
+    await sendCdp('Page.navigate', { url: liveUrl }, sessionId);
+    for (let i = 0; i < 80; i++) {
+      const r = await sendCdp(
+        'Runtime.evaluate',
+        {
+          expression: 'document.readyState === "complete" && location.href.startsWith("https://antigravity.google.com/")',
+          returnByValue: true,
+        },
+        sessionId
+      );
+      if (r?.result?.value === true) break;
+      await new Promise((res) => setTimeout(res, 100));
+    }
+
+    const liveSnap = (
+      await sendCdp(
+        'Runtime.evaluate',
+        {
+          expression: `((bundleCode) => {
+            const cspViolations = [];
+            const runtimeErrors = [];
+            const onCsp = (e) => cspViolations.push(e.violatedDirective + ':' + (e.blockedURI || ''));
+            const onErr = (e) => runtimeErrors.push(String(e?.message || e));
+            document.addEventListener('securitypolicyviolation', onCsp);
+            window.addEventListener('error', onErr);
+            const liveNonce = [...document.querySelectorAll('script,style,link')].find((e) => e.nonce)?.nonce || '';
+            const sc = document.createElement('script');
+            if (liveNonce) sc.nonce = liveNonce;
+            let tp = null;
+            if (window.trustedTypes && typeof window.trustedTypes.createPolicy === 'function') {
+              try {
+                tp = window.trustedTypes.createPolicy('agy-live-bm-' + Math.random().toString(36).slice(2), {
+                  createScript: (s) => s,
+                  createScriptURL: (u) => u,
+                });
+              } catch {}
+            }
+            sc.text = tp ? tp.createScript(bundleCode) : bundleCode;
+            (document.head || document.documentElement).appendChild(sc);
+            window.agyMcpManager?.openModal?.();
+            const hasModal = Boolean(document.getElementById('agy-mcp-manager-modal-backdrop'));
+            const styleEl = document.getElementById('agy-mcp-manager-styles');
+            const styleNonce = styleEl ? (styleEl.nonce || styleEl.getAttribute('nonce') || '') : '';
+            window.agyMcpManager?.closeModal?.();
+            const activeBeforeDestroy = Boolean(window.agyMcpManager && window.__agyMcpManagerActive);
+            window.agyMcpManager?.destroy?.();
+            const activeAfterDestroy = Boolean(window.__agyMcpManagerActive);
+            document.removeEventListener('securitypolicyviolation', onCsp);
+            window.removeEventListener('error', onErr);
+            return {
+              href: location.href,
+              liveNonceLen: liveNonce.length,
+              liveNonce,
+              activeBeforeDestroy,
+              hasModal,
+              styleNonce,
+              activeAfterDestroy,
+              cspViolations,
+              runtimeErrors,
+            };
+          })(${JSON.stringify(distBundle)})`,
+          returnByValue: true,
+        },
+        sessionId
+      )
+    )?.result?.value;
+
+    assert.ok(
+      liveSnap?.href?.startsWith('https://antigravity.google.com/'),
+      `MCP-TC-041: Chromium must directly reach live Google host without loopback resolver: ${JSON.stringify(liveSnap)}`
+    );
+    assert.ok(liveSnap?.liveNonceLen >= 8, `MCP-TC-041: live antigravity.google.com response must expose CSP nonce: ${JSON.stringify(liveSnap)}`);
+    assert.equal(liveSnap?.activeBeforeDestroy, true, `MCP-TC-041: agyMcpManager must activate on live antigravity.google.com: ${JSON.stringify(liveSnap)}`);
+    assert.equal(liveSnap?.hasModal, true, 'MCP-TC-041: MCP Manager modal must open on live antigravity.google.com');
+    assert.equal(liveSnap?.styleNonce, liveSnap?.liveNonce, 'MCP-TC-041: injected style element must reuse live Google CSP nonce');
+    assert.equal(liveSnap?.activeAfterDestroy, false, 'MCP-TC-041: destroy() must deactivate cleanly on live page');
+    assert.deepEqual(liveSnap?.cspViolations, [], `MCP-TC-041: zero live Google CSP violations: ${JSON.stringify(liveSnap?.cspViolations)}`);
+    assert.deepEqual(liveSnap?.runtimeErrors, [], `MCP-TC-041: zero uncaught runtime errors on live Google host: ${JSON.stringify(liveSnap?.runtimeErrors)}`);
+  } finally {
+    try { cdpWs?.close(); } catch {}
+    try { chromeProc?.kill(); } catch {}
+    try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch {}
+  }
 });
