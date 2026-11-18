@@ -20,8 +20,12 @@ const OUT_FILE = path.join(DIST_DIR, 'mcp_manager_autoinject.js');
 const MODULE_ORDER = [
   'host-adapter-config.js',
   'mcp-config-schema.js',
+  'remote-runtime.js',
+  'companion-loader.js',
+  'remote-frame-promoter.js',
   'host-mcp-bridge.js',
   'modal-ui.js',
+  'native-dom-integrator.js',
   'index.js',
 ];
 
