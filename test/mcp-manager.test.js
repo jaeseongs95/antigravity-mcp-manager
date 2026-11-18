@@ -4667,6 +4667,7 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
           '--no-sandbox',
           '--disable-dev-shm-usage',
           '--disable-gpu',
+          '--disable-quic',
           '--disable-extensions',
           '--disable-background-networking',
           '--password-store=basic',
