@@ -4391,6 +4391,7 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
     .toString('utf8')
     .replace(/nonce="[^"]*"/g, `nonce="${iframeNonce}"`);
   const upstreamAssetCache = new Map();
+  const cdnReqs = [];
   let forceCdnMain500 = false;
   let crossOriginBootNotifications = 0;
 
@@ -4558,6 +4559,7 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
   const cdnServer = https.createServer(tlsOpts, async (req, res) => {
     const u = new URL(req.url, 'https://localhost');
     const hostHdr = String(req.headers.host || '');
+    cdnReqs.push(`${hostHdr}${u.pathname}`);
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     res.setHeader('Cache-Control', 'no-store');
@@ -4699,8 +4701,18 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
     cdpWs = createRfc6455WebSocketClient(browserWsUrl);
     let msgId = 0;
     const pending = new Map();
+    const netEvents = [];
+    const reqUrls = new Map();
     cdpWs.onmessage = (ev) => {
       const msg = JSON.parse(typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString('utf8'));
+      if (msg.method === 'Network.requestWillBeSent') {
+        reqUrls.set(msg.params?.requestId, msg.params?.request?.url || '');
+      } else if (msg.method === 'Network.loadingFailed') {
+        const u = reqUrls.get(msg.params?.requestId) || '';
+        if (u.includes('__e2e_') || u.includes('gstatic.com')) {
+          netEvents.push(`FAIL:${u}:${msg.params?.errorText}:${msg.params?.blockedReason || ''}`);
+        }
+      }
       if (msg.id && pending.has(msg.id)) {
         const { resolve, reject } = pending.get(msg.id);
         pending.delete(msg.id);
@@ -4728,6 +4740,7 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
     const { sessionId } = await sendCdp('Target.attachToTarget', { targetId: pageTarget.targetId, flatten: true });
     await sendCdp('Page.enable', {}, sessionId);
     await sendCdp('Runtime.enable', {}, sessionId);
+    await sendCdp('Network.enable', {}, sessionId);
 
     // === Scenario A: Real 12.35MB Antigravity 2.33.0 workbench + verbatim live CSP promotion via README.md bookmarklet ===
     forceCdnMain500 = false;
@@ -4892,7 +4905,7 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
     assert.deepEqual(adapterResA?.cspViolations, [], `MCP-TC-038(A): zero parent CSP violations during dynamic asset loads: ${JSON.stringify(adapterResA)}`);
     assert.deepEqual(adapterResA?.childCsp, [], `MCP-TC-038(A): zero child CSP violations during dynamic asset loads: ${JSON.stringify(adapterResA)}`);
     assert.deepEqual(adapterResA?.errors, [], `MCP-TC-038(A): zero runtime errors during dynamic asset loads: ${JSON.stringify(adapterResA)}`);
-    assert.equal(adapterResA?.chunkLoaded, true, `MCP-TC-038(A): dynamic relative script.src must resolve to CDN with CSP nonce and TrustedScriptURL: ${JSON.stringify(adapterResA)}`);
+    assert.equal(adapterResA?.chunkLoaded, true, `MCP-TC-038(A): dynamic relative script.src must resolve to CDN with CSP nonce and TrustedScriptURL: ${JSON.stringify({ adapterResA, netEvents, cdnReqs: cdnReqs.slice(-25) })}`);
     assert.equal(adapterResA?.setAttrChunkLoaded, true, `MCP-TC-038(A): Element.prototype.setAttribute("src", ...) on script must resolve to CDN with CSP nonce and TrustedScriptURL: ${JSON.stringify(adapterResA)}`);
     assert.equal(adapterResA?.imgLoadedSrc, 'https://www.gstatic.com/antigravity/web/2.33.0/__e2e_pixel.svg', 'MCP-TC-038(A): new Image().src relative path must rewrite to CDN');
 
