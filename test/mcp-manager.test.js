@@ -4644,6 +4644,10 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
   let chromeProc = null;
   let cdpWs = null;
   try {
+    hostServer.keepAliveTimeout = 60000;
+    hostServer.headersTimeout = 65000;
+    cdnServer.keepAliveTimeout = 60000;
+    cdnServer.headersTimeout = 65000;
     await new Promise((r) => hostServer.listen(0, '127.0.0.1', r));
     await new Promise((r) => cdnServer.listen(0, '127.0.0.1', r));
     hostServer.unref();
@@ -4742,7 +4746,7 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
     assert.equal(bmEvalA.exceptionDetails, undefined, 'MCP-TC-038(A): bookmarklet must not throw');
 
     let snapA = null;
-    for (let i = 0; i < 120; i++) {
+    for (let i = 0; i < 200; i++) {
       const r = await sendCdp(
         'Runtime.evaluate',
         {
@@ -4758,16 +4762,8 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
             try {
               const cd = ifr?.contentDocument;
               const cw = ifr?.contentWindow;
-              const rootEl = cd?.getElementById('root');
-              rootChildCount = rootEl ? rootEl.childElementCount : 0;
-              rootTextLen = rootEl ? (rootEl.innerHTML || '').length : 0;
-              hasChildMgr = Boolean(cw?.agyMcpManager);
-              colorScheme = cd?.documentElement?.style?.colorScheme || '';
-              csrf = cw?.__APP_CONFIG__?.csrfToken || '';
-              initConfigRecv = Boolean(cw?.__initialConfigReceived);
-              cwHref = cw?.location?.href || '';
-              if (cw && cd && !cw.__e2eAdapterProbesStarted && cw.__agyMainBooted) {
-                cw.__e2eAdapterProbesStarted = true;
+              if (cw && cd && !cw.__e2eListenersAttached) {
+                cw.__e2eListenersAttached = true;
                 cd.addEventListener('securitypolicyviolation', (ev) => {
                   window.__e2eCspViolations.push('child:' + ev.violatedDirective + ':' + ev.blockedURI);
                 });
@@ -4777,16 +4773,15 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
                 cw.addEventListener('unhandledrejection', (ev) => {
                   window.__e2eErrors.push('child-rej:' + String(ev.reason || ev));
                 });
-                const s1 = cd.createElement('script');
-                s1.src = './__e2e_dyn_chunk.js';
-                cd.head.appendChild(s1);
-                const s2 = cd.createElement('script');
-                s2.setAttribute('src', './__e2e_setattr_chunk.js');
-                cd.head.appendChild(s2);
-                const img = new cw.Image();
-                img.onload = () => { cw.__e2eImgLoaded = img.src; };
-                img.src = './__e2e_pixel.svg';
               }
+              const rootEl = cd?.getElementById('root');
+              rootChildCount = rootEl ? rootEl.childElementCount : 0;
+              rootTextLen = rootEl ? (rootEl.innerHTML || '').length : 0;
+              hasChildMgr = Boolean(cw?.agyMcpManager);
+              colorScheme = cd?.documentElement?.style?.colorScheme || '';
+              csrf = cw?.__APP_CONFIG__?.csrfToken || '';
+              initConfigRecv = Boolean(cw?.__initialConfigReceived);
+              cwHref = cw?.location?.href || '';
             } catch {}
             return {
               hasHostMgr: Boolean(window.agyMcpManager),
@@ -4798,9 +4793,6 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
               csrfLen: csrf.length,
               initConfigRecv,
               cwHref,
-              chunkLoaded: (() => { try { return Boolean(ifr?.contentWindow?.__e2eChunkLoaded); } catch { return false; } })(),
-              setAttrChunkLoaded: (() => { try { return Boolean(ifr?.contentWindow?.__e2eSetAttrChunkLoaded); } catch { return false; } })(),
-              imgLoadedSrc: (() => { try { return ifr?.contentWindow?.__e2eImgLoaded || ''; } catch { return ''; } })(),
               promotionState: ifr?.__agyRemotePromotionState || '',
               portSessions: window.__e2ePortSessions || [],
               unaryCount: window.__e2ePortUnaryPaths?.length || 0,
@@ -4820,10 +4812,7 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
         snapA.hasHostMgr &&
         snapA.hasChildMgr &&
         snapA.rootChildCount > 0 &&
-        snapA.initConfigRecv &&
-        snapA.chunkLoaded &&
-        snapA.setAttrChunkLoaded &&
-        snapA.imgLoadedSrc
+        snapA.initConfigRecv
       ) {
         break;
       }
@@ -4837,13 +4826,75 @@ test('MCP-TC-038 (D-0013, D-0022, D-0034, D-0035): Real Headless Chromium E2E te
     assert.equal(snapA.initConfigRecv, true, 'MCP-TC-038(A): real 2.33.0 XChannelTransport must receive INITIAL_CONFIG and sync History');
     assert.ok(snapA.unaryCount > unaryBeforePromo, 'MCP-TC-038(A): promoted real 2.33.0 workbench must exchange -v2 MessagePort unary RPCs');
     assert.equal(snapA.cwHref.startsWith('https://antigravity.google.com/web/2.33.0/'), true, 'MCP-TC-038(A): cd.open();cd.close(); must promote child URL from about:blank to https:// origin');
-    assert.equal(snapA.chunkLoaded, true, 'MCP-TC-038(A): dynamic relative script.src must resolve to CDN with CSP nonce and TrustedScriptURL');
-    assert.equal(snapA.setAttrChunkLoaded, true, 'MCP-TC-038(A): Element.prototype.setAttribute("src", ...) on script must resolve to CDN with CSP nonce and TrustedScriptURL');
-    assert.equal(snapA.imgLoadedSrc, 'https://www.gstatic.com/antigravity/web/2.33.0/__e2e_pixel.svg', 'MCP-TC-038(A): new Image().src relative path must rewrite to CDN');
     assert.equal(snapA.promotionState, 'ready', 'MCP-TC-038(A): frame promoter FSM must reach ready state');
     assert.equal(snapA.hasRemoteLauncher, true, 'MCP-TC-038(A): non-invasive #agy-mcp-remote-launcher must render on remote host page');
     assert.equal(snapA.colorScheme, 'dark', 'MCP-TC-038(A): promoted iframe must apply ?hostTheme=dark colorScheme');
     assert.ok(snapA.csrfLen > 0, 'MCP-TC-038(A): promoted iframe must receive non-empty csrfToken');
+
+    // Deterministic event-driven verification of dynamic script.src, setAttribute('src'), and new Image().src adapters
+    const adapterResA = (
+      await sendCdp(
+        'Runtime.evaluate',
+        {
+          expression: `(async () => {
+            const ifr = document.querySelector('ga-remote-control iframe');
+            const cd = ifr.contentDocument;
+            const cw = ifr.contentWindow;
+            const childCsp = [];
+            cd.addEventListener('securitypolicyviolation', (e) => {
+              childCsp.push(e.violatedDirective + ':' + e.blockedURI + ':' + (e.sample || ''));
+            });
+            let s1FinalSrc = '';
+            let s1Nonce = '';
+            let s2FinalSrc = '';
+            const p1 = new Promise((resolve) => {
+              const s1 = cd.createElement('script');
+              s1.onload = () => resolve(Boolean(cw.__e2eChunkLoaded));
+              s1.onerror = () => resolve(false);
+              s1.src = './__e2e_dyn_chunk.js';
+              s1FinalSrc = s1.src;
+              s1Nonce = s1.nonce || s1.getAttribute('nonce') || '';
+              cd.head.appendChild(s1);
+            });
+            const p2 = new Promise((resolve) => {
+              const s2 = cd.createElement('script');
+              s2.onload = () => resolve(Boolean(cw.__e2eSetAttrChunkLoaded));
+              s2.onerror = () => resolve(false);
+              s2.setAttribute('src', './__e2e_setattr_chunk.js');
+              s2FinalSrc = s2.src;
+              cd.head.appendChild(s2);
+            });
+            const p3 = new Promise((resolve) => {
+              const img = new cw.Image();
+              img.onload = () => resolve(img.src);
+              img.onerror = () => resolve('');
+              img.src = './__e2e_pixel.svg';
+            });
+            const [chunkLoaded, setAttrChunkLoaded, imgLoadedSrc] = await Promise.all([p1, p2, p3]);
+            return {
+              chunkLoaded,
+              setAttrChunkLoaded,
+              imgLoadedSrc,
+              s1FinalSrc,
+              s1NonceLen: s1Nonce.length,
+              s2FinalSrc,
+              childCsp,
+              cspViolations: window.__e2eCspViolations || [],
+              errors: window.__e2eErrors || []
+            };
+          })()`,
+          awaitPromise: true,
+          returnByValue: true,
+        },
+        sessionId
+      )
+    )?.result?.value;
+    assert.deepEqual(adapterResA?.cspViolations, [], `MCP-TC-038(A): zero parent CSP violations during dynamic asset loads: ${JSON.stringify(adapterResA)}`);
+    assert.deepEqual(adapterResA?.childCsp, [], `MCP-TC-038(A): zero child CSP violations during dynamic asset loads: ${JSON.stringify(adapterResA)}`);
+    assert.deepEqual(adapterResA?.errors, [], `MCP-TC-038(A): zero runtime errors during dynamic asset loads: ${JSON.stringify(adapterResA)}`);
+    assert.equal(adapterResA?.chunkLoaded, true, `MCP-TC-038(A): dynamic relative script.src must resolve to CDN with CSP nonce and TrustedScriptURL: ${JSON.stringify(adapterResA)}`);
+    assert.equal(adapterResA?.setAttrChunkLoaded, true, `MCP-TC-038(A): Element.prototype.setAttribute("src", ...) on script must resolve to CDN with CSP nonce and TrustedScriptURL: ${JSON.stringify(adapterResA)}`);
+    assert.equal(adapterResA?.imgLoadedSrc, 'https://www.gstatic.com/antigravity/web/2.33.0/__e2e_pixel.svg', 'MCP-TC-038(A): new Image().src relative path must rewrite to CDN');
 
     // Open real Antigravity 2.33.0 Settings screen (?settingsOpen=true) inside promoted child & verify real settings-nav-item-McpManager tab + host reconnect!
     await sendCdp(
