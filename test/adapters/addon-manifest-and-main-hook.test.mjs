@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
@@ -16,6 +18,12 @@ import {
   createHostRuntime,
   isSafeLoopbackIframeUrl,
 } from '../../src/adapters/antigravity/renderer/host-runtime.mjs';
+import {
+  buildAddonHostHarnessScript,
+  findChromiumBinary,
+  launchCdpSession,
+  waitUntil,
+} from '../helpers/cdp-browser.mjs';
 
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -263,4 +271,117 @@ test('NMCP-TC-024B (Unit): host-runtime enforces loopback URL allowlist and 1-ti
   assert.equal(rt.writeSavedLang('en'), true);
   assert.equal(mem.get('antigravity-mcp-manager:lang'), 'en');
   assert.equal(rt.writeSavedLang('xx'), false);
+});
+
+test('NMCP-TC-028 (Hot-Reload Ctrl+R E2E): mainHook attaches already-open windows on activate(), boots real desktop-server.mjs, and pushes URL to Isolated World 999 so addon-renderer mounts immediately', async (t) => {
+  const hookMod = require(ELECTRON_HOOK_PATH);
+  const fakeApp = new EventEmitter();
+
+  // Disallowed & non-window existing contents must be skipped
+  const evilExistingWc = new EventEmitter();
+  evilExistingWc.getType = () => 'window';
+  evilExistingWc.getURL = () => 'https://untrusted.example/';
+  evilExistingWc.isDestroyed = () => false;
+  const evilCalls = [];
+  evilExistingWc.executeJavaScriptInIsolatedWorld = (worldId, sources) => {
+    evilCalls.push({ worldId, code: sources[0].code });
+    return Promise.resolve();
+  };
+
+  // Allowed already-open window (simulates Ctrl+R hot-reload after --register when onWebContentsCreated did not fire)
+  const existingWc = new EventEmitter();
+  const isolatedCalls = [];
+  existingWc.getType = () => 'window';
+  existingWc.getURL = () => 'http://127.0.0.1:41234/settings';
+  existingWc.isDestroyed = () => false;
+  existingWc.executeJavaScriptInIsolatedWorld = (worldId, sources) => {
+    isolatedCalls.push({ worldId, code: sources[0].code });
+    return Promise.resolve();
+  };
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-mcp-hotreload-'));
+  const prevOverride = process.env.AGY_MCP_HOME_OVERRIDE;
+  process.env.AGY_MCP_HOME_OVERRIDE = tmpDir;
+
+  const ctrl = hookMod.createMainHookController({
+    getExistingWebContents: () => [evilExistingWc, existingWc],
+  });
+
+  try {
+    // 1. activate() alone (WITHOUT onWebContentsCreated) must boot real desktop-server.mjs and push into Isolated World 999
+    ctrl.activate({ app: fakeApp, pluginId: 'antigravity-mcp-manager' });
+    assert.equal(
+      await waitUntil(() => isolatedCalls.some((c) => c.worldId === 999 && c.code.includes('http://127.0.0.1:')), 5000, 30),
+      true,
+      'Hot-activated mainHook must immediately push real desktop-server.mjs URL to already-open allowed window'
+    );
+    assert.equal(evilCalls.length, 0, 'Disallowed already-open window must never receive tokenized URL');
+
+    // 2. Subsequent Ctrl+R (dom-ready) on same window pushes again cleanly
+    const countBeforeReload = isolatedCalls.length;
+    existingWc.emit('dom-ready');
+    assert.equal(
+      await waitUntil(() => isolatedCalls.length > countBeforeReload, 3000, 30),
+      true,
+      'Subsequent Ctrl+R dom-ready on hot-attached window must re-deliver URL'
+    );
+
+    // 3. Execute the exact snippet produced by electron-hook.cjs in real Chromium alongside addon-renderer.js
+    const pushCode = isolatedCalls[0].code;
+    const browserBin = findChromiumBinary();
+    if (browserBin && typeof WebSocket === 'function') {
+      const profileDir = path.join(tmpDir, 'profile');
+      fs.mkdirSync(profileDir, { recursive: true });
+      const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+      const hostHarness = buildAddonHostHarnessScript(manifest);
+      const rendererSrc = fs.readFileSync(RENDERER_OUTPUT_PATH, 'utf8');
+      const parentServer = http.createServer((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(`<!doctype html><html><body>
+          <div id="settings-root" style="display:flex;">
+            <aside id="settings-sidebar" style="width:220px;">
+              <nav>
+                <button id="nav-general">General</button>
+                <button id="nav-application">Application</button>
+                <button id="nav-appearance">Appearance</button>
+                <button id="nav-shortcuts">Shortcuts</button>
+                <button id="nav-notifications">Notifications</button>
+                <button id="nav-models">Models</button>
+                <button id="nav-browser">Browser</button>
+              </nav>
+            </aside>
+            <main id="settings-content" style="flex:1;min-width:360px;min-height:300px;"></main>
+          </div>
+          <script>${hostHarness}</script>
+          <script>(function(addonHost){ ${rendererSrc} })(window.__TEST_ADDON_HOST__);</script>
+        </body></html>`);
+      });
+      await new Promise((r) => parentServer.listen(0, '127.0.0.1', r));
+      const parentPort = parentServer.address().port;
+      const session = await launchCdpSession({ browserBin, profileDir });
+      try {
+        await session.cdp('Page.navigate', { url: `http://localhost:${parentPort}/` });
+        // Before mainHook pushes URL, nav item is not mounted yet
+        await new Promise((r) => setTimeout(r, 80));
+        assert.equal(await session.evalMain(`Boolean(document.querySelector('[data-agy-mcp-manager-nav="true"]'))`), false);
+        // Execute the exact Isolated World 999 push snippet generated by electron-hook.cjs
+        await session.evalMain(pushCode);
+        assert.equal(
+          await waitUntil(() => session.evalMain(`Boolean(document.querySelector('[data-agy-mcp-manager-nav="true"]'))`), 4000, 30),
+          true,
+          'Executing electron-hook.cjs push snippet must trigger immediate Settings nav mount'
+        );
+      } finally {
+        await session.close();
+        await new Promise((r) => parentServer.close(r));
+      }
+    }
+  } finally {
+    await ctrl.dispose();
+    if (prevOverride === undefined) delete process.env.AGY_MCP_HOME_OVERRIDE;
+    else process.env.AGY_MCP_HOME_OVERRIDE = prevOverride;
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch {}
+  }
 });

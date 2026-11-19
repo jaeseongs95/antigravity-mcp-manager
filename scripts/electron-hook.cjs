@@ -7,6 +7,9 @@
  * - Delivers the tokenized loopback URL strictly into Isolated World (`999`) ONLY for windows
  *   whose live URL passes `isAllowedRendererUrl(...)` (both before and after async server boot),
  *   preventing Main World (World 0) / `sessionStorage` token exposure.
+ * - Attaches both newly created windows (`onWebContentsCreated`) and already-open windows when
+ *   hot-activated on `Ctrl+R` (`activate` via `getExistingWebContents`), so hot-register + reload
+ *   works without requiring an extra window creation.
  * - Cleans up `webContents` listeners, isolated-world URL state, `will-quit` handler, and the
  *   loopback HTTP server immediately on `dispose()`.
  * - NEVER touches `app.asar` and NEVER injects renderer UI scripts directly.
@@ -18,11 +21,36 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
 const DEFAULT_ISOLATED_WORLD_ID = 999;
+const DEFAULT_ALLOWED_PROTOCOLS = Object.freeze(['http:', 'https:']);
+const DEFAULT_ALLOWED_HOSTS = Object.freeze(['127.0.0.1', 'localhost', '::1', '[::1]']);
 const ROOT_DIR = path.resolve(__dirname, '..');
 const DESKTOP_SERVER_PATH = path.join(ROOT_DIR, 'src', 'adapters', 'antigravity', 'desktop-server.mjs');
 
 function defaultStartDesktopServer() {
   return import(pathToFileURL(DESKTOP_SERVER_PATH).href).then((mod) => mod.startDesktopMcpServer());
+}
+
+function defaultGetExistingWebContents() {
+  try {
+    const electron = require('electron');
+    if (electron && electron.webContents && typeof electron.webContents.getAllWebContents === 'function') {
+      return electron.webContents.getAllWebContents();
+    }
+  } catch {
+    // Outside Electron runtime (e.g. Node unit tests)
+  }
+  return [];
+}
+
+function isDefaultAllowedRendererUrl(rawUrl) {
+  if (typeof rawUrl !== 'string' || !rawUrl) return false;
+  try {
+    const parsed = new URL(rawUrl);
+    if (!DEFAULT_ALLOWED_PROTOCOLS.includes(parsed.protocol)) return false;
+    return DEFAULT_ALLOWED_HOSTS.includes(parsed.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
 }
 
 function buildIsolatedUrlPushCode(urlOrNull) {
@@ -63,6 +91,7 @@ function detachEventListener(emitter, eventName, listener) {
 
 function createMainHookController({
   startServer = defaultStartDesktopServer,
+  getExistingWebContents = defaultGetExistingWebContents,
   isolatedWorldId = DEFAULT_ISOLATED_WORLD_ID,
 } = {}) {
   let active = false;
@@ -108,35 +137,15 @@ function createMainHookController({
     return Promise.resolve();
   }
 
-  function activate(ctx = {}) {
-    if (active) return;
-    active = true;
-    activeCtx = {
-      app: ctx.app || null,
-      pluginId: ctx.pluginId || 'antigravity-mcp-manager',
-      hostProfileId: ctx.hostProfileId || 'antigravity-desktop',
-      hostVersion: ctx.hostVersion || '1.0.0',
-      storageNamespace: ctx.storageNamespace || 'antigravity-mcp-manager',
-      ipcChannelPrefix: ctx.ipcChannelPrefix || 'mcp-manager:',
-    };
-
-    if (activeCtx.app && typeof activeCtx.app.on === 'function') {
-      willQuitListener = () => {
-        void closeDesktopServer();
-      };
-      activeCtx.app.on('will-quit', willQuitListener);
-    }
-  }
-
-  function onWebContentsCreated({ contents, isAllowedRendererUrl } = {}) {
+  function attachContents(contents, isAllowedRendererUrl, { pushImmediately = false } = {}) {
     if (!active || !contents) return;
     if (typeof contents.getType === 'function' && contents.getType() !== 'window') return;
     if (trackedContents.has(contents)) return;
 
+    const allowCheckFn = typeof isAllowedRendererUrl === 'function' ? isAllowedRendererUrl : isDefaultAllowedRendererUrl;
     const checkAllowed = (wc) => {
-      if (typeof isAllowedRendererUrl !== 'function') return false;
       const liveUrl = typeof wc.getURL === 'function' ? wc.getURL() : '';
-      return Boolean(isAllowedRendererUrl(liveUrl));
+      return Boolean(allowCheckFn(liveUrl));
     };
 
     const pushServerUrl = () => {
@@ -177,6 +186,47 @@ function createMainHookController({
       contents.on('did-finish-load', record.onDidFinishLoad);
       contents.on('destroyed', record.onDestroyed);
     }
+
+    if (pushImmediately && checkAllowed(contents)) {
+      pushServerUrl();
+    }
+  }
+
+  function activate(ctx = {}) {
+    if (active) return;
+    active = true;
+    activeCtx = {
+      app: ctx.app || null,
+      pluginId: ctx.pluginId || 'antigravity-mcp-manager',
+      hostProfileId: ctx.hostProfileId || 'antigravity-desktop',
+      hostVersion: ctx.hostVersion || '1.0.0',
+      storageNamespace: ctx.storageNamespace || 'antigravity-mcp-manager',
+      ipcChannelPrefix: ctx.ipcChannelPrefix || 'mcp-manager:',
+    };
+
+    if (activeCtx.app && typeof activeCtx.app.on === 'function') {
+      willQuitListener = () => {
+        void closeDesktopServer();
+      };
+      activeCtx.app.on('will-quit', willQuitListener);
+    }
+
+    // Hot-activation (e.g. --register followed by Ctrl+R on an already-open window):
+    // attach all currently open window webContents and push loopback URL immediately.
+    let existing = [];
+    try {
+      existing = getExistingWebContents() || [];
+    } catch {
+      existing = [];
+    }
+    for (const wc of existing) {
+      attachContents(wc, isDefaultAllowedRendererUrl, { pushImmediately: true });
+    }
+  }
+
+  function onWebContentsCreated({ contents, isAllowedRendererUrl } = {}) {
+    if (typeof isAllowedRendererUrl !== 'function') return;
+    attachContents(contents, isAllowedRendererUrl, { pushImmediately: false });
   }
 
   function dispose() {
@@ -224,6 +274,7 @@ const defaultController = createMainHookController();
 
 module.exports = {
   DEFAULT_ISOLATED_WORLD_ID,
+  isDefaultAllowedRendererUrl,
   buildIsolatedUrlPushCode,
   createMainHookController,
   activate: defaultController.activate,
