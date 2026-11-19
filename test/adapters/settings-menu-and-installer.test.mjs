@@ -302,7 +302,50 @@ test('NMCP-TC-021 (Real Chromium CDP E2E): Settings sidebar injector mounts MCP 
     assert.ok(hiddenCheck.frameLeft >= hiddenCheck.sidebarRight - 24, `Expected iframe to the right of sidebar (${hiddenCheck.frameLeft} >= ${hiddenCheck.sidebarRight - 24})`);
     assert.ok(hiddenCheck.frameWidth >= 300, `Expected wide right-hand iframe (>=300px, got ${hiddenCheck.frameWidth})`);
 
-    // 3. Click General -> hides iframe and restores native pane
+    // 3. Switch language to Korean and back to English inside iframe, verifying parent localStorage persistence across restarts
+    await evalIframe(`document.querySelector('[data-testid="btn-lang-ko"]').click()`);
+    const koState = await evalIframe(`({
+      htmlLang: document.documentElement.lang,
+      title: document.getElementById('app-title')?.textContent?.trim(),
+      refresh: document.getElementById('btn-refresh')?.textContent?.trim(),
+      add: document.getElementById('btn-add')?.textContent?.trim(),
+      tabServers: document.getElementById('tab-servers')?.textContent?.trim(),
+      tabRaw: document.getElementById('tab-raw')?.textContent?.trim(),
+      sectionTitle: document.querySelector('.section-title')?.textContent?.trim(),
+      koPressed: document.querySelector('[data-testid="btn-lang-ko"]')?.getAttribute('aria-pressed'),
+    })`);
+    assert.equal(koState.htmlLang, 'ko');
+    assert.equal(koState.title, 'MCP 매니저');
+    assert.equal(koState.refresh, '새로고침');
+    assert.equal(koState.add, '+ 서버 추가');
+    assert.equal(koState.tabServers, '서버 목록');
+    assert.equal(koState.tabRaw, '원본 JSON');
+    assert.equal(koState.sectionTitle, '전역 MCP 서버 (1)');
+    assert.equal(koState.koPressed, 'true');
+    assert.equal(
+      await waitUntil(() => evalMain(`window.localStorage.getItem('agy-mcp-manager-lang') === 'ko'`), 3000, 30),
+      true,
+      'Parent host must persist Korean language choice in localStorage for future restarts'
+    );
+
+    await evalIframe(`document.querySelector('[data-testid="btn-lang-en"]').click()`);
+    const enState = await evalIframe(`({
+      htmlLang: document.documentElement.lang,
+      title: document.getElementById('app-title')?.textContent?.trim(),
+      tabServers: document.getElementById('tab-servers')?.textContent?.trim(),
+      enPressed: document.querySelector('[data-testid="btn-lang-en"]')?.getAttribute('aria-pressed'),
+    })`);
+    assert.equal(enState.htmlLang, 'en');
+    assert.equal(enState.title, 'MCP Manager');
+    assert.equal(enState.tabServers, 'Servers');
+    assert.equal(enState.enPressed, 'true');
+    assert.equal(
+      await waitUntil(() => evalMain(`window.localStorage.getItem('agy-mcp-manager-lang') === 'en'`), 3000, 30),
+      true,
+      'Parent host must persist English language choice in localStorage'
+    );
+
+    // 4. Click General -> hides iframe and restores native pane
     await evalMain(`document.getElementById('nav-general').click()`);
     const restored = await evalMain(`({
       nativeDisplay: document.getElementById('native-general-pane').style.display,
@@ -312,6 +355,28 @@ test('NMCP-TC-021 (Real Chromium CDP E2E): Settings sidebar injector mounts MCP 
     assert.equal(restored.nativeDisplay, '');
     assert.equal(restored.frameDisplay, 'none');
     assert.equal(restored.navActive, 'false');
+
+    // 5. Korean-localized Antigravity Settings sidebar (일반..브라우저) still mounts MCP Manager under 브라우저
+    await evalMain(`(() => {
+      document.querySelector('[data-agy-mcp-manager-nav="true"]')?.remove();
+      const map = {
+        'nav-general': '일반',
+        'nav-application': '애플리케이션',
+        'nav-appearance': '외관',
+        'nav-shortcuts': '단축키',
+        'nav-notifications': '알림',
+        'nav-models': '모델',
+        'nav-browser': '브라우저',
+      };
+      for (const [id, text] of Object.entries(map)) {
+        document.getElementById(id).textContent = text;
+      }
+    })()`);
+    assert.equal(
+      await waitUntil(() => evalMain(`document.getElementById('nav-browser')?.nextElementSibling?.getAttribute('data-agy-mcp-manager-nav') === 'true'`), 4000, 30),
+      true,
+      'Injector must still insert MCP Manager directly under 브라우저 when Antigravity app is localized to Korean'
+    );
   } finally {
     if (ws) { try { ws.close(); } catch {} }
     try { browser.kill(); } catch {}

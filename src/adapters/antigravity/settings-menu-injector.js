@@ -20,7 +20,28 @@
   const PREV_DISPLAY_ATTR = 'agyMcpPrevDisplay';
   const SUPPRESSED_BG_ATTR = 'agyMcpSuppressedBg';
   const SUPPRESSED_COLOR_ATTR = 'agyMcpSuppressedColor';
-  const REQUIRED_SIBLING_LABELS = ['general', 'application', 'appearance', 'shortcuts', 'notifications', 'models', 'browser'];
+  const LANG_STORAGE_KEY = 'agy-mcp-manager-lang';
+  const BROWSER_LABELS = ['browser', '브라우저'];
+  const REQUIRED_SIBLING_LABELS = [
+    'general',
+    'application',
+    'appearance',
+    'shortcuts',
+    'notifications',
+    'models',
+    'browser',
+    '일반',
+    '애플리케이션',
+    '앱',
+    '외관',
+    '모양',
+    '화면',
+    '단축키',
+    '바로가기',
+    '알림',
+    '모델',
+    '브라우저',
+  ];
 
   function isSafeLoopbackIframeUrl(rawUrl) {
     if (typeof rawUrl !== 'string' || !rawUrl.trim()) return false;
@@ -66,7 +87,7 @@
     for (const el of candidates) {
       if (el.hasAttribute(NAV_ATTR)) continue;
       if (el.children.length > 2) continue;
-      if (normalizedText(el) !== 'browser') continue;
+      if (!BROWSER_LABELS.includes(normalizedText(el))) continue;
 
       let container = el.parentElement;
       for (let depth = 0; depth < 4 && container && container !== document.body; depth += 1) {
@@ -89,7 +110,9 @@
             (c) => c.nodeType === 1 && !c.hasAttribute(NAV_ATTR) && REQUIRED_SIBLING_LABELS.includes(normalizedText(c))
           );
           const inactiveSibling =
-            directSiblings.find((c) => !hasVisibleBg(c) && normalizedText(c) !== 'general' && normalizedText(c) !== 'browser') ||
+            directSiblings.find(
+              (c) => !hasVisibleBg(c) && !['general', '일반', ...BROWSER_LABELS].includes(normalizedText(c))
+            ) ||
             directSiblings.find((c) => !hasVisibleBg(c)) ||
             anchor;
           return { sidebar: container, listParent, browserItem: anchor, inactiveTemplate: inactiveSibling };
@@ -154,10 +177,23 @@
     return false;
   }
 
+  function readSavedLang() {
+    try {
+      const v = window.localStorage?.getItem(LANG_STORAGE_KEY);
+      return v === 'ko' || v === 'en' ? v : '';
+    } catch {
+      return '';
+    }
+  }
+
   function buildThemedIframeUrl(baseUrl, contentPane) {
     try {
       const url = new URL(baseUrl);
       url.searchParams.set('hostMode', 'settings');
+      const savedLang = readSavedLang();
+      if (savedLang) {
+        url.searchParams.set('lang', savedLang);
+      }
       const bodyCs = window.getComputedStyle(document.body);
       if (bodyCs?.fontFamily) {
         url.searchParams.set('hostFont', bodyCs.fontFamily);
@@ -174,6 +210,18 @@
       return url.toString();
     } catch {
       return baseUrl;
+    }
+  }
+
+  function sameFrameBaseAndTheme(currentSrc, nextSrc) {
+    try {
+      const a = new URL(currentSrc);
+      const b = new URL(nextSrc);
+      a.searchParams.delete('lang');
+      b.searchParams.delete('lang');
+      return a.toString() === b.toString();
+    } catch {
+      return currentSrc === nextSrc;
     }
   }
 
@@ -303,7 +351,7 @@
       frame.src = themedUrl;
       contentPane.appendChild(frame);
     } else {
-      if (frame.src !== themedUrl) frame.src = themedUrl;
+      if (!sameFrameBaseAndTheme(frame.src, themedUrl)) frame.src = themedUrl;
       frame.style.display = 'block';
     }
   }
@@ -321,7 +369,7 @@
     if (existingNav) {
       const existingFrame = initialContentPane?.querySelector(`[${FRAME_ATTR}="true"]`);
       const nextUrl = buildThemedIframeUrl(baseUrl, initialContentPane);
-      if (existingFrame && existingFrame.src !== nextUrl) {
+      if (existingFrame && !sameFrameBaseAndTheme(existingFrame.src, nextUrl)) {
         existingFrame.src = nextUrl;
       }
       return;
@@ -373,6 +421,26 @@
     return;
   }
   window.__AGY_MCP_MANAGER_INJECTOR_ACTIVE__ = true;
+
+  window.addEventListener('message', (ev) => {
+    const baseUrl = window.__AGY_MCP_MANAGER_URL__;
+    if (!isSafeLoopbackIframeUrl(baseUrl)) return;
+    try {
+      const expectedOrigin = new URL(baseUrl).origin;
+      if (ev.origin !== expectedOrigin) return;
+    } catch {
+      return;
+    }
+    const frame = document.querySelector(`[${FRAME_ATTR}="true"]`);
+    if (!frame || ev.source !== frame.contentWindow) return;
+    if (ev.data?.type === 'agy-mcp-lang-change' && (ev.data.lang === 'ko' || ev.data.lang === 'en')) {
+      try {
+        window.localStorage?.setItem(LANG_STORAGE_KEY, ev.data.lang);
+      } catch {
+        // Ignore storage errors
+      }
+    }
+  });
 
   let scheduled = false;
   const scheduleEnsure = () => {
