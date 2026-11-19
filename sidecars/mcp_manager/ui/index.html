@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MCP Manager</title>
+  <script src="/preload.js"></script>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app" class="app-shell" data-testid="mcp-manager-root">
+    <header class="app-header">
+      <div class="header-title-row">
+        <h1>MCP Manager</h1>
+        <span id="runtime-badge" class="badge badge-muted" data-testid="runtime-badge">Connecting…</span>
+      </div>
+      <div class="header-actions">
+        <button id="btn-refresh" type="button" class="btn btn-secondary" data-testid="btn-refresh">Refresh</button>
+        <button id="btn-add" type="button" class="btn btn-primary" data-testid="btn-add">+ Add Server</button>
+      </div>
+    </header>
+
+    <nav class="tabs" role="tablist" aria-label="MCP Manager Views">
+      <button id="tab-servers" type="button" role="tab" aria-selected="true" class="tab active" data-tab="servers">Servers</button>
+      <button id="tab-raw" type="button" role="tab" aria-selected="false" class="tab" data-tab="raw">Raw JSON</button>
+    </nav>
+
+    <div id="banner-region" class="banner-region" aria-live="polite" data-testid="banner-region"></div>
+
+    <main id="main-region" class="main-region" data-testid="main-region"></main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "name": "antigravity-mcp-manager",
+  "displayName": "MCP Manager",
+  "description": "Safe visual manager for global MCP servers in mcp_config.json with read-only plugin inventory and live status diagnostics.",
+  "version": "2.0.0",
+  "logo": "assets/logo.svg",
+  "author": {
+    "name": "jaeseongs95",
+    "url": "https://github.com/jaeseongs95"
+  },
+  "homepage": "https://github.com/jaeseongs95/antigravity-mcp-manager",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jaeseongs95/antigravity-mcp-manager.git"
+  }
+}
