@@ -1,14 +1,17 @@
 {
   "name": "antigravity-mcp-manager",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "type": "module",
-  "description": "Vendor-independent MCP Server Manager with official Antigravity 2.0 Plugin and AUX_PANE UI Sidecar adapter.",
+  "description": "Vendor-independent MCP Server Manager with Antigravity 2.0 Plugin, AUX_PANE Sidecar, and native Settings left-sidebar menu integration.",
   "license": "MIT",
   "engines": {
     "node": ">=22.0.0"
   },
   "scripts": {
-    "test": "node scripts/run-tests.mjs"
+    "test": "node scripts/run-tests.mjs",
+    "install:settings": "node scripts/install-settings-menu.mjs --install",
+    "uninstall:settings": "node scripts/install-settings-menu.mjs --uninstall",
+    "status:settings": "node scripts/install-settings-menu.mjs --status"
   },
   "exports": {
     "./core": "./src/core/manager-service.mjs"
@@ -16,5 +19,8 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/jaeseongs95/antigravity-mcp-manager.git"
+  },
+  "dependencies": {
+    "@electron/asar": "^4.3.2"
   }
 }

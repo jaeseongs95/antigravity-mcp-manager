@@ -276,7 +276,7 @@ export function createFsConfigStore({
     } catch (err) {
       return {
         ok: false,
-        code: ERROR_CODES.IO_ERROR,
+        code: err?.code || ERROR_CODES.IO_ERROR,
         error: err?.message || String(err),
       };
     }
@@ -466,7 +466,7 @@ export function createFsConfigStore({
     try {
       lockToken = acquireLock(lockPath);
     } catch (err) {
-      return { ok: false, code: ERROR_CODES.IO_ERROR, error: err?.message || String(err) };
+      return { ok: false, code: err?.code || ERROR_CODES.IO_ERROR, error: err?.message || String(err) };
     }
     if (!lockToken) {
       return { ok: false, code: ERROR_CODES.LOCK_BUSY, error: 'Lock busy while restoring backup.' };

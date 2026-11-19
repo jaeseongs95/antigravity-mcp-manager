@@ -1,6 +1,8 @@
-# Antigravity MCP Manager (`v2.0.0`)
+# Antigravity MCP Manager (`v2.1.0`)
 
-A safe, vendor-independent **MCP Server Manager** packaged as an official **Antigravity 2.0 Native Plugin + `AUX_PANE` UI Sidecar** (`plugin.json` + `sidecars/mcp_manager/sidecar.json`).
+[한국어 문서 (README.ko.md)](./README.ko.md)
+
+A safe, vendor-independent **MCP Server Manager** for **Antigravity 2.0 Native Desktop App**, providing both an official **Plugin + `AUX_PANE` UI Sidecar** (`plugin.json` + `sidecars/mcp_manager/sidecar.json`) and an optional **Native Settings Left-Sidebar Menu** (`Browser` → `MCP Manager`) backed by the same hardened loopback HTTP server (`desktop-server.mjs`).
 
 > **Zero Binary Patching**: No `app.asar` modification, no `statusbar_autoinject.js` piggybacking, no React/Angular internal DOM scraping, and no LLM-callable config write tools.
 
@@ -19,9 +21,16 @@ A safe, vendor-independent **MCP Server Manager** packaged as an official **Anti
 - `sidecars/mcp_manager/**`: Official `SIDECAR_UI_ENTRYPOINT_AUX_PANE` web UI synced to Antigravity's native Light/Dark theme tokens.
 
 ## Install & Usage (Antigravity 2.0 Native App)
-1. Place this repository under `~/.gemini/config/plugins/antigravity-mcp-manager/`.
-2. Open **MCP Manager** from the conversation header **`+`** menu to toggle it in the Auxiliary Side Pane.
-3. Enable, disable, or uninstall cleanly anytime from Antigravity **Customizations** or `agy plugin disable antigravity-mcp-manager`.
+1. Place this repository under `~/.gemini/config/plugins/antigravity-mcp-manager/` and run `npm ci --omit=dev`.
+2. **Option A — Native Settings Left-Sidebar Menu (Recommended UX)**:
+   - Install the independent 1-line Electron loader hook (uses official `@electron/asar`, preserves `app.asar.*.orig` backup, never touches `statusbar_autoinject.js`):
+     ```bash
+     npm run install:settings
+     ```
+   - Restart Antigravity Desktop and open **Settings → MCP Manager** (directly under **Browser**).
+   - Remove cleanly anytime with `npm run uninstall:settings`.
+3. **Option B — Official Plugin `AUX_PANE` Sidecar**:
+   - Manage or disable cleanly anytime from Antigravity **Customizations**.
 
 ## Migrating from v1.x (Legacy Cleanup)
 If you previously installed `v1.x` (which injected `mcp_manager_autoinject.js`), clean up the legacy hooks before enabling `v2.0.0`:

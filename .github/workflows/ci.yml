@@ -29,5 +29,8 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Install dependencies
+        run: npm ci
+
       - name: Run full test suite (Core Purity, Security, FS Store, Antigravity Adapter, Sidecar HTTP, UI Safety)
         run: npm test

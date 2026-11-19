@@ -1,6 +1,8 @@
-# Antigravity MCP Manager (`v2.0.0`)
+# Antigravity MCP Manager (`v2.1.0`)
 
-**Antigravity 2.0 공식 Plugin + `AUX_PANE` UI Sidecar** (`plugin.json` + `sidecars/mcp_manager/sidecar.json`) 구조로 설계된 벤더 독립형 MCP 서버 관리자입니다.
+[English Documentation (README.md)](./README.md)
+
+**Antigravity 2.0 네이티브 데스크톱 앱**을 위한 벤더 독립형 MCP 서버 관리자입니다. 공식 **Plugin + `AUX_PANE` UI Sidecar** 구조와 함께, 검증된 `v2.0.0` 코어·로컬 보안 서버를 그대로 재사용하는 **Settings 좌측 사이드바(`Browser` 아래) `MCP Manager` 직접 메뉴 연동**을 제공합니다.
 
 > **무패치 안전 구조**: `app.asar` 바이너리 패치, `statusbar_autoinject.js` 편승, React/Angular 내부 DOM 스크래핑, LLM 호출형 설정 쓰기 도구를 일절 사용하지 않습니다. (웹 원격 제어 지원은 별도 프로젝트 `antigravity-remote-plugin`으로 분리되었습니다.)
 
@@ -12,9 +14,15 @@
 - **보안 및 깨진 JSON 복구**: 위험 환경변수(`NODE_OPTIONS`, `LD_PRELOAD` 등) 및 비-루프백 평문 `http://` 인증 헤더·민감 쿼리 토큰 차단, Stdio 저장 전(Raw JSON 저장 포함) 명시적 확인, 비밀 입력 기본 마스킹, 파손 JSON fail-closed Raw 복구 및 직전 정상 백업 복원.
 
 ## 설치 및 사용 (Antigravity 2.0 네이티브 앱)
-1. 본 저장소를 `~/.gemini/config/plugins/antigravity-mcp-manager/`에 배치합니다.
-2. Antigravity 대화 상단 **`+` 메뉴**에서 **MCP Manager**를 선택하면 우측 보조 사이드 패널(`AUX_PANE`)에 열립니다.
-3. Antigravity **Customizations** 화면이나 `agy plugin disable antigravity-mcp-manager`로 언제든 안전하게 비활성화/제거할 수 있습니다.
+1. 본 저장소를 `~/.gemini/config/plugins/antigravity-mcp-manager/`에 배치하고 `npm ci --omit=dev`를 실행합니다.
+2. **Settings 좌측 사이드바 직접 메뉴 활성화 (권장 UX)**:
+   - 공식 `@electron/asar`를 사용해 독립 1줄 로더 훅을 설치합니다(원본 `app.asar.*.orig` 백업 보존, `statusbar_autoinject.js` 미접촉):
+     ```bash
+     npm run install:settings
+     ```
+   - Antigravity 앱을 재시작한 뒤 **Settings → MCP Manager (`Browser` 바로 아래)** 에서 바로 사용할 수 있습니다.
+   - 제거는 `npm run uninstall:settings`로 언제든 깔끔하게 되돌릴 수 있습니다.
+3. **공식 플러그인 관리**: Antigravity **Customizations** 화면에서 활성화/비활성화할 수 있습니다.
 
 ## v1.x 사용자 정리 및 전환(Migration)
 기존 `v1.x`(`mcp_manager_autoinject.js` 주입 방식)가 설치되어 있었다면 `v2.0.0` 활성화 전에 아래 정리 절차를 먼저 수행합니다.
