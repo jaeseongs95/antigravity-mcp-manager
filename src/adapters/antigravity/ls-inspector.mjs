@@ -15,7 +15,7 @@ function isSafeLoopbackAddress(lsAddress) {
   if (typeof lsAddress !== 'string' || !lsAddress.trim()) return false;
   try {
     const parsed = new URL(`http://${lsAddress.trim()}`);
-    if (parsed.username || parsed.password || parsed.pathname !== '/') return false;
+    if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) return false;
     return isLoopbackHostname(parsed.hostname);
   } catch {
     return false;

@@ -1,10 +1,13 @@
-# Antigravity MCP Manager (`v2.0.0`)
+# Antigravity MCP Manager (`v2.1.0`)
 
-A safe, vendor-independent **MCP Server Manager** packaged as an official **Antigravity 2.0 Native Plugin + `AUX_PANE` UI Sidecar** (`plugin.json` + `sidecars/mcp_manager/sidecar.json`).
+[한국어 문서 (README.ko.md)](./README.ko.md)
 
-> **Zero Binary Patching**: No `app.asar` modification, no `statusbar_autoinject.js` piggybacking, no React/Angular internal DOM scraping, and no LLM-callable config write tools.
+A safe, vendor-independent **MCP Server Manager** for **Antigravity 2.0 Native Desktop App**, providing both an official **Plugin + `AUX_PANE` UI Sidecar** (`plugin.json` + `sidecars/mcp_manager/sidecar.json`) and an optional **Native Settings Left-Sidebar Menu** (`Browser` → `MCP Manager`) backed by the same hardened loopback HTTP server (`desktop-server.mjs`).
+
+> **Safe & Decoupled Architecture**: Zero `statusbar_autoinject.js` piggybacking, zero React/Angular internal state scraping, zero LLM-callable config write tools, and optional `@electron/asar` Settings sidebar integration with an independent marker + automatic `.orig` backup preservation.
 
 ## Features
+- **Native Settings Sidebar & Built-In `EN | 한국어` Toggle**: Mounts directly under **Browser** (or Korean **브라우저**) in Antigravity Settings with 0px layout shift, preserves the native `X` close button, inherits host font/theme, and includes a built-in English/Korean language toggle persisted across restarts.
 - **Single Canonical Write Scope**: Reads and writes only `~/.gemini/config/mcp_config.json` with mandatory SHA-256 CAS (`409 Conflict` protection), advisory file lock, private backups stored outside `plugins/` (`~/.gemini/config/.mcp-manager-backups/`), and same-filesystem atomic replace (`fsync` + `rename`).
 - **Read-Only Plugin Inventory**: Displays `plugins/*/mcp_config.json` (global & workspace `.agents/plugins/`) with plugin badges, plugin disabled status, global name-collision warnings, and safe **Clone to Global** (preserving full secrets server-side without exposing masked values).
 - **Live Read-Only Status**: Queries Antigravity's local loopback Language Server (`GetMcpServerStates`, `GetAllPlugins`) for live readiness badges, tool counts, and redacted error summaries.
@@ -19,9 +22,16 @@ A safe, vendor-independent **MCP Server Manager** packaged as an official **Anti
 - `sidecars/mcp_manager/**`: Official `SIDECAR_UI_ENTRYPOINT_AUX_PANE` web UI synced to Antigravity's native Light/Dark theme tokens.
 
 ## Install & Usage (Antigravity 2.0 Native App)
-1. Place this repository under `~/.gemini/config/plugins/antigravity-mcp-manager/`.
-2. Open **MCP Manager** from the conversation header **`+`** menu to toggle it in the Auxiliary Side Pane.
-3. Enable, disable, or uninstall cleanly anytime from Antigravity **Customizations** or `agy plugin disable antigravity-mcp-manager`.
+1. Place this repository under `~/.gemini/config/plugins/antigravity-mcp-manager/` and run `npm ci --omit=dev`.
+2. **Option A — Native Settings Left-Sidebar Menu (Recommended UX)**:
+   - Install the independent 1-line Electron loader hook (uses official `@electron/asar`, preserves `app.asar.*.orig` backup, never touches `statusbar_autoinject.js`):
+     ```bash
+     npm run install:settings
+     ```
+   - Restart Antigravity Desktop and open **Settings → MCP Manager** (directly under **Browser**).
+   - Remove cleanly anytime with `npm run uninstall:settings`.
+3. **Option B — Official Plugin `AUX_PANE` Sidecar**:
+   - Manage or disable cleanly anytime from Antigravity **Customizations**.
 
 ## Migrating from v1.x (Legacy Cleanup)
 If you previously installed `v1.x` (which injected `mcp_manager_autoinject.js`), clean up the legacy hooks before enabling `v2.0.0`:
@@ -38,4 +48,4 @@ If you previously installed `v1.x` (which injected `mcp_manager_autoinject.js`),
 ```bash
 npm test
 ```
-Runs all unit, core-purity, filesystem write-jail/symlink-junction/CAS, Sidecar HTTP security (including real `sidecars/mcp_manager/main.mjs` + `sidecar_sdk` boot when Antigravity Desktop is installed), and real Headless Chromium/Edge CDP UI safety tests (`NMCP-TC-001`–`NMCP-TC-020`, `NMCP-TC-015B`, `NMCP-TC-020B`) with zero external dependencies on Node 22+.
+Runs all 26 unit, core-purity, filesystem write-jail/symlink-junction/CAS, Sidecar & Desktop HTTP security, `@electron/asar` installer round-trip, EN/KO `I18N` parity, and real Headless Chromium/Edge CDP UI safety tests (`NMCP-TC-001`–`NMCP-TC-026`, `NMCP-TC-015B`, `NMCP-TC-020B`, `NMCP-TC-020C`) on Node 22+.
