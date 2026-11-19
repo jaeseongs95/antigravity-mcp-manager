@@ -177,13 +177,22 @@ test('NMCP-TC-019 & NMCP-TC-020 (Simulated DOM Contract): Korean IME guard, Clon
     const appCode = fs.readFileSync(path.join(UI_DIR, 'app.js'), 'utf8');
     vm.runInNewContext(appCode, { window: win, document: doc, URLSearchParams, fetch: liveFetch, console, setTimeout, clearTimeout });
 
-    await new Promise((r) => setTimeout(r, 80));
+    const waitUntil = async (fn, timeoutMs = 3000) => {
+      const end = Date.now() + timeoutMs;
+      while (Date.now() < end) {
+        if (fn()) return true;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      return Boolean(fn());
+    };
+
+    await waitUntil(() => Boolean(ids.get('main-region').findByTestId('btn-clone-demo-psrv')));
 
     // 1. Live Clone-to-Global via UI button MUST preserve real unmasked secret + disabledTools on disk (F2!)
     const cloneBtn = ids.get('main-region').findByTestId('btn-clone-demo-psrv');
     assert.ok(cloneBtn, 'Expected Clone to Global button for plugin server');
     cloneBtn.dispatch('click');
-    await new Promise((r) => setTimeout(r, 80));
+    await waitUntil(() => Boolean(JSON.parse(fs.readFileSync(configPath, 'utf8')).mcpServers?.['psrv-copy']));
     const afterClone = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     assert.equal(afterClone.mcpServers['psrv-copy'].headers.Authorization, 'Bearer real-plugin-tok');
     assert.deepEqual(afterClone.mcpServers['psrv-copy'].disabledTools, ['x']);
@@ -201,35 +210,35 @@ test('NMCP-TC-019 & NMCP-TC-020 (Simulated DOM Contract): Korean IME guard, Clon
 
     // 3. Raw JSON save with Stdio MUST show stdio-confirm-panel instead of bypassing (F3!)
     ids.get('tab-raw').dispatch('click');
-    await new Promise((r) => setTimeout(r, 80));
+    await waitUntil(() => Boolean(ids.get('main-region').findByTestId('raw-json-textarea')));
     const ta = ids.get('main-region').findByTestId('raw-json-textarea');
     assert.ok(ta);
     ta.value = JSON.stringify({ mcpServers: { rawCmd: { command: 'node', args: ['a.js'] } } }, null, 2);
     ta.dispatch('input', { target: ta });
     ids.get('main-region').findByTestId('btn-save-raw').dispatch('click');
-    await new Promise((r) => setTimeout(r, 80));
+    await waitUntil(() => Boolean(ids.get('main-region').findByTestId('stdio-confirm-panel')));
     assert.ok(ids.get('main-region').findByTestId('stdio-confirm-panel'), 'Raw JSON Stdio save must pause for explicit confirmation');
     assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf8')).mcpServers.rawCmd, undefined);
 
     // 4. Confirming Raw JSON Stdio writes to disk
     ids.get('main-region').findByTestId('btn-confirm-stdio').dispatch('click');
-    await new Promise((r) => setTimeout(r, 80));
+    await waitUntil(() => Boolean(JSON.parse(fs.readFileSync(configPath, 'utf8')).mcpServers?.rawCmd));
     assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf8')).mcpServers.rawCmd.command, 'node');
 
     // 5. External disk change triggers 409 Conflict banner (F6!)
     fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { external: { url: 'https://ext.example.com/mcp' } } }) + '\n', 'utf8');
     ids.get('main-region').findByTestId('btn-save-raw').dispatch('click');
-    await new Promise((r) => setTimeout(r, 80));
+    await waitUntil(() => Boolean(ids.get('banner-region').findByTestId('status-banner')));
     const conflictBanner = ids.get('banner-region').findByTestId('status-banner');
     assert.ok(conflictBanner);
 
     // 6. Malformed JSON on disk renders malformed-json-banner + restore backup works with CAS (F6!)
     fs.writeFileSync(configPath, '{ broken json', 'utf8');
     ids.get('btn-refresh').dispatch('click');
-    await new Promise((r) => setTimeout(r, 80));
+    await waitUntil(() => Boolean(ids.get('banner-region').findByTestId('malformed-json-banner')));
     assert.ok(ids.get('banner-region').findByTestId('malformed-json-banner'));
     ids.get('banner-region').findByTestId('btn-restore-backup').dispatch('click');
-    await new Promise((r) => setTimeout(r, 80));
+    await waitUntil(() => ids.get('banner-region').findByTestId('malformed-json-banner') === null);
     assert.equal(ids.get('banner-region').findByTestId('malformed-json-banner'), null);
   } finally {
     await new Promise((r) => server.close(r));
