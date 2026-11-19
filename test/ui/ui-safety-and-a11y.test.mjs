@@ -406,6 +406,7 @@ test('NMCP-TC-019 & NMCP-TC-020 / NMCP-TC-020B (Real Headless Chromium/Edge CDP 
     const afterClone = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     assert.equal(afterClone.mcpServers['psrv-copy'].headers.Authorization, 'Bearer real-plugin-secret-xyz');
     assert.deepEqual(afterClone.mcpServers['psrv-copy'].disabledTools, ['x']);
+    assert.equal(await waitForSelector('[data-testid="global-server-psrv-copy"]'), true, 'UI must finish loadSnapshot after Clone before next mutation');
 
     // 4b. Same-basename global vs workspace Stdio clone 428 confirmation MUST preserve workspace pluginId (R5 F1!)
     const wsStdioCloneSelector = '[data-testid="btn-clone-workspace-0-demo-cmdSrv"]';
@@ -418,6 +419,7 @@ test('NMCP-TC-019 & NMCP-TC-020 / NMCP-TC-020B (Real Headless Chromium/Edge CDP 
       true,
       'Confirming workspace Stdio clone must write cmdSrv-copy to disk'
     );
+    assert.equal(await waitForSelector('[data-testid="global-server-cmdSrv-copy"]'), true, 'UI must finish loadSnapshot after Stdio confirm');
     const afterWsStdioClone = JSON.parse(fs.readFileSync(configPath, 'utf8')).mcpServers['cmdSrv-copy'];
     assert.deepEqual(afterWsStdioClone.args, ['workspace-cmd.js'], 'Confirm & Save MUST clone workspace Stdio, NOT global Stdio');
     assert.equal(afterWsStdioClone.env.SECRET, 'workspace-cmd-secret');
