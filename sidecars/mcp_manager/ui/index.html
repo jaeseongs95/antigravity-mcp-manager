@@ -11,10 +11,14 @@
   <div id="app" class="app-shell" data-testid="mcp-manager-root">
     <header class="app-header">
       <div class="header-title-row">
-        <h1>MCP Manager</h1>
+        <h1 id="app-title">MCP Manager</h1>
         <span id="runtime-badge" class="badge badge-muted" data-testid="runtime-badge">Connecting…</span>
       </div>
       <div class="header-actions">
+        <div class="lang-switch" role="group" aria-label="Language" data-testid="lang-switch">
+          <button id="btn-lang-en" type="button" class="lang-btn active" aria-pressed="true" data-testid="btn-lang-en">EN</button>
+          <button id="btn-lang-ko" type="button" class="lang-btn" aria-pressed="false" data-testid="btn-lang-ko">한국어</button>
+        </div>
         <button id="btn-refresh" type="button" class="btn btn-secondary" data-testid="btn-refresh">Refresh</button>
         <button id="btn-add" type="button" class="btn btn-primary" data-testid="btn-add">+ Add Server</button>
       </div>
