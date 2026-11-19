@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { ERROR_CODES } from '../../src/core/model.mjs';
 import { sha256Hex } from '../../src/core/sha256.mjs';
+import { McpManagerService } from '../../src/core/manager-service.mjs';
 import { createFsConfigStore } from '../../src/adapters/fs-config-store.mjs';
 import { ANTIGRAVITY_DIALECT } from '../../src/adapters/antigravity/dialect.mjs';
 import { resolveAntigravityPaths } from '../../src/adapters/antigravity/paths.mjs';
@@ -146,6 +148,36 @@ test('NMCP-TC-013: Antigravity paths keep backups outside plugins/, and ls-inspe
     const paths = resolveAntigravityPaths({ homeDir: dir });
     assert.equal(paths.globalConfigPath, path.join(dir, '.gemini', 'config', 'mcp_config.json'));
     assert.equal(paths.backupDir.replace(/\\/g, '/').includes('/plugins/'), false);
+
+    // Dynamic workspaceUris .agents/plugins discovery + clone with secret preservation (R3 F2)
+    const wsDir = path.join(dir, 'my-workspace');
+    const wsPluginDir = path.join(wsDir, '.agents', 'plugins', 'ws-demo');
+    fs.mkdirSync(wsPluginDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(wsPluginDir, 'mcp_config.json'),
+      JSON.stringify({ mcpServers: { wsSrv: { url: 'https://ws.example/mcp', headers: { Authorization: 'Bearer ws-secret-777' } } } }),
+      'utf8'
+    );
+    const wsUri = pathToFileURL(wsDir).href;
+    const cfgDir = path.join(dir, '.gemini', 'config');
+    fs.mkdirSync(cfgDir, { recursive: true });
+    fs.writeFileSync(paths.globalConfigPath, '{"mcpServers":{}}\n', 'utf8');
+    const wsStore = createFsConfigStore({
+      globalConfigPath: paths.globalConfigPath,
+      pluginRoots: paths.pluginRoots,
+      backupDir: paths.backupDir,
+    });
+    const wsService = new McpManagerService({ configStore: wsStore });
+    const snap = await wsService.getSnapshot({ workspaceUris: [wsUri] });
+    assert.equal(snap.pluginServers.some((p) => p.pluginDir === 'ws-demo' && p.name === 'wsSrv'), true);
+    const cloneRes = await wsService.clonePluginServer({
+      pluginDir: 'ws-demo',
+      serverName: 'wsSrv',
+      workspaceUris: [wsUri],
+      expectedSha256: snap.globalConfig.sha256,
+    });
+    assert.equal(cloneRes.ok, true);
+    assert.equal(JSON.parse(fs.readFileSync(paths.globalConfigPath, 'utf8')).mcpServers.wsSrv.headers.Authorization, 'Bearer ws-secret-777');
 
     // Non-loopback lsAddress MUST make 0 network calls and NEVER send CSRF token
     let leakedCalls = 0;

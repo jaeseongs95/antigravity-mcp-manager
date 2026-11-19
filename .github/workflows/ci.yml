@@ -27,7 +27,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Run full test suite (Core Purity, Security, FS Store, Antigravity Adapter, Sidecar HTTP, UI Safety)
         run: npm test

@@ -84,7 +84,7 @@ export class McpManagerService {
       : { available: false, servers: {}, plugins: [] };
 
     const pluginReads = this.configStore.readPluginConfigs
-      ? await this.configStore.readPluginConfigs().catch(() => [])
+      ? await this.configStore.readPluginConfigs({ workspaceUris }).catch(() => [])
       : [];
 
     const runtimePluginsByDir = new Map();
@@ -336,8 +336,10 @@ export class McpManagerService {
     return { ok: true, sha256: writeRes.sha256 };
   }
 
-  async clonePluginServer({ pluginDir, serverName, targetName = null, expectedSha256, confirmStdio = false }) {
-    const pluginReads = this.configStore.readPluginConfigs ? await this.configStore.readPluginConfigs() : [];
+  async clonePluginServer({ pluginDir, serverName, targetName = null, workspaceUris = [], expectedSha256, confirmStdio = false }) {
+    const pluginReads = this.configStore.readPluginConfigs
+      ? await this.configStore.readPluginConfigs({ workspaceUris })
+      : [];
     const targetPlugin = pluginReads.find((p) => p.pluginDir === pluginDir);
     if (!targetPlugin) {
       return { ok: false, code: ERROR_CODES.NOT_FOUND, errors: [`Plugin "${pluginDir}" not found.`] };

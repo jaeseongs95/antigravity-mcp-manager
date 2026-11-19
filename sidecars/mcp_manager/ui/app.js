@@ -82,13 +82,24 @@
   async function apiPost(route, payload = {}) {
     const headers = { 'Content-Type': 'application/json' };
     if (token) headers['x-sidecar-token'] = token;
-    const res = await fetch(route, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json().catch(() => ({ ok: false, errors: [`HTTP ${res.status}`] }));
-    return { status: res.status, data };
+    try {
+      const res = await fetch(route, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      });
+      const raw = await res.json().catch(() => ({ ok: false, errors: [`HTTP ${res.status}`] }));
+      const data = raw && typeof raw === 'object' ? raw : { ok: false, errors: [`HTTP ${res.status}`] };
+      if (!data.ok && !Array.isArray(data.errors) && typeof data.error === 'string') {
+        data.errors = [data.error];
+      }
+      return { status: res.status, data };
+    } catch (err) {
+      return {
+        status: 0,
+        data: { ok: false, errors: [err?.message || 'Network request failed'] },
+      };
+    }
   }
 
   function scrubSensitiveState({ keepRawIfMalformed = false } = {}) {
@@ -242,6 +253,7 @@
       pluginDir: ps.pluginDir,
       serverName: ps.name,
       targetName,
+      workspaceUris,
       expectedSha256: snapshot.globalConfig.sha256,
       confirmStdio,
     };

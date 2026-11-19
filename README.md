@@ -38,4 +38,4 @@ If you previously installed `v1.x` (which injected `mcp_manager_autoinject.js`),
 ```bash
 npm test
 ```
-Runs all unit, core-purity, filesystem write-jail/symlink-junction/CAS, Sidecar HTTP security (including real `sidecars/mcp_manager/main.mjs` + `sidecar_sdk` boot when Antigravity Desktop is installed), and live DOM/IME UI safety tests (`NMCP-TC-001`–`NMCP-TC-020`, `NMCP-TC-015B`) with zero external dependencies on Node 20+.
+Runs all unit, core-purity, filesystem write-jail/symlink-junction/CAS, Sidecar HTTP security (including real `sidecars/mcp_manager/main.mjs` + `sidecar_sdk` boot when Antigravity Desktop is installed), and real Headless Chromium/Edge CDP UI safety tests (`NMCP-TC-001`–`NMCP-TC-020`, `NMCP-TC-015B`, `NMCP-TC-020B`) with zero external dependencies on Node 22+.

@@ -31,4 +31,4 @@
 ```bash
 npm test
 ```
-외부 런타임 의존성 0개로 Node 20+ 환경에서 코어 순수성·FS 쓰기 감옥/symlink·junction 방어/CAS·Sidecar HTTP 보안(Antigravity Desktop 설치 호스트의 실 `sidecars/mcp_manager/main.mjs` + `sidecar_sdk` 기동 포함)·실 DOM/IME UI 안전성 테스트(`NMCP-TC-001`~`NMCP-TC-020`, `NMCP-TC-015B`)를 실행합니다.
+외부 런타임 의존성 0개로 Node 22+ 환경에서 코어 순수성·FS 쓰기 감옥/symlink·junction 방어/CAS·Sidecar HTTP 보안(Antigravity Desktop 설치 호스트의 실 `sidecars/mcp_manager/main.mjs` + `sidecar_sdk` 기동 포함)·실 Headless Chromium/Edge CDP UI 안전성 테스트(`NMCP-TC-001`~`NMCP-TC-020`, `NMCP-TC-015B`, `NMCP-TC-020B`)를 실행합니다.

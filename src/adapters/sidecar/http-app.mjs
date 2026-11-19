@@ -16,6 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { Readable } from 'node:stream';
 import { ERROR_CODES } from '../../core/model.mjs';
 import { redactErrorMessage } from '../../core/secret-redactor.mjs';
 import { isLoopbackHostname } from '../../core/validator.mjs';
@@ -64,9 +65,14 @@ function constantTimeTokenEquals(expected, provided) {
 }
 
 function isAllowedLoopbackHostHeader(hostHeader) {
-  if (typeof hostHeader !== 'string' || !hostHeader.trim()) return false;
+  if (typeof hostHeader !== 'string') return false;
+  const trimmed = hostHeader.trim();
+  if (!trimmed || /[\s@/?#\\]/.test(trimmed)) return false;
   try {
-    const parsed = new URL(`http://${hostHeader.trim()}`);
+    const parsed = new URL(`http://${trimmed}`);
+    if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) {
+      return false;
+    }
     return isLoopbackHostname(parsed.hostname);
   } catch {
     return false;
@@ -130,23 +136,57 @@ export function attachSidecarSecurityMiddleware(server, { token = '', maxBodyByt
     const declaredLen = Number(req.headers['content-length']);
     if (Number.isFinite(declaredLen) && declaredLen > maxBodyBytes) {
       sendJsonErr(413, 'Payload Too Large');
+      req.resume();
       return;
     }
 
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      for (const listener of existingListeners) {
+        listener.call(server, req, res);
+      }
+      return;
+    }
+
+    // Buffer non-GET body (including Transfer-Encoding: chunked) BEFORE invoking downstream
+    // listeners so an oversized body responds 413 cleanly with ZERO ERR_HTTP_HEADERS_SENT race.
+    const chunks = [];
     let receivedBytes = 0;
     let oversized = false;
     req.on('data', (chunk) => {
-      receivedBytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk));
-      if (!oversized && receivedBytes > maxBodyBytes) {
+      if (oversized) return;
+      const bufChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      receivedBytes += bufChunk.length;
+      if (receivedBytes > maxBodyBytes) {
         oversized = true;
-        sendJsonErr(413, 'Payload Too Large');
-        req.destroy();
+        chunks.length = 0;
+        if (!res.headersSent) {
+          res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8', Connection: 'close', ...SECURITY_HEADERS });
+          res.end(JSON.stringify({ ok: false, error: 'Payload Too Large' }));
+        }
+        req.resume();
+        return;
+      }
+      chunks.push(bufChunk);
+    });
+    req.on('end', () => {
+      if (oversized || res.headersSent) return;
+      const fullBuf = Buffer.concat(chunks);
+      const replayReq = Readable.from(fullBuf.length > 0 ? [fullBuf] : []);
+      replayReq.method = req.method;
+      replayReq.url = req.url;
+      replayReq.headers = req.headers;
+      replayReq.rawHeaders = req.rawHeaders;
+      replayReq.httpVersion = req.httpVersion;
+      replayReq.socket = req.socket;
+      replayReq.connection = req.connection;
+      replayReq.complete = true;
+      for (const listener of existingListeners) {
+        listener.call(server, replayReq, res);
       }
     });
-
-    for (const listener of existingListeners) {
-      listener.call(server, req, res);
-    }
+    req.on('error', () => {
+      // Client aborted before completing body
+    });
   });
 
   return server;
@@ -239,6 +279,7 @@ export function registerSidecarRoutes({ app, ResponseClass, service, uiDir }) {
       pluginDir: data.pluginDir,
       serverName: data.serverName,
       targetName: data.targetName || null,
+      workspaceUris: Array.isArray(data.workspaceUris) ? data.workspaceUris : [],
       expectedSha256: data.expectedSha256,
       confirmStdio: Boolean(data.confirmStdio),
     })

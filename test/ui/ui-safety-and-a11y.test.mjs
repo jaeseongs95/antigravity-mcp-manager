@@ -288,7 +288,8 @@ test('NMCP-TC-020B (Real Headless Chromium/Edge CDP E2E): real browser CSP, asse
   fs.mkdirSync(profileDir, { recursive: true });
   const token = 'real-browser-cdp-token';
 
-  const pluginDir = path.join(tmpDir, 'plugins', 'demo');
+  const cfgDir = path.join(tmpDir, '.gemini', 'config');
+  const pluginDir = path.join(cfgDir, 'plugins', 'demo');
   fs.mkdirSync(pluginDir, { recursive: true });
   fs.writeFileSync(
     path.join(pluginDir, 'mcp_config.json'),
@@ -299,73 +300,116 @@ test('NMCP-TC-020B (Real Headless Chromium/Edge CDP E2E): real browser CSP, asse
     }),
     'utf8'
   );
-  const configPath = path.join(tmpDir, 'mcp_config.json');
+  const configPath = path.join(cfgDir, 'mcp_config.json');
   fs.writeFileSync(configPath, JSON.stringify({ mcpServers: {} }, null, 2) + '\n', 'utf8');
 
-  class Resp {
-    constructor(body, opts = {}) {
-      this.body = body;
-      this.status = opts.status ?? 200;
-      this.contentType = opts.contentType ?? 'application/json; charset=utf-8';
-      this.headers = opts.headers ?? {};
-    }
-  }
+  // Prefer REAL sidecars/mcp_manager/main.mjs + host sidecar_sdk when Antigravity Desktop is installed!
+  const hostHome = process.env.USERPROFILE || process.env.HOME || os.homedir();
+  const sdkLoader = path.join(hostHome, '.gemini', 'antigravity', 'lib', 'node_modules', 'sidecar_sdk', 'register_loader.js');
+  const useRealSidecarSdk = fs.existsSync(sdkLoader);
 
-  const routes = new Map();
-  const fakeApp = {
-    page(p, fn) { routes.set(`GET ${p}`, fn); },
-    api(p, fn, m = 'POST') { routes.set(`${m.toUpperCase()} ${p}`, fn); },
-  };
-  const store = createFsConfigStore({
-    globalConfigPath: configPath,
-    pluginRoots: [path.join(tmpDir, 'plugins')],
-    backupDir: path.join(tmpDir, '.mcp-manager-backups'),
-  });
-  const service = new McpManagerService({ configStore: store });
-  registerSidecarRoutes({ app: fakeApp, ResponseClass: Resp, service, uiDir: UI_DIR });
-  // Minimal preload.js matching sidecar_sdk/preload.js surface
-  fakeApp.api(
-    '/preload.js',
-    () =>
-      new Resp('window.sidecar = { getWorkspaceUris: async () => [] };', {
-        status: 200,
-        contentType: 'application/javascript; charset=utf-8',
-        headers: { ...SECURITY_HEADERS },
-      }),
-    'GET'
-  );
+  let server = null;
+  let sidecarChild = null;
+  let port = 0;
 
-  const server = http.createServer((req, res) => {
-    const pathname = new URL(req.url, 'http://127.0.0.1').pathname;
-    const key = `${req.method.toUpperCase()} ${pathname}`;
-    const handler = routes.get(key);
-    if (!handler) {
-      res.writeHead(404, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
-      res.end(JSON.stringify({ ok: false }));
-      return;
-    }
-    const chunks = [];
-    req.on('data', (c) => chunks.push(c));
-    req.on('end', async () => {
-      if (res.headersSent) return;
-      try {
-        const body = Buffer.concat(chunks).toString('utf8');
-        const data = body ? JSON.parse(body) : {};
-        const out = await handler(data);
-        if (res.headersSent) return;
-        res.writeHead(out.status, { 'Content-Type': out.contentType, ...out.headers });
-        res.end(out.body);
-      } catch (err) {
-        if (!res.headersSent) {
-          res.writeHead(500, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
-          res.end(JSON.stringify({ ok: false, error: String(err?.message || err) }));
-        }
+  if (useRealSidecarSdk) {
+    port = await getFreeTcpPort();
+    sidecarChild = spawn(
+      process.execPath,
+      ['--import', `file:///${sdkLoader.replace(/\\/g, '/')}`, path.resolve(UI_DIR, '../main.mjs')],
+      {
+        cwd: path.resolve(UI_DIR, '..'),
+        env: {
+          ...process.env,
+          AGY_MCP_HOME_OVERRIDE: tmpDir,
+          ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:1',
+          ANTIGRAVITY_CSRF_TOKEN: 'dummy-csrf-not-leaked',
+          ANTIGRAVITY_SIDECAR_WEB_PORT: String(port),
+          ANTIGRAVITY_SIDECAR_UI_TOKEN: token,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
       }
+    );
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Real sidecar boot timeout in 020B')), 6000);
+      let out = '';
+      sidecarChild.stdout.on('data', (d) => {
+        out += String(d);
+        if (out.includes('listening on 127.0.0.1:')) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+      sidecarChild.on('exit', (code) => {
+        clearTimeout(timer);
+        reject(new Error(`Real sidecar exited early (${code}) in 020B`));
+      });
     });
-  });
-  attachSidecarSecurityMiddleware(server, { token });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  const port = server.address().port;
+  } else {
+    class Resp {
+      constructor(body, opts = {}) {
+        this.body = body;
+        this.status = opts.status ?? 200;
+        this.contentType = opts.contentType ?? 'application/json; charset=utf-8';
+        this.headers = opts.headers ?? {};
+      }
+    }
+
+    const routes = new Map();
+    const fakeApp = {
+      page(p, fn) { routes.set(`GET ${p}`, fn); },
+      api(p, fn, m = 'POST') { routes.set(`${m.toUpperCase()} ${p}`, fn); },
+    };
+    const store = createFsConfigStore({
+      globalConfigPath: configPath,
+      pluginRoots: [path.join(cfgDir, 'plugins')],
+      backupDir: path.join(cfgDir, '.mcp-manager-backups'),
+    });
+    const service = new McpManagerService({ configStore: store });
+    registerSidecarRoutes({ app: fakeApp, ResponseClass: Resp, service, uiDir: UI_DIR });
+    fakeApp.api(
+      '/preload.js',
+      () =>
+        new Resp('window.sidecar = { getWorkspaceUris: async () => [] };', {
+          status: 200,
+          contentType: 'application/javascript; charset=utf-8',
+          headers: { ...SECURITY_HEADERS },
+        }),
+      'GET'
+    );
+
+    server = http.createServer((req, res) => {
+      const pathname = new URL(req.url, 'http://127.0.0.1').pathname;
+      const key = `${req.method.toUpperCase()} ${pathname}`;
+      const handler = routes.get(key);
+      if (!handler) {
+        res.writeHead(404, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
+        res.end(JSON.stringify({ ok: false }));
+        return;
+      }
+      const chunks = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', async () => {
+        if (res.headersSent) return;
+        try {
+          const body = Buffer.concat(chunks).toString('utf8');
+          const data = body ? JSON.parse(body) : {};
+          const out = await handler(data);
+          if (res.headersSent) return;
+          res.writeHead(out.status, { 'Content-Type': out.contentType, ...out.headers });
+          res.end(out.body);
+        } catch (err) {
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
+            res.end(JSON.stringify({ ok: false, error: String(err?.message || err) }));
+          }
+        }
+      });
+    });
+    attachSidecarSecurityMiddleware(server, { token });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    port = server.address().port;
+  }
 
   const cdpPort = await getFreeTcpPort();
   const browser = spawn(
@@ -543,8 +587,13 @@ test('NMCP-TC-020B (Real Headless Chromium/Edge CDP E2E): real browser CSP, asse
       try { ws.close(); } catch {}
     }
     try { browser.kill(); } catch {}
+    if (sidecarChild) {
+      try { sidecarChild.kill(); } catch {}
+    }
     await new Promise((r) => setTimeout(r, 250));
-    await new Promise((r) => server.close(r));
+    if (server) {
+      await new Promise((r) => server.close(r));
+    }
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });

@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { ERROR_CODES } from '../core/model.mjs';
 import { sha256Hex } from '../core/sha256.mjs';
 
@@ -105,10 +106,16 @@ function acquireLock(lockPath) {
       if (err && err.code === 'EEXIST') {
         let st;
         try {
-          st = fs.statSync(lockPath);
+          st = fs.lstatSync(lockPath);
         } catch (statErr) {
           if (statErr && statErr.code === 'ENOENT') continue;
           throw statErr;
+        }
+        if (st.isSymbolicLink()) {
+          throw Object.assign(
+            new Error(`Write jail violation: symbolic link detected at lock path "${lockPath}".`),
+            { code: ERROR_CODES.WRITE_JAIL_VIOLATION }
+          );
         }
         if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
           // Atomic TOCTOU-safe stale lock reclaim: only one racer wins renameSync
@@ -308,11 +315,22 @@ export function createFsConfigStore({
     }
   }
 
-  async function readPluginConfigs() {
+  async function readPluginConfigs({ workspaceUris = [] } = {}) {
     const results = [];
     const seenPaths = new Set();
 
-    for (const root of pluginRoots) {
+    const effectiveRoots = [...pluginRoots];
+    for (const uri of Array.isArray(workspaceUris) ? workspaceUris : []) {
+      if (typeof uri !== 'string' || !uri.startsWith('file://')) continue;
+      try {
+        const wsPath = fileURLToPath(uri);
+        effectiveRoots.push(path.join(wsPath, '.agents', 'plugins'));
+      } catch {
+        // Ignore malformed workspace URI
+      }
+    }
+
+    for (const root of effectiveRoots) {
       if (!root || !fs.existsSync(root)) continue;
       let rootReal;
       let entries;

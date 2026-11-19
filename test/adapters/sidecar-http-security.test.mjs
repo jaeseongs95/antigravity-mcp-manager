@@ -6,7 +6,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { ERROR_CODES } from '../../src/core/model.mjs';
 import { McpManagerService } from '../../src/core/manager-service.mjs';
@@ -162,12 +162,18 @@ test('NMCP-TC-015 & NMCP-TC-016: Sidecar security middleware enforces Host/Origi
 
     const port = await app.start(token, 1024);
 
-    // 1. DNS-rebinding Host header rejected with 403
+    // 1. DNS-rebinding & userinfo Host headers rejected with 403
     const badHost = await sendRawHttpRequest({
       port,
       headers: { Host: 'attacker.example:1234', 'x-sidecar-token': token, 'Content-Type': 'application/json' },
     });
     assert.equal(badHost.status, 403);
+
+    const userinfoHost = await sendRawHttpRequest({
+      port,
+      headers: { Host: '127.0.0.1@evil.example:80', 'x-sidecar-token': token, 'Content-Type': 'application/json' },
+    });
+    assert.equal(userinfoHost.status, 403);
 
     // 2. Cross-site, cross-port loopback, null Origin & Sec-Fetch-Site: same-site rejected with 403
     const badOrigin = await sendRawHttpRequest({
@@ -241,7 +247,7 @@ test('NMCP-TC-015 & NMCP-TC-016: Sidecar security middleware enforces Host/Origi
     });
     assert.equal(unauth.status, 401);
 
-    // 4. Oversized body (> 1024 bytes) rejected with 413
+    // 4. Oversized body (> 1024 bytes) rejected with 413 — BOTH Content-Length AND Transfer-Encoding: chunked (R3 F3)
     const bigBody = JSON.stringify({ pad: 'A'.repeat(1500) });
     const tooLarge = await sendRawHttpRequest({
       port,
@@ -249,6 +255,32 @@ test('NMCP-TC-015 & NMCP-TC-016: Sidecar security middleware enforces Host/Origi
       body: bigBody,
     });
     assert.equal(tooLarge.status, 413);
+
+    const chunkedTooLarge = await new Promise((resolve, reject) => {
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port,
+          method: 'POST',
+          path: '/api/snapshot',
+          headers: { Host: `127.0.0.1:${port}`, 'x-sidecar-token': token, 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked' },
+        },
+        (res) => {
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+        }
+      );
+      req.on('error', (err) => {
+        // Server may destroy socket after sending 413; ignore ECONNRESET if response already received
+        if (err && err.code === 'ECONNRESET') return;
+        reject(err);
+      });
+      req.write('{"pad":"' + 'B'.repeat(600));
+      req.write('C'.repeat(700) + '"}');
+      req.end();
+    });
+    assert.equal(chunkedTooLarge.status, 413);
 
     // 5. GET /api/snapshot rejected with 405
     const getApi = await sendRawHttpRequest({
@@ -341,7 +373,7 @@ test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with r
       });
     });
 
-    // Verify GET /, /styles.css, /app.js with strict CSP & nosniff
+    // Verify GET /, /styles.css, /app.js (strict CSP + nosniff) and /preload.js (200)
     for (const assetPath of ['/', '/styles.css', '/app.js']) {
       const assetRes = await sendRawHttpRequest({
         port,
@@ -354,6 +386,24 @@ test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with r
       assert.equal(assetRes.headers['content-security-policy'], STRICT_SIDECAR_CSP);
       assert.equal(assetRes.headers['x-content-type-options'], 'nosniff');
     }
+    const preloadRes = await sendRawHttpRequest({
+      port,
+      method: 'GET',
+      reqPath: '/preload.js',
+      headers: { Host: `127.0.0.1:${port}` },
+      body: '',
+    });
+    assert.equal(preloadRes.status, 200, 'Expected 200 for GET /preload.js from real sidecar_sdk');
+
+    // GET /api/snapshot MUST be rejected with 405
+    const getApiRes = await sendRawHttpRequest({
+      port,
+      method: 'GET',
+      reqPath: '/api/snapshot',
+      headers: { Host: `127.0.0.1:${port}` },
+      body: '',
+    });
+    assert.equal(getApiRes.status, 405);
 
     const badHost = await sendRawHttpRequest({
       port,
@@ -379,6 +429,51 @@ test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with r
     });
     assert.equal(unauth.status, 401);
 
+    // Chunked > 1 MiB MUST return 413 without crashing real sidecar_sdk server
+    const realChunked413 = await new Promise((resolve, reject) => {
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port,
+          method: 'POST',
+          path: '/api/snapshot',
+          headers: {
+            Host: `127.0.0.1:${port}`,
+            Origin: `http://127.0.0.1:${port}`,
+            'Sec-Fetch-Site': 'same-origin',
+            'x-sidecar-token': token,
+            'Content-Type': 'application/json',
+            'Transfer-Encoding': 'chunked',
+          },
+        },
+        (res) => {
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+        }
+      );
+      req.on('error', (err) => {
+        if (err && err.code === 'ECONNRESET') return;
+        reject(err);
+      });
+      const half = 'X'.repeat(600 * 1024);
+      req.write('{"pad":"' + half);
+      req.write(half + '"}');
+      req.end();
+    });
+    assert.equal(realChunked413.status, 413);
+
+    // Workspace .agents/plugins discovery over real sidecar_sdk
+    const wsDir = path.join(tmpHome, 'sample-ws');
+    const wsPlugDir = path.join(wsDir, '.agents', 'plugins', 'ws-real');
+    fs.mkdirSync(wsPlugDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(wsPlugDir, 'mcp_config.json'),
+      JSON.stringify({ mcpServers: { wsRealSrv: { url: 'https://wsreal.example/mcp' } } }),
+      'utf8'
+    );
+    const wsUri = pathToFileURL(wsDir).href;
+
     const okRes = await sendRawHttpRequest({
       port,
       headers: {
@@ -388,12 +483,55 @@ test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with r
         'x-sidecar-token': token,
         'Content-Type': 'application/json',
       },
+      body: JSON.stringify({ workspaceUris: [wsUri] }),
     });
     assert.equal(okRes.status, 200);
     assert.equal(okRes.headers['content-security-policy'], STRICT_SIDECAR_CSP);
     assert.equal(okRes.body.includes('real-tok'), false);
     assert.equal(okRes.body.includes('dummy-csrf-not-leaked'), false);
-    assert.equal(JSON.parse(okRes.body).globalConfig.servers[0].name, 'realSrv');
+    const parsedSnap = JSON.parse(okRes.body);
+    assert.equal(parsedSnap.globalConfig.servers[0].name, 'realSrv');
+    assert.equal(parsedSnap.pluginServers.some((p) => p.pluginDir === 'ws-real' && p.name === 'wsRealSrv'), true);
+
+    // 428 Precondition Required (Stdio confirmStdio: false) on real sidecar_sdk
+    const stdio428 = await sendRawHttpRequest({
+      port,
+      reqPath: '/api/upsert',
+      headers: {
+        Host: `127.0.0.1:${port}`,
+        Origin: `http://127.0.0.1:${port}`,
+        'Sec-Fetch-Site': 'same-origin',
+        'x-sidecar-token': token,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: 'cmd1',
+        spec: { command: 'node', args: ['a.js'] },
+        expectedSha256: parsedSnap.globalConfig.sha256,
+        confirmStdio: false,
+      }),
+    });
+    assert.equal(stdio428.status, 428);
+
+    // 409 Conflict (stale expectedSha256) on real sidecar_sdk
+    const conflict409 = await sendRawHttpRequest({
+      port,
+      reqPath: '/api/upsert',
+      headers: {
+        Host: `127.0.0.1:${port}`,
+        Origin: `http://127.0.0.1:${port}`,
+        'Sec-Fetch-Site': 'same-origin',
+        'x-sidecar-token': token,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: 'http2',
+        spec: { url: 'https://h2.example/mcp' },
+        expectedSha256: '0'.repeat(64),
+        confirmStdio: false,
+      }),
+    });
+    assert.equal(conflict409.status, 409);
   } finally {
     child.kill();
     await new Promise((r) => setTimeout(r, 100));
