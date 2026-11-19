@@ -5,11 +5,10 @@
  * Security & UX Invariants:
  * 1. ZERO unsafe DOM sinks (`innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`).
  * 2. Only accepts loopback `http://127.0.0.1:<port>/?token=...` iframe URLs.
- * 3. NEVER removes or mutates Antigravity's native React nodes — only hides/restores sibling
- *    content elements via `style.display` while preserving top-right Settings close (`X`) controls.
- * 4. Matches native Settings sidebar typography, spacing, and single-active pill highlight
- *    (no dual-active tabs, no browser default blue focus box), and syncs host font & surface
- *    theme into the embedded iframe.
+ * 3. Clones an inactive native Settings sidebar item (`cloneNode(true)`) so font, padding,
+ *    margin, width, alignment, and border-radius match Antigravity pixel-for-pixel.
+ * 4. Swaps native active `className` / visual state cleanly (single active pill, zero dual active)
+ *    and preserves top-right Settings close (`X`) controls without destroying native React nodes.
  * 5. Idempotent across repeated `dom-ready` / `did-finish-load` injections.
  */
 
@@ -19,6 +18,7 @@
   const NAV_ATTR = 'data-agy-mcp-manager-nav';
   const FRAME_ATTR = 'data-agy-mcp-manager-frame';
   const PREV_DISPLAY_ATTR = 'agyMcpPrevDisplay';
+  const SUPPRESSED_CLASS_ATTR = 'agyMcpSuppressedClass';
   const SUPPRESSED_BG_ATTR = 'agyMcpSuppressedBg';
   const SUPPRESSED_COLOR_ATTR = 'agyMcpSuppressedColor';
   const REQUIRED_SIBLING_LABELS = ['general', 'application', 'appearance', 'shortcuts', 'notifications', 'models', 'browser'];
@@ -37,6 +37,31 @@
     return String(el?.textContent || '').trim().toLowerCase();
   }
 
+  function replaceLeafText(root, nextText) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    let current = walker.nextNode();
+    while (current) {
+      if (current.nodeValue && current.nodeValue.trim()) {
+        textNodes.push(current);
+      }
+      current = walker.nextNode();
+    }
+    if (textNodes.length > 0) {
+      textNodes[0].nodeValue = nextText;
+      for (let i = 1; i < textNodes.length; i += 1) {
+        textNodes[i].nodeValue = '';
+      }
+    } else {
+      root.textContent = nextText;
+    }
+  }
+
+  function hasVisibleBg(el) {
+    const bg = window.getComputedStyle(el)?.backgroundColor || '';
+    return Boolean(bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent');
+  }
+
   function findSettingsSidebarAndAnchor() {
     const candidates = document.querySelectorAll('button, a, [role="tab"], [role="menuitem"], [role="button"], li, div');
     for (const el of candidates) {
@@ -47,18 +72,29 @@
       let container = el.parentElement;
       for (let depth = 0; depth < 4 && container && container !== document.body; depth += 1) {
         const items = Array.from(container.querySelectorAll('button, a, [role="tab"], [role="menuitem"], [role="button"], li, div'));
-        const seen = new Set();
+        const seen = new Map();
         for (const item of items) {
           if (item.children.length > 2) continue;
           const txt = normalizedText(item);
-          if (REQUIRED_SIBLING_LABELS.includes(txt)) seen.add(txt);
+          if (REQUIRED_SIBLING_LABELS.includes(txt) && !seen.has(txt)) {
+            seen.set(txt, item);
+          }
         }
         if (seen.size >= 4) {
           let anchor = el;
           while (anchor.parentElement && anchor.parentElement !== container && anchor.parentElement.children.length === 1) {
             anchor = anchor.parentElement;
           }
-          return { sidebar: container, listParent: anchor.parentElement || container, browserItem: anchor };
+          const listParent = anchor.parentElement || container;
+          // Pick a genuinely INACTIVE direct sibling of `anchor` as the visual template so we never clone an active white/highlighted state
+          const directSiblings = Array.from(listParent.children).filter(
+            (c) => c.nodeType === 1 && !c.hasAttribute(NAV_ATTR) && REQUIRED_SIBLING_LABELS.includes(normalizedText(c))
+          );
+          const inactiveSibling =
+            directSiblings.find((c) => !hasVisibleBg(c) && normalizedText(c) !== 'general' && normalizedText(c) !== 'browser') ||
+            directSiblings.find((c) => !hasVisibleBg(c)) ||
+            anchor;
+          return { sidebar: container, listParent, browserItem: anchor, inactiveTemplate: inactiveSibling };
         }
         container = container.parentElement;
       }
@@ -78,7 +114,6 @@
         if (child.tagName === 'STYLE' || child.tagName === 'SCRIPT') return false;
         const r = child.getBoundingClientRect?.();
         if (!r) return false;
-        // Must be positioned horizontally to the RIGHT of the left sidebar (never a vertical sibling inside the sidebar!)
         return r.width >= 280 && r.height >= 200 && r.left >= rightBoundary - 24;
       });
       if (siblings.length > 0) {
@@ -113,7 +148,6 @@
       return isSmall && isTopRight;
     };
     if (child.tagName === 'BUTTON' && isCloseBtn(child)) return true;
-    // Also preserve a compact top-right wrapper that only holds the close button
     const r = child.getBoundingClientRect?.();
     if (r && contentPaneRect && r.width <= 64 && r.height <= 64 && r.right >= contentPaneRect.right - 72 && r.top <= contentPaneRect.top + 72) {
       const innerBtn = child.querySelector?.('button');
@@ -145,36 +179,50 @@
     }
   }
 
-  function suppressNativeActiveItems(outerSidebar, navItem) {
-    let detectedActiveBg = 'rgba(255, 255, 255, 0.09)';
-    let detectedActiveColor = '';
+  function suppressNativeActiveItems(outerSidebar, navItem, inactiveClassName, inactiveColor) {
+    let detectedActiveClass = '';
+    let detectedActiveBg = 'rgba(255, 255, 255, 0.08)';
+    let detectedActiveColor = '#ffffff';
     const items = outerSidebar ? outerSidebar.querySelectorAll('button, a, [role="tab"], [role="menuitem"], [role="button"], li, div') : [];
     for (const item of items) {
-      if (item === navItem || item.hasAttribute(NAV_ATTR)) continue;
+      if (item === navItem || item.hasAttribute(NAV_ATTR) || item.contains(navItem) || navItem.contains(item)) continue;
       if (item.children.length > 2) continue;
+      const r = item.getBoundingClientRect?.();
+      if (!r || r.height < 22 || r.height > 48 || r.width < 80 || r.width > 260) continue;
       const cs = window.getComputedStyle(item);
-      const bg = cs?.backgroundColor || '';
-      if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
-        const r = item.getBoundingClientRect?.();
-        if (r && r.height >= 24 && r.height <= 48 && r.width >= 80 && r.width <= 260) {
-          detectedActiveBg = bg;
-          if (cs.color) detectedActiveColor = cs.color;
-          if (!Object.prototype.hasOwnProperty.call(item.dataset, SUPPRESSED_BG_ATTR)) {
-            item.dataset[SUPPRESSED_BG_ATTR] = item.style.backgroundColor || '';
-            item.dataset[SUPPRESSED_COLOR_ATTR] = item.style.color || '';
-          }
-          item.style.setProperty('background-color', 'transparent', 'important');
+      if (hasVisibleBg(item)) {
+        detectedActiveBg = cs.backgroundColor;
+        if (cs.color) detectedActiveColor = cs.color;
+        if (item.className && item.className !== inactiveClassName) {
+          detectedActiveClass = item.className;
+        }
+        if (!Object.prototype.hasOwnProperty.call(item.dataset, SUPPRESSED_BG_ATTR)) {
+          item.dataset[SUPPRESSED_CLASS_ATTR] = item.className || '';
+          item.dataset[SUPPRESSED_BG_ATTR] = item.style.backgroundColor || '';
+          item.dataset[SUPPRESSED_COLOR_ATTR] = item.style.color || '';
+        }
+        if (inactiveClassName && item.className !== inactiveClassName) {
+          item.className = inactiveClassName;
+        }
+        item.style.setProperty('background-color', 'transparent', 'important');
+        if (inactiveColor) {
+          item.style.setProperty('color', inactiveColor, 'important');
         }
       }
     }
-    return { activeBg: detectedActiveBg, activeColor: detectedActiveColor };
+    return { activeClass: detectedActiveClass, activeBg: detectedActiveBg, activeColor: detectedActiveColor };
   }
 
   function restoreNativeActiveItems(outerSidebar) {
     if (!outerSidebar) return;
     const suppressed = outerSidebar.querySelectorAll('[data-agy-mcp-suppressed-bg]');
     for (const item of suppressed) {
+      if (Object.prototype.hasOwnProperty.call(item.dataset, SUPPRESSED_CLASS_ATTR)) {
+        item.className = item.dataset[SUPPRESSED_CLASS_ATTR];
+        delete item.dataset[SUPPRESSED_CLASS_ATTR];
+      }
       item.style.removeProperty('background-color');
+      item.style.removeProperty('color');
       if (item.dataset[SUPPRESSED_BG_ATTR]) {
         item.style.backgroundColor = item.dataset[SUPPRESSED_BG_ATTR];
       }
@@ -191,10 +239,11 @@
     if (navItem) {
       navItem.setAttribute('aria-selected', 'false');
       navItem.dataset.agyMcpActive = 'false';
-      navItem.style.backgroundColor = 'transparent';
-      if (navItem.dataset.agyMcpBaseColor) {
-        navItem.style.color = navItem.dataset.agyMcpBaseColor;
+      if (Object.prototype.hasOwnProperty.call(navItem.dataset, 'agyMcpInactiveClass')) {
+        navItem.className = navItem.dataset.agyMcpInactiveClass;
       }
+      navItem.style.removeProperty('background-color');
+      navItem.style.removeProperty('color');
     }
     if (!contentPane) return;
     const frame = contentPane.querySelector(`[${FRAME_ATTR}="true"]`);
@@ -212,12 +261,21 @@
     const baseUrl = window.__AGY_MCP_MANAGER_URL__;
     if (!isSafeLoopbackIframeUrl(baseUrl) || !contentPane) return;
 
-    const { activeBg, activeColor } = suppressNativeActiveItems(outerSidebar, navItem);
+    const inactiveClassName = navItem?.dataset?.agyMcpInactiveClass || '';
+    const inactiveColor = navItem?.dataset?.agyMcpInactiveColor || '';
+    const { activeClass, activeBg, activeColor } = suppressNativeActiveItems(outerSidebar, navItem, inactiveClassName, inactiveColor);
+
     if (navItem) {
       navItem.setAttribute('aria-selected', 'true');
       navItem.dataset.agyMcpActive = 'true';
-      navItem.style.backgroundColor = activeBg;
-      if (activeColor) navItem.style.color = activeColor;
+      if (activeClass) {
+        navItem.className = activeClass;
+        navItem.style.removeProperty('background-color');
+        navItem.style.removeProperty('color');
+      } else {
+        navItem.style.backgroundColor = activeBg;
+        if (activeColor) navItem.style.color = activeColor;
+      }
     }
 
     const contentPaneRect = contentPane.getBoundingClientRect?.();
@@ -241,7 +299,8 @@
       frame.setAttribute('title', 'MCP Manager');
       frame.style.width = '100%';
       frame.style.height = '100%';
-      frame.style.minHeight = 'calc(100vh - 64px)';
+      frame.style.flex = '1 1 auto';
+      frame.style.minHeight = '0';
       frame.style.border = '0';
       frame.style.display = 'block';
       frame.style.background = 'transparent';
@@ -253,34 +312,13 @@
     }
   }
 
-  function applyNativeNavTypography(navItem, referenceItem) {
-    const cs = window.getComputedStyle(referenceItem);
-    navItem.style.fontFamily = cs.fontFamily || 'inherit';
-    navItem.style.fontSize = cs.fontSize || '13px';
-    navItem.style.fontWeight = cs.fontWeight || '400';
-    navItem.style.lineHeight = cs.lineHeight || 'normal';
-    navItem.style.letterSpacing = cs.letterSpacing || 'normal';
-    navItem.style.padding = cs.padding || '8px 12px';
-    navItem.style.borderRadius = cs.borderRadius || '6px';
-    navItem.style.color = cs.color || 'inherit';
-    navItem.dataset.agyMcpBaseColor = cs.color || '';
-    navItem.style.width = '100%';
-    navItem.style.textAlign = 'left';
-    navItem.style.cursor = 'pointer';
-    navItem.style.border = '0';
-    navItem.style.outline = 'none';
-    navItem.style.boxShadow = 'none';
-    navItem.style.backgroundColor = 'transparent';
-    navItem.style.appearance = 'none';
-  }
-
   function ensureSettingsMenuItem() {
     const baseUrl = window.__AGY_MCP_MANAGER_URL__;
     if (!isSafeLoopbackIframeUrl(baseUrl)) return;
 
     const found = findSettingsSidebarAndAnchor();
     if (!found) return;
-    const { sidebar, listParent, browserItem } = found;
+    const { sidebar, listParent, browserItem, inactiveTemplate } = found;
     const { outerSidebar, contentPane: initialContentPane } = findSettingsLayout(sidebar);
 
     const existingNav = sidebar.querySelector(`[${NAV_ATTR}="true"]`);
@@ -293,25 +331,17 @@
       return;
     }
 
-    const navItem = document.createElement(browserItem.tagName === 'LI' ? 'li' : 'button');
-    if (navItem.tagName === 'BUTTON') navItem.type = 'button';
+    // Clone an INACTIVE native sibling node so DOM structure, padding, margin, radius, and typography match pixel-for-pixel
+    const navItem = inactiveTemplate.cloneNode(true);
+    navItem.removeAttribute('id');
     navItem.setAttribute(NAV_ATTR, 'true');
-    navItem.setAttribute('role', 'tab');
     navItem.setAttribute('aria-selected', 'false');
-    navItem.className = browserItem.className || '';
-    navItem.textContent = 'MCP Manager';
-    applyNativeNavTypography(navItem, browserItem);
-
-    navItem.addEventListener('mouseenter', () => {
-      if (navItem.dataset.agyMcpActive !== 'true') {
-        navItem.style.backgroundColor = 'rgba(255, 255, 255, 0.05)';
-      }
-    });
-    navItem.addEventListener('mouseleave', () => {
-      if (navItem.dataset.agyMcpActive !== 'true') {
-        navItem.style.backgroundColor = 'transparent';
-      }
-    });
+    navItem.dataset.agyMcpActive = 'false';
+    navItem.dataset.agyMcpInactiveClass = inactiveTemplate.className || '';
+    navItem.dataset.agyMcpInactiveColor = window.getComputedStyle(inactiveTemplate)?.color || '';
+    replaceLeafText(navItem, 'MCP Manager');
+    navItem.style.outline = 'none';
+    navItem.style.boxShadow = 'none';
 
     navItem.addEventListener('click', (ev) => {
       ev.preventDefault();

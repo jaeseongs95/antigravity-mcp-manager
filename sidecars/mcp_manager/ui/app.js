@@ -17,6 +17,7 @@
 
   const urlParams = new URLSearchParams(window.location.search);
   const token = urlParams.get('token') || '';
+  const isSettingsMode = urlParams.get('hostMode') === 'settings';
   (() => {
     const hostFont = urlParams.get('hostFont');
     if (hostFont && /^[a-zA-Z0-9\s,'"._-]{1,240}$/.test(hostFont)) {
@@ -27,7 +28,7 @@
     if (safeColor(hostBg)) document.documentElement.style.setProperty('--background', hostBg.trim());
     const hostFg = urlParams.get('hostFg');
     if (safeColor(hostFg)) document.documentElement.style.setProperty('--foreground', hostFg.trim());
-    if (urlParams.get('hostMode') === 'settings' && document.body) {
+    if (isSettingsMode && document.body) {
       document.body.classList.add('host-settings-mode');
     }
   })();
@@ -40,6 +41,7 @@
   let pendingStdioConfirm = null; // { kind: 'upsert'|'clone'|'legacy'|'raw', payload, preview }
   let pastePreview = null;
   let pasteInputDraft = '';
+  let smartPasteOpen = !isSettingsMode;
   let rawDraft = '';
   let rawDraftDirty = false;
   let snapshotRequestSeq = 0;
@@ -241,8 +243,14 @@
     if (data.globalConfig?.malformed) {
       activeTab = 'raw';
     }
-    runtimeBadge.textContent = data.runtimeAvailable ? 'LS Connected' : 'Offline (Config Only)';
-    runtimeBadge.className = `badge ${data.runtimeAvailable ? 'badge-ok' : 'badge-muted'}`;
+    if (isSettingsMode && !data.runtimeAvailable) {
+      runtimeBadge.textContent = '';
+      runtimeBadge.style.display = 'none';
+    } else {
+      runtimeBadge.style.display = '';
+      runtimeBadge.textContent = data.runtimeAvailable ? 'LS Connected' : 'Offline (Config Only)';
+      runtimeBadge.className = `badge ${data.runtimeAvailable ? 'badge-ok' : 'badge-muted'}`;
+    }
     renderAll();
   }
 
@@ -736,7 +744,23 @@
     if (editorState) {
       nodes.push(renderEditorCard());
     } else if (!snapshot?.globalConfig?.malformed) {
-      nodes.push(renderSmartPasteCard());
+      if (isSettingsMode && !smartPasteOpen) {
+        nodes.push(
+          el(
+            'div',
+            { className: 'settings-toolbar-row' },
+            el('span', { className: 'settings-subtitle' }, 'Manage global MCP servers in mcp_config.json and inspect plugin servers.'),
+            el('button', {
+              type: 'button',
+              className: 'btn btn-sm',
+              dataset: { testid: 'btn-toggle-smart-paste' },
+              onClick: () => { smartPasteOpen = true; renderAll(); },
+            }, 'Quick Paste JSON / URL')
+          )
+        );
+      } else {
+        nodes.push(renderSmartPasteCard());
+      }
     }
 
     nodes.push(el('h2', { className: 'section-title' }, `Global MCP Servers (${snapshot?.globalConfig?.servers?.length || 0})`));

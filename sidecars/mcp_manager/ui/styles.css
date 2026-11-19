@@ -52,7 +52,72 @@ body.host-settings-mode .app-header {
 body.host-settings-mode .header-title-row h1 {
   font-size: 20px;
   font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+body.host-settings-mode .settings-toolbar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+body.host-settings-mode .settings-subtitle {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+body.host-settings-mode .section-title {
+  margin: 14px 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+  text-transform: none;
   letter-spacing: -0.01em;
+}
+
+body.host-settings-mode .server-list {
+  gap: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+body.host-settings-mode .server-list > .card {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 14px 16px;
+  gap: 6px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+body.host-settings-mode .server-list > .card:last-child {
+  border-bottom: 0;
+}
+
+body.host-settings-mode .btn {
+  border-radius: 8px;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+body.host-settings-mode .btn:hover {
+  background: rgba(255, 255, 255, 0.11);
+}
+
+body.host-settings-mode .btn-primary {
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+body.host-settings-mode .btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
 }
 
 .app-header {

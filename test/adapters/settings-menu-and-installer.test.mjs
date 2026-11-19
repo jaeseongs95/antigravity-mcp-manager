@@ -107,13 +107,13 @@ test('NMCP-TC-021 (Real Chromium CDP E2E): Settings sidebar injector mounts MCP 
             <aside id="settings-sidebar" style="width:220px;display:flex;flex-direction:column;gap:8px;padding:12px;">
               <div id="left-sidebar-header">Settings</div>
               <nav id="settings-nav-section" style="display:flex;flex-direction:column;gap:4px;">
-                <button type="button" id="nav-general" style="background-color:rgba(255,255,255,0.08);border:0;border-radius:6px;padding:8px 12px;color:#fff;font-size:13px;font-weight:400;">General</button>
-                <button type="button" id="nav-application">Application</button>
-                <button type="button" id="nav-appearance">Appearance</button>
-                <button type="button" id="nav-shortcuts">Shortcuts</button>
-                <button type="button" id="nav-notifications">Notifications</button>
-                <button type="button" id="nav-models">Models</button>
-                <button type="button" id="nav-browser" style="background:transparent;border:0;border-radius:6px;padding:8px 12px;color:#ccc;font-size:13px;font-weight:400;">Browser</button>
+                <button type="button" id="nav-general" style="background-color:rgba(255,255,255,0.08);border:0;border-radius:6px;padding:8px 12px;color:#fff;font-size:13px;font-weight:400;text-align:left;">General</button>
+                <button type="button" id="nav-application" style="background:transparent;border:0;border-radius:6px;padding:8px 12px;color:#ccc;font-size:13px;font-weight:400;text-align:left;">Application</button>
+                <button type="button" id="nav-appearance" style="background:transparent;border:0;border-radius:6px;padding:8px 12px;color:#ccc;font-size:13px;font-weight:400;text-align:left;">Appearance</button>
+                <button type="button" id="nav-shortcuts" style="background:transparent;border:0;border-radius:6px;padding:8px 12px;color:#ccc;font-size:13px;font-weight:400;text-align:left;">Shortcuts</button>
+                <button type="button" id="nav-notifications" style="background:transparent;border:0;border-radius:6px;padding:8px 12px;color:#ccc;font-size:13px;font-weight:400;text-align:left;">Notifications</button>
+                <button type="button" id="nav-models" style="background:transparent;border:0;border-radius:6px;padding:8px 12px;color:#ccc;font-size:13px;font-weight:400;text-align:left;">Models</button>
+                <button type="button" id="nav-browser" style="background:transparent;border:0;border-radius:6px;padding:8px 12px;color:#ccc;font-size:13px;font-weight:400;text-align:left;">Browser</button>
               </nav>
               <div id="left-sidebar-projects">Projects</div>
             </aside>
@@ -268,7 +268,11 @@ test('NMCP-TC-021 (Real Chromium CDP E2E): Settings sidebar injector mounts MCP 
       nativeDisplay: document.getElementById('native-general-pane').style.display,
       closeBtnDisplay: document.getElementById('settings-close-btn').style.display,
       generalBg: window.getComputedStyle(document.getElementById('nav-general')).backgroundColor,
-      mcpFontWeight: document.querySelector('[data-agy-mcp-manager-nav="true"]').style.fontWeight,
+      mcpFontWeight: window.getComputedStyle(document.querySelector('[data-agy-mcp-manager-nav="true"]')).fontWeight,
+      mcpLeft: document.querySelector('[data-agy-mcp-manager-nav="true"]').getBoundingClientRect().left,
+      browserLeft: document.getElementById('nav-browser').getBoundingClientRect().left,
+      mcpWidth: document.querySelector('[data-agy-mcp-manager-nav="true"]').getBoundingClientRect().width,
+      browserWidth: document.getElementById('nav-browser').getBoundingClientRect().width,
       frameSrc: document.querySelector('[data-agy-mcp-manager-frame="true"]')?.src || '',
       frameParentId: document.querySelector('[data-agy-mcp-manager-frame="true"]')?.parentElement?.id || '',
       frameLeft: document.querySelector('[data-agy-mcp-manager-frame="true"]')?.getBoundingClientRect().left || 0,
@@ -278,7 +282,9 @@ test('NMCP-TC-021 (Real Chromium CDP E2E): Settings sidebar injector mounts MCP 
     assert.equal(hiddenCheck.nativeDisplay, 'none', 'Native Settings pane must be hidden (not destroyed) while MCP Manager is active');
     assert.notEqual(hiddenCheck.closeBtnDisplay, 'none', 'Settings top-right X close button MUST remain visible while MCP Manager is active');
     assert.equal(hiddenCheck.generalBg, 'rgba(0, 0, 0, 0)', 'Native General active highlight must be cleared while MCP Manager is active');
-    assert.equal(hiddenCheck.mcpFontWeight, '400', 'MCP Manager nav item must inherit Browser font weight (not bold)');
+    assert.equal(hiddenCheck.mcpFontWeight, '400', 'MCP Manager nav item must inherit inactive sibling font weight (not bold)');
+    assert.ok(Math.abs(hiddenCheck.mcpLeft - hiddenCheck.browserLeft) <= 1, `MCP Manager nav item must align pixel-for-pixel with Browser (${hiddenCheck.mcpLeft} vs ${hiddenCheck.browserLeft})`);
+    assert.ok(Math.abs(hiddenCheck.mcpWidth - hiddenCheck.browserWidth) <= 1, `MCP Manager nav width must match Browser (${hiddenCheck.mcpWidth} vs ${hiddenCheck.browserWidth})`);
     assert.equal(hiddenCheck.frameSrc.includes('hostMode=settings'), true, 'Iframe URL must pass hostMode=settings');
     assert.equal(hiddenCheck.frameSrc.includes('hostFont='), true, 'Iframe URL must pass hostFont');
     assert.equal(hiddenCheck.frameParentId, 'settings-content', 'MCP Manager iframe MUST mount in right-hand settings-content, NEVER inside left sidebar');
