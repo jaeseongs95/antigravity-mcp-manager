@@ -1,25 +1,20 @@
 {
   "name": "antigravity-mcp-manager",
   "version": "2.0.0",
-  "description": "Vendor-independent Hexagonal (Ports & Adapters) Custom MCP Server Manager (Stdio & Streamable HTTP UI, SHA-256 CAS Config Persistence, OAuth Auto-Discovery, Strict CSP/TrustedTypes Remote Workbench Adapter, and Transactional ASAR Patcher) for Google Antigravity IDE.",
-  "main": "src/index.js",
-  "scripts": {
-    "build": "node scripts/build.js",
-    "install-mcp-manager": "node scripts/install.js",
-    "uninstall-mcp-manager": "node scripts/install.js --uninstall",
-    "restore-asar": "node scripts/ensure_statusbar_patch.js --restore",
-    "status": "node scripts/ensure_statusbar_patch.js --status",
-    "test": "node scripts/build.js && node scripts/run-tests.js"
+  "type": "module",
+  "description": "Vendor-independent MCP Server Manager with official Antigravity 2.0 Plugin and AUX_PANE UI Sidecar adapter.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
   },
-  "keywords": [
-    "antigravity",
-    "mcp",
-    "model-context-protocol",
-    "mcp-servers",
-    "customizations",
-    "hexagonal-architecture",
-    "statusbar-adapter"
-  ],
-  "author": "jaeseongs95",
-  "license": "MIT"
+  "scripts": {
+    "test": "node scripts/run-tests.mjs"
+  },
+  "exports": {
+    "./core": "./src/core/manager-service.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jaeseongs95/antigravity-mcp-manager.git"
+  }
 }

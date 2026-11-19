@@ -29,11 +29,5 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Setup Chrome for Headless E2E
-        id: setup-chrome
-        uses: browser-actions/setup-chrome@v1
-
-      - name: Build bundles & run full test suite (Unit, Security, Adapter, UI, ASAR, Live Chromium E2E)
-        env:
-          CHROME_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
+      - name: Run full test suite (Core Purity, Security, FS Store, Antigravity Adapter, Sidecar HTTP, UI Safety)
         run: npm test
