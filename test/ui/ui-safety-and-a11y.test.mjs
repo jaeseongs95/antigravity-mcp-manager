@@ -501,14 +501,27 @@ test('NMCP-TC-019 & NMCP-TC-020 / NMCP-TC-020B (Real Headless Chromium/Edge CDP 
     if (ws) {
       try { ws.close(); } catch {}
     }
+    const waitChildExit = (proc) =>
+      new Promise((resolve) => {
+        if (!proc || proc.exitCode !== null) return resolve();
+        const t = setTimeout(resolve, 3000);
+        proc.once('exit', () => {
+          clearTimeout(t);
+          resolve();
+        });
+      });
     try { browser.kill(); } catch {}
     if (sidecarChild) {
       try { sidecarChild.kill(); } catch {}
     }
-    await new Promise((r) => setTimeout(r, 200));
+    await Promise.all([waitChildExit(browser), waitChildExit(sidecarChild)]);
     if (server) {
       await new Promise((r) => server.close(r));
     }
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch {
+      // Ignore residual OS lock on temp browser profile during CI teardown
+    }
   }
 });
