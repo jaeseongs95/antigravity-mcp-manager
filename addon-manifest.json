@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "antigravity-mcp-manager",
+  "displayName": "Antigravity MCP Manager",
+  "version": "3.0.0",
+  "compatibility": {
+    "hostProfile": "antigravity-desktop",
+    "minHostVersion": "1.0.0"
+  },
+  "capabilities": [
+    "mainHook",
+    "renderer"
+  ],
+  "entry": {
+    "rendererScript": "src/adapters/antigravity/addon-renderer.js",
+    "mainHookScript": "scripts/electron-hook.cjs"
+  },
+  "uiSlots": [
+    {
+      "slot": "settings-pane",
+      "slotId": "antigravity-mcp-manager.pane",
+      "exclusive": false,
+      "scope": "addon-owned-slot"
+    },
+    {
+      "slot": "sidebar",
+      "slotId": "antigravity-mcp-manager.settings-nav",
+      "exclusive": false,
+      "scope": "addon-owned-slot"
+    },
+    {
+      "slot": "custom",
+      "slotId": "antigravity-mcp-manager.customizations-btn",
+      "exclusive": false,
+      "scope": "addon-owned-slot"
+    },
+    {
+      "slot": "overlay",
+      "slotId": "antigravity-mcp-manager.customizations-overlay",
+      "exclusive": false,
+      "scope": "addon-owned-slot"
+    }
+  ],
+  "isolation": {
+    "noTranslate": true,
+    "i18nSelfManaged": true,
+    "respectsNoTranslate": true,
+    "storageNamespace": "antigravity-mcp-manager",
+    "ipcChannelPrefix": "mcp-manager:"
+  },
+  "loadOrder": 60
+}

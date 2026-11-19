@@ -2,78 +2,24 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
-import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import * as asar from '@electron/asar';
 
 import { startDesktopMcpServer } from '../../src/adapters/antigravity/desktop-server.mjs';
 import {
-  buildHookSnippet,
-  getSettingsHookStatus,
-  HOOK_END_MARKER,
-  HOOK_START_MARKER,
-  installSettingsHook,
-  resolveDefaultAsarPath,
-  stripHookSnippet,
-  uninstallSettingsHook,
-} from '../../scripts/install-settings-menu.mjs';
+  buildAddonHostHarnessScript,
+  findChromiumBinary,
+  launchCdpSession,
+  waitUntil,
+} from '../helpers/cdp-browser.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '../..');
 const APP_JS_PATH = path.join(ROOT_DIR, 'sidecars', 'mcp_manager', 'ui', 'app.js');
-const INJECTOR_PATH = path.join(ROOT_DIR, 'src', 'adapters', 'antigravity', 'settings-menu-injector.js');
-
-function findChromiumBinary() {
-  const candidates =
-    process.platform === 'win32'
-      ? [
-          'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-          'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-          'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-          'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-        ]
-      : process.platform === 'darwin'
-        ? [
-            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-            '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-            '/Applications/Chromium.app/Contents/MacOS/Chromium',
-          ]
-        : [
-            '/usr/bin/google-chrome',
-            '/usr/bin/google-chrome-stable',
-            '/usr/bin/chromium',
-            '/usr/bin/chromium-browser',
-            '/usr/bin/microsoft-edge',
-          ];
-  for (const bin of candidates) {
-    if (fs.existsSync(bin)) return bin;
-  }
-  return null;
-}
-
-function getFreeTcpPort() {
-  return new Promise((resolve, reject) => {
-    const s = net.createServer();
-    s.listen(0, '127.0.0.1', () => {
-      const { port } = s.address();
-      s.close(() => resolve(port));
-    });
-    s.on('error', reject);
-  });
-}
-
-async function waitUntil(fn, timeoutMs = 8000, intervalMs = 40) {
-  const end = Date.now() + timeoutMs;
-  while (Date.now() < end) {
-    if (await fn()) return true;
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-  return Boolean(await fn());
-}
+const RENDERER_PATH = path.join(ROOT_DIR, 'src', 'adapters', 'antigravity', 'addon-renderer.js');
+const MANIFEST_PATH = path.join(ROOT_DIR, 'addon-manifest.json');
 
 function httpRequest({ port, method = 'GET', reqPath = '/', headers = {}, body = null }) {
   return new Promise((resolve, reject) => {
@@ -194,7 +140,6 @@ test('NMCP-TC-023 (Unit): desktop-server.mjs enforces security guards, error cod
     assert.equal(snap0.json.ok, true);
     assert.equal(snap0.json.globalConfig.servers.length, 0);
 
-    // Create HTTP server
     const created = await postApi('/api/upsert', {
       name: 'demoHttp',
       spec: { url: 'https://demo.example/mcp' },
@@ -207,7 +152,6 @@ test('NMCP-TC-023 (Unit): desktop-server.mjs enforces security guards, error cod
     assert.equal(snap1.json.globalConfig.servers[0].name, 'demoHttp');
     assert.equal(snap1.json.globalConfig.servers[0].disabled, false);
 
-    // Toggle disabled -> true
     const disabled = await postApi('/api/toggle-disabled', {
       name: 'demoHttp',
       disabled: true,
@@ -218,7 +162,6 @@ test('NMCP-TC-023 (Unit): desktop-server.mjs enforces security guards, error cod
     const snap2 = await postApi('/api/snapshot', { workspaceUris: [] });
     assert.equal(snap2.json.globalConfig.servers[0].disabled, true);
 
-    // Update URL
     const updated = await postApi('/api/upsert', {
       name: 'demoHttp',
       originalName: 'demoHttp',
@@ -231,7 +174,6 @@ test('NMCP-TC-023 (Unit): desktop-server.mjs enforces security guards, error cod
     assert.equal(snap3.json.globalConfig.servers[0].spec.url, 'https://updated.example/mcp');
     assert.equal(snap3.json.globalConfig.servers[0].disabled, false);
 
-    // Delete server
     const deleted = await postApi('/api/delete', {
       name: 'demoHttp',
       expectedSha256: snap3.json.globalConfig.sha256,
@@ -242,72 +184,6 @@ test('NMCP-TC-023 (Unit): desktop-server.mjs enforces security guards, error cod
     assert.equal(snap4.json.globalConfig.servers.length, 0);
   } finally {
     await srv.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-  }
-});
-
-test('NMCP-TC-024 (Unit): install-settings-menu.mjs handles OS paths, snippet strip, missing asar, no-op uninstall, and existing .orig backup preservation', async () => {
-  // 1. OS path resolution
-  assert.match(
-    resolveDefaultAsarPath({ homeDir: 'C:\\Users\\Demo', platform: 'win32' }),
-    /antigravity[\\/]+resources[\\/]+app\.asar$/i
-  );
-  assert.equal(
-    resolveDefaultAsarPath({ homeDir: '/Users/demo', platform: 'darwin' }),
-    '/Applications/Antigravity.app/Contents/Resources/app.asar'
-  );
-  assert.equal(
-    resolveDefaultAsarPath({ homeDir: '/home/demo', platform: 'linux' }),
-    '/opt/Antigravity/resources/app.asar'
-  );
-
-  // 2. Snippet build & strip
-  const snippetDefault = buildHookSnippet();
-  assert.equal(snippetDefault.startsWith(HOOK_START_MARKER), true);
-  assert.equal(snippetDefault.endsWith(HOOK_END_MARKER), true);
-  assert.equal(snippetDefault.includes('electron-hook.cjs'), true);
-
-  const combined = `// sibling\nconsole.log(1);\n${snippetDefault}\n// tail\n`;
-  const stripped = stripHookSnippet(combined);
-  assert.equal(stripped.includes(HOOK_START_MARKER), false);
-  assert.equal(stripped.includes('// sibling'), true);
-  assert.equal(stripped.includes('// tail'), true);
-  assert.equal(stripHookSnippet('// clean\n'), '// clean\n');
-
-  // 3. Missing app.asar handling
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-asar-unit-'));
-  const missingAsar = path.join(tmpDir, 'nonexistent.asar');
-  try {
-    const missingStatus = getSettingsHookStatus({ asarPath: missingAsar });
-    assert.equal(missingStatus.ok, false);
-    assert.equal(missingStatus.exists, false);
-    assert.equal(missingStatus.installed, false);
-    await assert.rejects(() => installSettingsHook({ asarPath: missingAsar }), /not found/i);
-    await assert.rejects(() => uninstallSettingsHook({ asarPath: missingAsar }), /not found/i);
-
-    // 4. Existing app.asar.v2.33.0.orig preservation & idempotent no-op uninstall
-    const srcDir = path.join(tmpDir, 'src');
-    fs.mkdirSync(path.join(srcDir, 'dist'), { recursive: true });
-    fs.writeFileSync(path.join(srcDir, 'dist', 'main.js'), "console.log('orig');\n", 'utf8');
-    const asarPath = path.join(tmpDir, 'app.asar');
-    await asar.createPackage(srcDir, asarPath);
-
-    const existingBackup = path.join(tmpDir, 'app.asar.v2.33.0.orig');
-    fs.copyFileSync(asarPath, existingBackup);
-
-    // Uninstall when not installed -> no-op
-    const noop = await uninstallSettingsHook({ asarPath });
-    assert.equal(noop.ok, true);
-    assert.equal(noop.removed, false);
-    assert.equal(noop.installed, false);
-
-    // Install reuses existing app.asar.v2.33.0.orig (does not create second .orig)
-    const installed = await installSettingsHook({ asarPath, pluginDir: ROOT_DIR });
-    assert.equal(installed.ok, true);
-    assert.equal(installed.backupCreated, false);
-    assert.equal(installed.backupPath, existingBackup);
-    assert.equal(fs.existsSync(path.join(tmpDir, 'app.asar.agy-mcp-manager.orig')), false);
-  } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });
@@ -346,14 +222,16 @@ test('NMCP-TC-025 (Unit): UI I18N dictionary has 100% EN/KO key parity, matching
   }
 });
 
-test('NMCP-TC-026 (Real Chromium CDP): injector rejects untrusted postMessage, switches lang without iframe reload, and Korean interactive UI panels work', async (t) => {
+test('NMCP-TC-026 (Real Chromium CDP): addon-renderer rejects untrusted postMessage, switches lang without iframe reload under storageNamespace, and Korean interactive UI panels work', async (t) => {
   const browserBin = findChromiumBinary();
   if (!browserBin || typeof WebSocket !== 'function') {
     t.skip('Headless Chromium/Edge binary or global WebSocket is unavailable on this host');
     return;
   }
 
-  const injectorSrc = fs.readFileSync(INJECTOR_PATH, 'utf8');
+  const rendererSrc = fs.readFileSync(RENDERER_PATH, 'utf8');
+  const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+  const hostHarness = buildAddonHostHarnessScript(manifest);
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-v21-cdp-'));
   const profileDir = path.join(tmpDir, 'profile');
   const cfgDir = path.join(tmpDir, '.gemini', 'config');
@@ -383,121 +261,36 @@ test('NMCP-TC-026 (Real Chromium CDP): injector rejects untrusted postMessage, s
                 <button type="button" id="nav-browser">Browser</button>
               </nav>
             </aside>
-            <main id="settings-content" style="flex:1;padding:16px;position:relative;">
+            <main id="settings-content" style="flex:1;padding:16px;position:relative;display:flex;flex-direction:column;">
               <div id="native-pane">Native</div>
             </main>
           </div>
+          <script>${hostHarness}</script>
           <script>
             window.__AGY_MCP_MANAGER_URL__ = ${JSON.stringify(desktopSrv.url)};
+            (function(addonHost) {
+              ${rendererSrc}
+            })(window.__TEST_ADDON_HOST__);
           </script>
-          <script>${injectorSrc}</script>
         </body>
       </html>`);
   });
   await new Promise((r) => parentServer.listen(0, '127.0.0.1', r));
   const parentPort = parentServer.address().port;
 
-  const cdpPort = await getFreeTcpPort();
-  const browser = spawn(
+  const session = await launchCdpSession({
     browserBin,
-    [
-      '--headless=new',
-      '--disable-gpu',
-      '--no-sandbox',
-      '--disable-dev-shm-usage',
-      '--no-first-run',
-      '--no-default-browser-check',
-      `--remote-debugging-port=${cdpPort}`,
-      `--user-data-dir=${profileDir}`,
-      'about:blank',
-    ],
-    { stdio: ['ignore', 'ignore', 'ignore'] }
-  );
+    profileDir,
+    iframeOrigin: `http://127.0.0.1:${desktopSrv.port}`,
+  });
 
-  let ws = null;
   try {
-    let wsUrl = null;
-    await waitUntil(async () => {
-      try {
-        const res = await fetch(`http://127.0.0.1:${cdpPort}/json/list`);
-        if (res.ok) {
-          const targets = await res.json();
-          const page = targets.find((x) => x.type === 'page' && x.webSocketDebuggerUrl);
-          if (page) {
-            wsUrl = page.webSocketDebuggerUrl;
-            return true;
-          }
-        }
-      } catch {}
-      return false;
-    }, 20000, 100);
-    assert.ok(wsUrl);
-
-    ws = new WebSocket(wsUrl);
-    await new Promise((resolve, reject) => {
-      ws.addEventListener('open', resolve, { once: true });
-      ws.addEventListener('error', reject, { once: true });
-    });
-
-    let seq = 0;
-    const pending = new Map();
-    const iframeOrigin = `http://127.0.0.1:${desktopSrv.port}`;
-    let iframeSessionId = null;
-    let iframeContextId = null;
-
-    const cdp = (method, params = {}, sessionId = undefined) =>
-      new Promise((resolve, reject) => {
-        const id = ++seq;
-        pending.set(id, { resolve, reject });
-        ws.send(JSON.stringify(sessionId ? { id, method, params, sessionId } : { id, method, params }));
-      });
-
-    ws.addEventListener('message', (ev) => {
-      const msg = JSON.parse(String(ev.data));
-      if (msg.id && pending.has(msg.id)) {
-        const { resolve, reject } = pending.get(msg.id);
-        pending.delete(msg.id);
-        if (msg.error) reject(new Error(msg.error.message || JSON.stringify(msg.error)));
-        else resolve(msg.result);
-      } else if (msg.method === 'Target.attachedToTarget') {
-        const info = msg.params?.targetInfo;
-        const sid = msg.params?.sessionId;
-        if (sid && info && (info.type === 'iframe' || String(info.url || '').startsWith(iframeOrigin))) {
-          iframeSessionId = sid;
-          void cdp('Runtime.enable', {}, sid).catch(() => {});
-        }
-      } else if (msg.method === 'Runtime.executionContextCreated') {
-        const ctx = msg.params?.context;
-        if (ctx && ctx.origin === iframeOrigin && ctx.auxData?.isDefault) {
-          iframeContextId = ctx.id;
-        }
-      }
-    });
-
-    const evalMain = async (expression) => {
-      const res = await cdp('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-      if (res.exceptionDetails) throw new Error(res.exceptionDetails.text);
-      return res.result?.value;
-    };
-    const evalIframe = async (expression) => {
-      if (iframeSessionId) {
-        const res = await cdp('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, iframeSessionId);
-        if (res.exceptionDetails) throw new Error(res.exceptionDetails.text);
-        return res.result?.value;
-      }
-      const res = await cdp('Runtime.evaluate', { contextId: iframeContextId, expression, awaitPromise: true, returnByValue: true });
-      if (res.exceptionDetails) throw new Error(res.exceptionDetails.text);
-      return res.result?.value;
-    };
-
-    await cdp('Page.enable');
-    await cdp('Runtime.enable');
-    await cdp('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
+    const { cdp, evalMain, evalIframe, hasIframe } = session;
     await cdp('Page.navigate', { url: `http://localhost:${parentPort}/` });
 
     assert.equal(await waitUntil(() => evalMain(`Boolean(document.querySelector('[data-agy-mcp-manager-nav="true"]'))`)), true);
     await evalMain(`document.querySelector('[data-agy-mcp-manager-nav="true"]').click()`);
-    assert.equal(await waitUntil(() => Boolean(iframeSessionId || iframeContextId), 8000, 40), true);
+    assert.equal(await waitUntil(hasIframe, 8000, 40), true);
     assert.equal(
       await waitUntil(async () => {
         try {
@@ -509,13 +302,13 @@ test('NMCP-TC-026 (Real Chromium CDP): injector rejects untrusted postMessage, s
       true
     );
 
-    // 1. Untrusted postMessage from wrong source (parent itself) MUST NOT overwrite localStorage
-    await evalMain(`window.localStorage.setItem('agy-mcp-manager-lang', 'en')`);
+    // 1. Untrusted postMessage from wrong source (parent itself) MUST NOT overwrite namespaced localStorage
+    await evalMain(`window.localStorage.setItem('antigravity-mcp-manager:lang', 'en')`);
     await evalMain(`window.postMessage({ type: 'agy-mcp-lang-change', lang: 'ko' }, '*')`);
     await evalMain(`window.postMessage({ type: 'agy-mcp-lang-change', lang: 'xx' }, '*')`);
     await new Promise((r) => setTimeout(r, 120));
     assert.equal(
-      await evalMain(`window.localStorage.getItem('agy-mcp-manager-lang')`),
+      await evalMain(`window.localStorage.getItem('antigravity-mcp-manager:lang')`),
       'en',
       'Untrusted postMessage from non-iframe source must be ignored'
     );
@@ -524,7 +317,7 @@ test('NMCP-TC-026 (Real Chromium CDP): injector rejects untrusted postMessage, s
     await evalIframe(`window.__NO_RELOAD_SENTINEL__ = 42`);
     await evalIframe(`document.querySelector('[data-testid="btn-lang-ko"]').click()`);
     assert.equal(
-      await waitUntil(() => evalMain(`window.localStorage.getItem('agy-mcp-manager-lang') === 'ko'`), 3000, 30),
+      await waitUntil(() => evalMain(`window.localStorage.getItem('antigravity-mcp-manager:lang') === 'ko'`), 3000, 30),
       true
     );
     assert.equal(await evalIframe(`window.__NO_RELOAD_SENTINEL__`), 42, 'Switching language must not reload iframe');
@@ -561,15 +354,11 @@ test('NMCP-TC-026 (Real Chromium CDP): injector rejects untrusted postMessage, s
     const rawKo = await evalIframe(`document.querySelector('[data-testid="btn-save-raw"]')?.textContent?.trim()`);
     assert.equal(rawKo, '검증 후 원본 JSON 저장');
   } finally {
-    if (ws) { try { ws.close(); } catch {} }
-    try { browser.kill(); } catch {}
-    await new Promise((resolve) => {
-      if (browser.exitCode !== null) return resolve();
-      const timer = setTimeout(resolve, 3000);
-      browser.once('exit', () => { clearTimeout(timer); resolve(); });
-    });
+    await session.close();
     await desktopSrv.close();
     await new Promise((r) => parentServer.close(r));
-    try { fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch {}
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch {}
   }
 });
