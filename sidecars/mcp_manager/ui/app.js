@@ -763,25 +763,30 @@
       }
     }
 
+    const formatTransport = (t) => (t === 'streamable_http' ? 'HTTP' : t === 'stdio' ? 'Stdio' : t || 'unknown');
     nodes.push(el('h2', { className: 'section-title' }, `Global MCP Servers (${snapshot?.globalConfig?.servers?.length || 0})`));
     const globalList = el('div', { className: 'server-list' });
     for (const s of snapshot?.globalConfig?.servers || []) {
-      const rtStatus = s.disabled ? 'Disabled' : s.runtime?.status || 'Configured';
+      const rtStatus = s.disabled ? 'Disabled' : s.runtime?.status === 'MCP_SERVER_STATUS_READY' ? 'Ready' : s.runtime?.status || 'Configured';
       const badgeClass = s.disabled ? 'badge-muted' : s.runtime?.error ? 'badge-err' : s.runtime?.status === 'MCP_SERVER_STATUS_READY' ? 'badge-ok' : 'badge-muted';
       globalList.appendChild(
         el(
           'div',
-          { className: 'card', dataset: { testid: `global-server-${s.name}` } },
-          el('div', { className: 'server-header' },
-            el('span', { className: 'server-name' }, s.name),
-            el('div', { className: 'row-actions' },
-              el('span', { className: `badge ${badgeClass}` }, `${rtStatus}${s.runtime?.toolCount ? ` · ${s.runtime.toolCount} tools` : ''}`),
-              el('span', { className: 'badge badge-muted' }, s.transport || 'unknown')
-            )
+          { className: `card${s.disabled ? ' card-disabled' : ''}`, dataset: { testid: `global-server-${s.name}` } },
+          el(
+            'div',
+            { className: 'server-info' },
+            el('div', { className: 'server-header' },
+              el('span', { className: 'server-name' }, s.name),
+              el('div', { className: 'server-badges' },
+                el('span', { className: `badge ${badgeClass}` }, `${rtStatus}${s.runtime?.toolCount ? ` · ${s.runtime.toolCount} tools` : ''}`),
+                el('span', { className: 'badge badge-muted' }, formatTransport(s.transport))
+              )
+            ),
+            el('div', { className: 'server-meta' }, s.spec?.url || s.spec?.serverUrl || s.spec?.command || ''),
+            s.runtime?.error ? el('div', { className: 'badge badge-err' }, s.runtime.error) : null
           ),
-          el('div', { className: 'server-meta' }, s.spec?.url || s.spec?.serverUrl || s.spec?.command || ''),
-          s.runtime?.error ? el('div', { className: 'badge badge-err' }, s.runtime.error) : null,
-          el('div', { className: 'row-actions' },
+          el('div', { className: 'row-actions server-row-actions' },
             el('button', { type: 'button', className: 'btn btn-sm', onClick: () => void handleToggleDisabled(s) }, s.disabled ? 'Enable' : 'Disable'),
             el('button', { type: 'button', className: 'btn btn-sm', onClick: () => openEditorForServer(s) }, 'Edit'),
             el('button', { type: 'button', className: 'btn btn-danger btn-sm', onClick: () => void handleDelete(s) }, 'Delete')
@@ -806,15 +811,19 @@
           el(
             'div',
             { className: 'card', dataset: { testid: `plugin-server-${safePluginKey}-${ps.name}` } },
-            el('div', { className: 'server-header' },
-              el('span', { className: 'server-name' }, ps.name),
-              el('div', { className: 'row-actions' },
-                el('span', { className: 'badge badge-muted' }, `Plugin (${ps.pluginScope || 'global'}): ${ps.pluginName}${ps.pluginDisabled ? ' (Disabled)' : ''}`),
-                collision ? el('span', { className: 'badge badge-warn' }, `Collides with global "${collision.globalName}"`) : null
-              )
+            el(
+              'div',
+              { className: 'server-info' },
+              el('div', { className: 'server-header' },
+                el('span', { className: 'server-name' }, ps.name),
+                el('div', { className: 'server-badges' },
+                  el('span', { className: 'badge badge-muted' }, `Plugin · ${ps.pluginName}${ps.pluginDisabled ? ' (Disabled)' : ''}`),
+                  collision ? el('span', { className: 'badge badge-warn' }, `Collides with global "${collision.globalName}"`) : null
+                )
+              ),
+              el('div', { className: 'server-meta' }, ps.spec?.url || ps.spec?.serverUrl || ps.spec?.command || '')
             ),
-            el('div', { className: 'server-meta' }, ps.spec?.url || ps.spec?.serverUrl || ps.spec?.command || ''),
-            el('div', { className: 'row-actions' },
+            el('div', { className: 'row-actions server-row-actions' },
               el('button', {
                 type: 'button',
                 className: 'btn btn-sm',

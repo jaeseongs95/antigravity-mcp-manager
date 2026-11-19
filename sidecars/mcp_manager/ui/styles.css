@@ -41,18 +41,43 @@ html, body {
 body.host-settings-mode .app-shell {
   max-width: 780px;
   margin: 0 auto;
-  padding: 28px 48px 36px 40px;
+  padding: 28px 48px 40px 40px;
   gap: 14px;
 }
 
 body.host-settings-mode .app-header {
   padding-right: 48px;
+  align-items: center;
 }
 
 body.host-settings-mode .header-title-row h1 {
   font-size: 20px;
   font-weight: 600;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.02em;
+}
+
+body.host-settings-mode .tabs {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+body.host-settings-mode .tab {
+  border: 0;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+body.host-settings-mode .tab.active {
+  background: rgba(255, 255, 255, 0.11);
+  color: #ffffff;
 }
 
 body.host-settings-mode .settings-toolbar-row {
@@ -79,40 +104,114 @@ body.host-settings-mode .section-title {
 
 body.host-settings-mode .server-list {
   gap: 0;
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
   background: rgba(255, 255, 255, 0.02);
   overflow: hidden;
 }
 
 body.host-settings-mode .server-list > .card {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
   border: 0;
   border-radius: 0;
   background: transparent;
-  padding: 14px 16px;
-  gap: 6px;
-  border-bottom: 1px solid var(--border-color);
+  padding: 14px 18px;
+  gap: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  transition: background-color 120ms ease;
+}
+
+body.host-settings-mode .server-list > .card:hover {
+  background: rgba(255, 255, 255, 0.025);
 }
 
 body.host-settings-mode .server-list > .card:last-child {
   border-bottom: 0;
 }
 
+body.host-settings-mode .server-list > .card.card-disabled {
+  opacity: 0.62;
+}
+
+body.host-settings-mode .server-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+body.host-settings-mode .server-header {
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+body.host-settings-mode .server-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+body.host-settings-mode .server-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #f3f4f6;
+}
+
+body.host-settings-mode .server-meta {
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.48);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body.host-settings-mode .server-row-actions {
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+body.host-settings-mode .badge {
+  padding: 1px 7px;
+  font-size: 10.5px;
+  border-color: rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.04);
+}
+
 body.host-settings-mode .btn {
   border-radius: 8px;
   padding: 6px 12px;
   background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.09);
+  transition: background-color 120ms ease, border-color 120ms ease;
 }
 
 body.host-settings-mode .btn:hover {
   background: rgba(255, 255, 255, 0.11);
+  border-color: rgba(255, 255, 255, 0.14);
 }
 
 body.host-settings-mode .btn-primary {
-  background: rgba(255, 255, 255, 0.14);
-  color: #ffffff;
-  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.9);
+  color: #0b0c0e;
+  border-color: transparent;
+  font-weight: 600;
+}
+
+body.host-settings-mode .btn-primary:hover {
+  background: #ffffff;
+}
+
+body.host-settings-mode .btn-danger {
+  background: transparent;
+  border-color: rgba(239, 68, 68, 0.28);
+}
+
+body.host-settings-mode .btn-danger:hover {
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.45);
 }
 
 body.host-settings-mode .btn-sm {
