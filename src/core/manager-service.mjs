@@ -92,10 +92,17 @@ export class McpManagerService {
 
     const runtimePluginsById = new Map();
     const runtimeGlobalPluginsByDir = new Map();
+    const runtimeWorkspacePluginsByDir = new Map();
     for (const rp of Array.isArray(runtime.plugins) ? runtime.plugins : []) {
       if (rp?.pluginId) runtimePluginsById.set(rp.pluginId, rp);
-      if (rp?.dir && (!rp.scope || rp.scope === 'global')) {
-        runtimeGlobalPluginsByDir.set(rp.dir, rp);
+      if (rp?.dir) {
+        const rpScope =
+          rp.scope || (typeof rp.isGlobal === 'boolean' ? (rp.isGlobal ? 'global' : 'workspace') : 'global');
+        if (rpScope === 'global') {
+          runtimeGlobalPluginsByDir.set(rp.dir, rp);
+        } else if (rpScope === 'workspace') {
+          runtimeWorkspacePluginsByDir.set(rp.dir, rp);
+        }
       }
     }
 
@@ -107,7 +114,9 @@ export class McpManagerService {
       const pluginId = pFile.pluginId || `${pluginScope}:${pFile.pluginDir}`;
       const livePlugin =
         runtimePluginsById.get(pluginId) ||
-        (pluginScope === 'global' ? runtimeGlobalPluginsByDir.get(pFile.pluginDir) : null) ||
+        (pluginScope === 'global'
+          ? runtimeGlobalPluginsByDir.get(pFile.pluginDir)
+          : runtimeWorkspacePluginsByDir.get(pFile.pluginDir)) ||
         null;
       for (const [sName, sSpec] of Object.entries(pParsed.servers)) {
         const val = validateServerSpec(sSpec);

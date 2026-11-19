@@ -255,7 +255,7 @@ export function registerSidecarRoutes({ app, ResponseClass, service, uiDir }) {
       originalName: data.originalName || null,
       spec: data.spec,
       expectedSha256: data.expectedSha256,
-      confirmStdio: Boolean(data.confirmStdio),
+      confirmStdio: data.confirmStdio === true,
     })
   );
 
@@ -282,7 +282,7 @@ export function registerSidecarRoutes({ app, ResponseClass, service, uiDir }) {
       targetName: data.targetName || null,
       workspaceUris: Array.isArray(data.workspaceUris) ? data.workspaceUris : [],
       expectedSha256: data.expectedSha256,
-      confirmStdio: Boolean(data.confirmStdio),
+      confirmStdio: data.confirmStdio === true,
     })
   );
 
@@ -291,7 +291,7 @@ export function registerSidecarRoutes({ app, ResponseClass, service, uiDir }) {
       serverName: data.serverName,
       targetName: data.targetName || null,
       expectedSha256: data.expectedSha256,
-      confirmStdio: Boolean(data.confirmStdio),
+      confirmStdio: data.confirmStdio === true,
     })
   );
 
@@ -299,7 +299,7 @@ export function registerSidecarRoutes({ app, ResponseClass, service, uiDir }) {
     service.saveRawJson({
       rawText: data.rawText,
       expectedSha256: data.expectedSha256,
-      confirmStdio: Boolean(data.confirmStdio),
+      confirmStdio: data.confirmStdio === true,
     })
   );
 

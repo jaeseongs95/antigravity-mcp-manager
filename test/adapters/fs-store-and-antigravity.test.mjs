@@ -183,15 +183,27 @@ test('NMCP-TC-013: Antigravity paths keep backups outside plugins/, and ls-inspe
       pluginRoots: paths.pluginRoots,
       backupDir: paths.backupDir,
     });
+    // Route through REAL createAntigravityLsInspector() (no mock scope field) to verify isGlobal -> scope mapping (R5 F2)
+    const realLsInspector = createAntigravityLsInspector({
+      lsAddress: '127.0.0.1:60538',
+      csrfToken: 'test-csrf-token',
+      fetchImpl: async (url) => ({
+        ok: true,
+        status: 200,
+        json: async () =>
+          String(url).includes('GetAllPlugins')
+            ? {
+                plugins: [
+                  { name: 'shared-name', path: globalSameDir, isGlobal: true, disabled: true, mcpServers: [{ name: 'sharedSrv' }] },
+                  { name: 'shared-name', path: wsPluginDir, isGlobal: false, disabled: false, mcpServers: [{ name: 'sharedSrv' }] },
+                ],
+              }
+            : { states: [] },
+      }),
+    });
     const wsService = new McpManagerService({
       configStore: wsStore,
-      runtimeInspector: {
-        inspectRuntime: async () => ({
-          available: true,
-          servers: {},
-          plugins: [{ dir: 'shared-name', scope: 'global', disabled: true }],
-        }),
-      },
+      runtimeInspector: realLsInspector,
     });
     const snap = await wsService.getSnapshot({ workspaceUris: [wsUri] });
     const globalEntry = snap.pluginServers.find((p) => p.pluginId === 'global:shared-name');
@@ -199,6 +211,30 @@ test('NMCP-TC-013: Antigravity paths keep backups outside plugins/, and ls-inspe
     assert.ok(globalEntry && wsEntry, 'Both global and workspace plugins with identical folder names must have distinct pluginIds');
     assert.equal(globalEntry.pluginDisabled, true);
     assert.equal(wsEntry.pluginDisabled, false, 'Global disabled state must NOT overwrite workspace plugin with same basename');
+
+    // Also verify workspace-only disabled=true (isGlobal: false) maps to workspace entry without disabling global
+    const wsDisabledInspector = createAntigravityLsInspector({
+      lsAddress: '127.0.0.1:60538',
+      csrfToken: 'test-csrf-token',
+      fetchImpl: async (url) => ({
+        ok: true,
+        status: 200,
+        json: async () =>
+          String(url).includes('GetAllPlugins')
+            ? {
+                plugins: [
+                  { name: 'shared-name', path: globalSameDir, isGlobal: true, disabled: false },
+                  { name: 'shared-name', path: wsPluginDir, isGlobal: false, disabled: true },
+                ],
+              }
+            : { states: [] },
+      }),
+    });
+    const snap2 = await new McpManagerService({ configStore: wsStore, runtimeInspector: wsDisabledInspector }).getSnapshot({
+      workspaceUris: [wsUri],
+    });
+    assert.equal(snap2.pluginServers.find((p) => p.pluginId === 'global:shared-name').pluginDisabled, false);
+    assert.equal(snap2.pluginServers.find((p) => p.pluginId === 'workspace:0:shared-name').pluginDisabled, true);
 
     const cloneRes = await wsService.clonePluginServer({
       pluginId: wsEntry.pluginId,

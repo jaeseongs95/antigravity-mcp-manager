@@ -98,11 +98,13 @@ export function createAntigravityLsInspector({
       const mcpNames = (Array.isArray(p?.mcpServers) ? p.mcpServers : [])
         .map((m) => (typeof m?.name === 'string' ? m.name : null))
         .filter(Boolean);
+      const isGlobal = Boolean(p?.isGlobal);
       plugins.push({
         name: String(p?.name || dir),
         dir,
         disabled: Boolean(p?.disabled),
-        isGlobal: Boolean(p?.isGlobal),
+        isGlobal,
+        scope: isGlobal ? 'global' : 'workspace',
         mcpServerNames: mcpNames,
       });
     }

@@ -194,9 +194,9 @@ function writePrivateBackup(backupDir, rawText) {
     );
   }
   const backupPath = path.join(resolvedBackupDir, 'mcp_config.last-good.json');
-  verifyNoSymlinkInChain(backupPath, { createParent: true, parentLevels: 1 });
+  verifyNoSymlinkInChain(backupPath, { createParent: true, parentLevels: 2 });
   try {
-    fs.chmodSync(backupDir, 0o700);
+    fs.chmodSync(resolvedBackupDir, 0o700);
   } catch {
     // Windows ignores POSIX chmod
   }
@@ -429,9 +429,9 @@ export function createFsConfigStore({
     if (!backupDir) {
       return { ok: false, code: ERROR_CODES.NOT_FOUND, error: 'Backup directory is not configured.' };
     }
-    const backupPath = path.join(backupDir, 'mcp_config.last-good.json');
+    const backupPath = path.join(path.resolve(backupDir), 'mcp_config.last-good.json');
     try {
-      verifyNoSymlinkInChain(backupPath, { createParent: false, parentLevels: 1 });
+      verifyNoSymlinkInChain(backupPath, { createParent: false, parentLevels: 2 });
     } catch (err) {
       return { ok: false, code: err?.code || ERROR_CODES.WRITE_JAIL_VIOLATION, error: err?.message || String(err) };
     }

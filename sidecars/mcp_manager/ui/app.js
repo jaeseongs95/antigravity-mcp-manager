@@ -24,6 +24,7 @@
   let editorState = null;
   let pendingStdioConfirm = null; // { kind: 'upsert'|'clone'|'legacy'|'raw', payload, preview }
   let pastePreview = null;
+  let pasteInputDraft = '';
   let rawDraft = '';
 
   const mainRegion = document.getElementById('main-region');
@@ -109,6 +110,7 @@
       editorState = null;
     }
     pendingStdioConfirm = null;
+    pasteInputDraft = '';
     if (!keepRawIfMalformed || !snapshot?.globalConfig?.malformed) {
       rawDraft = '';
     }
@@ -347,7 +349,14 @@
     if (pending.kind === 'upsert') {
       await submitEditor(true);
     } else if (pending.kind === 'clone') {
-      await submitClonePlugin({ pluginDir: pending.payload.pluginDir, name: pending.payload.serverName }, true);
+      await submitClonePlugin(
+        {
+          pluginId: pending.payload.pluginId || null,
+          pluginDir: pending.payload.pluginDir,
+          name: pending.payload.serverName,
+        },
+        true
+      );
     } else if (pending.kind === 'legacy') {
       await submitImportLegacy({ name: pending.payload.serverName }, true);
     } else if (pending.kind === 'raw') {
@@ -474,12 +483,12 @@
   }
 
   function renderSmartPasteCard() {
-    let pasteInputVal = '';
     const inputEl = el('textarea', {
       rows: '3',
+      value: pasteInputDraft,
       placeholder: 'Paste mcpServers JSON or https://... Streamable HTTP URL (raw shell commands are rejected)',
       dataset: { testid: 'smart-paste-input' },
-      onInput: (e) => { pasteInputVal = e.target.value; },
+      onInput: (e) => { pasteInputDraft = e.target.value; },
       onKeydown: (e) => {
         if (isImeComposing(e)) return;
         if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
@@ -490,7 +499,7 @@
     });
 
     async function runPreview() {
-      const { data } = await apiPost('/api/preview-paste', { rawInput: inputEl.value || pasteInputVal });
+      const { data } = await apiPost('/api/preview-paste', { rawInput: inputEl.value || pasteInputDraft });
       pastePreview = data;
       renderAll();
     }
@@ -817,6 +826,7 @@
   tabRaw.addEventListener('click', () => {
     activeTab = 'raw';
     pastePreview = null;
+    scrubSensitiveState({ keepRawIfMalformed: true });
     void loadSnapshot(true);
   });
   btnRefresh.addEventListener('click', () => void loadSnapshot(activeTab === 'raw'));
@@ -847,6 +857,18 @@
         if (Array.isArray(initialUris)) workspaceUris = [...initialUris];
       } catch {
         // Ignore if preload does not provide workspace list yet
+      }
+    }
+    if (window.parent && window.parent !== window && window.sidecar && typeof window.sidecar.onWorkspaceChange === 'function') {
+      try {
+        window.sidecar.onWorkspaceChange((nextUris) => {
+          if (Array.isArray(nextUris)) {
+            workspaceUris = [...nextUris];
+            void loadSnapshot(false);
+          }
+        });
+      } catch {
+        // Ignore if preload listener registration fails
       }
     }
     await loadSnapshot(false);

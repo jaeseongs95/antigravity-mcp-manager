@@ -6,7 +6,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { McpManagerService } from '../../src/core/manager-service.mjs';
 import { createFsConfigStore } from '../../src/adapters/fs-config-store.mjs';
@@ -105,10 +105,25 @@ test('NMCP-TC-019 & NMCP-TC-020 / NMCP-TC-020B (Real Headless Chromium/Edge CDP 
     JSON.stringify({
       mcpServers: {
         psrv: { url: 'https://p.example.com/mcp', headers: { Authorization: 'Bearer real-plugin-secret-xyz' }, disabledTools: ['x'] },
+        cmdSrv: { command: 'node', args: ['global-cmd.js'], env: { SECRET: 'global-cmd-secret' } },
       },
     }),
     'utf8'
   );
+  // Same-basename workspace plugin `demo` with distinct Stdio command/secret to test R5 F1 (confirmPendingStdio pluginId preservation!)
+  const wsDir = path.join(tmpDir, 'ws-project');
+  const wsPluginDir = path.join(wsDir, '.agents', 'plugins', 'demo');
+  fs.mkdirSync(wsPluginDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(wsPluginDir, 'mcp_config.json'),
+    JSON.stringify({
+      mcpServers: {
+        cmdSrv: { command: 'node', args: ['workspace-cmd.js'], env: { SECRET: 'workspace-cmd-secret' } },
+      },
+    }),
+    'utf8'
+  );
+  const wsUri = pathToFileURL(wsDir).href;
   const configPath = path.join(cfgDir, 'mcp_config.json');
   fs.writeFileSync(
     configPath,
@@ -259,7 +274,7 @@ test('NMCP-TC-019 & NMCP-TC-020 / NMCP-TC-020B (Real Headless Chromium/Edge CDP 
         // Retry until browser binds CDP port
       }
       return false;
-    }, 12000, 100);
+    }, 20000, 100);
     assert.ok(wsUrl, 'Headless browser did not expose CDP WebSocket target');
 
     ws = new WebSocket(wsUrl);
@@ -311,14 +326,28 @@ test('NMCP-TC-019 & NMCP-TC-020 / NMCP-TC-020B (Real Headless Chromium/Edge CDP 
       source: `
         window.__cspViolations = [];
         window.__snapshotFetchCount = 0;
+        window.__previewPasteFetchCount = 0;
         window.addEventListener('securitypolicyviolation', (e) => {
           window.__cspViolations.push({ directive: e.violatedDirective, blockedURI: e.blockedURI });
         });
         const origFetch = window.fetch.bind(window);
         window.fetch = (...args) => {
-          if (String(args[0]).includes('/api/snapshot')) window.__snapshotFetchCount += 1;
+          const url = String(args[0]);
+          if (url.includes('/api/snapshot')) window.__snapshotFetchCount += 1;
+          if (url.includes('/api/preview-paste')) window.__previewPasteFetchCount += 1;
           return origFetch(...args);
         };
+        // Provide workspace URI through window.sidecar.getWorkspaceUris so both real sidecar_sdk & CI test workspace plugins
+        Object.defineProperty(window, 'sidecar', {
+          configurable: true,
+          get() { return this.__sidecarProxy; },
+          set(val) {
+            this.__sidecarProxy = {
+              ...(val || {}),
+              getWorkspaceUris: async () => [${JSON.stringify(wsUri)}],
+            };
+          },
+        });
       `,
     });
 
@@ -344,17 +373,28 @@ test('NMCP-TC-019 & NMCP-TC-020 / NMCP-TC-020B (Real Headless Chromium/Edge CDP 
     await new Promise((r) => setTimeout(r, 80));
     assert.equal(await evalJs('window.__snapshotFetchCount'), countBeforeMsg, 'Spoofed top-level / file:// postMessage must be ignored');
 
-    // 3. Smart Paste Korean IME (keyCode 229) Ctrl+Enter MUST NOT trigger preview (R4 F2)
-    const pasteImeCheck = await evalJs(`(() => {
+    // 3. Smart Paste Korean IME (keyCode 229) Ctrl+Enter MUST NOT call /api/preview-paste; non-IME Ctrl+Enter MUST render paste-preview-entry (R5 F3)
+    await evalJs(`(() => {
       const ta = document.querySelector('[data-testid="smart-paste-input"]');
       ta.value = 'https://ime-test.example/mcp';
       ta.dispatchEvent(new Event('input', { bubbles: true }));
       const imeEvt = new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true });
       Object.defineProperty(imeEvt, 'keyCode', { value: 229 });
       ta.dispatchEvent(imeEvt);
-      return Boolean(document.querySelector('[data-testid="smart-paste-preview"]'));
     })()`);
-    assert.equal(pasteImeCheck, false, 'Korean IME keyCode 229 Ctrl+Enter must not submit Smart Paste');
+    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(await evalJs('window.__previewPasteFetchCount'), 0, 'Korean IME keyCode 229 Ctrl+Enter must not call /api/preview-paste');
+    assert.equal(await evalJs(`Boolean(document.querySelector('[data-testid="paste-preview-entry"]'))`), false);
+
+    // Positive non-IME Ctrl+Enter check: MUST call /api/preview-paste and render paste-preview-entry
+    await evalJs(`(() => {
+      const ta = document.querySelector('[data-testid="smart-paste-input"]');
+      const realEvt = new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true });
+      Object.defineProperty(realEvt, 'keyCode', { value: 13 });
+      ta.dispatchEvent(realEvt);
+    })()`);
+    assert.equal(await waitForSelector('[data-testid="paste-preview-entry"]'), true, 'Non-IME Ctrl+Enter must render paste-preview-entry');
+    assert.equal(await evalJs('window.__previewPasteFetchCount'), 1);
 
     // 4. Real click on Clone to Global preserves full plugin secret on disk (never '••••••••')
     await evalJs(`document.querySelector(${JSON.stringify(cloneSelector)}).click()`);
@@ -366,6 +406,21 @@ test('NMCP-TC-019 & NMCP-TC-020 / NMCP-TC-020B (Real Headless Chromium/Edge CDP 
     const afterClone = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     assert.equal(afterClone.mcpServers['psrv-copy'].headers.Authorization, 'Bearer real-plugin-secret-xyz');
     assert.deepEqual(afterClone.mcpServers['psrv-copy'].disabledTools, ['x']);
+
+    // 4b. Same-basename global vs workspace Stdio clone 428 confirmation MUST preserve workspace pluginId (R5 F1!)
+    const wsStdioCloneSelector = '[data-testid="btn-clone-workspace-0-demo-cmdSrv"]';
+    assert.equal(await waitForSelector(wsStdioCloneSelector), true, 'Workspace plugin with same basename demo must render distinct clone button');
+    await evalJs(`document.querySelector(${JSON.stringify(wsStdioCloneSelector)}).click()`);
+    assert.equal(await waitForSelector('[data-testid="stdio-confirm-panel"]'), true, 'Workspace Stdio clone must pause for 428 confirmation');
+    await evalJs(`document.querySelector('[data-testid="btn-confirm-stdio"]').click()`);
+    assert.equal(
+      await waitUntil(() => Boolean(JSON.parse(fs.readFileSync(configPath, 'utf8')).mcpServers?.['cmdSrv-copy'])),
+      true,
+      'Confirming workspace Stdio clone must write cmdSrv-copy to disk'
+    );
+    const afterWsStdioClone = JSON.parse(fs.readFileSync(configPath, 'utf8')).mcpServers['cmdSrv-copy'];
+    assert.deepEqual(afterWsStdioClone.args, ['workspace-cmd.js'], 'Confirm & Save MUST clone workspace Stdio, NOT global Stdio');
+    assert.equal(afterWsStdioClone.env.SECRET, 'workspace-cmd-secret');
 
     // 5. Editor secret input uses type="password", scrubs on Cancel, and Korean IME Escape bubbling is guarded (R4 F2)
     await evalJs(`document.querySelector('#btn-add').click()`);
