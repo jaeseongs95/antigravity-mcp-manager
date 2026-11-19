@@ -16,12 +16,26 @@
   'use strict';
 
   const NAV_ATTR = 'data-agy-mcp-manager-nav';
+  const NAV_STYLE_ID = 'agy-mcp-manager-nav-style';
   const FRAME_ATTR = 'data-agy-mcp-manager-frame';
   const PREV_DISPLAY_ATTR = 'agyMcpPrevDisplay';
   const SUPPRESSED_CLASS_ATTR = 'agyMcpSuppressedClass';
   const SUPPRESSED_BG_ATTR = 'agyMcpSuppressedBg';
   const SUPPRESSED_COLOR_ATTR = 'agyMcpSuppressedColor';
   const REQUIRED_SIBLING_LABELS = ['general', 'application', 'appearance', 'shortcuts', 'notifications', 'models', 'browser'];
+
+  function ensureNavStyle() {
+    if (document.getElementById(NAV_STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = NAV_STYLE_ID;
+    style.textContent =
+      `[${NAV_ATTR}="true"], [${NAV_ATTR}="true"] *, ` +
+      `[${NAV_ATTR}="true"]:focus, [${NAV_ATTR}="true"]:focus-visible, [${NAV_ATTR}="true"]:active { ` +
+      `outline: none !important; box-shadow: none !important; ` +
+      `--tw-ring-shadow: 0 0 #0000 !important; --tw-ring-offset-shadow: 0 0 #0000 !important; ` +
+      `border-color: transparent !important; }\n`;
+    (document.head || document.documentElement).appendChild(style);
+  }
 
   function isSafeLoopbackIframeUrl(rawUrl) {
     if (typeof rawUrl !== 'string' || !rawUrl.trim()) return false;
@@ -179,10 +193,22 @@
     }
   }
 
-  function suppressNativeActiveItems(outerSidebar, navItem, inactiveClassName, inactiveColor) {
+  function suppressNativeActiveItems(outerSidebar, listParent, navItem, inactiveClassName, inactiveColor) {
     let detectedActiveClass = '';
     let detectedActiveBg = 'rgba(255, 255, 255, 0.08)';
     let detectedActiveColor = '#ffffff';
+    const dimNode = (el) => {
+      if (!Object.prototype.hasOwnProperty.call(el.dataset, SUPPRESSED_BG_ATTR)) {
+        el.dataset[SUPPRESSED_CLASS_ATTR] = el.className || '';
+        el.dataset[SUPPRESSED_BG_ATTR] = el.style.backgroundColor || '';
+        el.dataset[SUPPRESSED_COLOR_ATTR] = el.style.color || '';
+      }
+      el.style.setProperty('background-color', 'transparent', 'important');
+      if (inactiveColor) {
+        el.style.setProperty('color', inactiveColor, 'important');
+      }
+    };
+
     const items = outerSidebar ? outerSidebar.querySelectorAll('button, a, [role="tab"], [role="menuitem"], [role="button"], li, div') : [];
     for (const item of items) {
       if (item === navItem || item.hasAttribute(NAV_ATTR) || item.contains(navItem) || navItem.contains(item)) continue;
@@ -196,17 +222,20 @@
         if (item.className && item.className !== inactiveClassName) {
           detectedActiveClass = item.className;
         }
-        if (!Object.prototype.hasOwnProperty.call(item.dataset, SUPPRESSED_BG_ATTR)) {
-          item.dataset[SUPPRESSED_CLASS_ATTR] = item.className || '';
-          item.dataset[SUPPRESSED_BG_ATTR] = item.style.backgroundColor || '';
-          item.dataset[SUPPRESSED_COLOR_ATTR] = item.style.color || '';
-        }
+        dimNode(item);
         if (inactiveClassName && item.className !== inactiveClassName) {
           item.className = inactiveClassName;
         }
-        item.style.setProperty('background-color', 'transparent', 'important');
-        if (inactiveColor) {
-          item.style.setProperty('color', inactiveColor, 'important');
+      }
+    }
+
+    // Also dim all direct native sibling items in the Settings nav list (e.g. Browser text stayed bright white)
+    if (listParent) {
+      for (const sib of Array.from(listParent.children)) {
+        if (sib.nodeType !== 1 || sib === navItem || sib.hasAttribute(NAV_ATTR)) continue;
+        dimNode(sib);
+        for (const inner of Array.from(sib.querySelectorAll('button, span, div'))) {
+          dimNode(inner);
         }
       }
     }
@@ -244,6 +273,10 @@
       }
       navItem.style.removeProperty('background-color');
       navItem.style.removeProperty('color');
+      for (const inner of Array.from(navItem.querySelectorAll('button, span, div'))) {
+        inner.style.removeProperty('background-color');
+        inner.style.removeProperty('color');
+      }
     }
     if (!contentPane) return;
     const frame = contentPane.querySelector(`[${FRAME_ATTR}="true"]`);
@@ -257,13 +290,19 @@
     }
   }
 
-  function showMcpManagerPane(outerSidebar, contentPane, navItem) {
+  function showMcpManagerPane(outerSidebar, listParent, contentPane, navItem) {
     const baseUrl = window.__AGY_MCP_MANAGER_URL__;
     if (!isSafeLoopbackIframeUrl(baseUrl) || !contentPane) return;
 
     const inactiveClassName = navItem?.dataset?.agyMcpInactiveClass || '';
     const inactiveColor = navItem?.dataset?.agyMcpInactiveColor || '';
-    const { activeClass, activeBg, activeColor } = suppressNativeActiveItems(outerSidebar, navItem, inactiveClassName, inactiveColor);
+    const { activeClass, activeBg, activeColor } = suppressNativeActiveItems(
+      outerSidebar,
+      listParent,
+      navItem,
+      inactiveClassName,
+      inactiveColor
+    );
 
     if (navItem) {
       navItem.setAttribute('aria-selected', 'true');
@@ -271,10 +310,14 @@
       if (activeClass) {
         navItem.className = activeClass;
         navItem.style.removeProperty('background-color');
-        navItem.style.removeProperty('color');
       } else {
-        navItem.style.backgroundColor = activeBg;
-        if (activeColor) navItem.style.color = activeColor;
+        navItem.style.setProperty('background-color', activeBg, 'important');
+      }
+      const nextTextColor = activeColor || '#ffffff';
+      navItem.style.setProperty('color', nextTextColor, 'important');
+      for (const inner of Array.from(navItem.querySelectorAll('button, span, div'))) {
+        inner.style.setProperty('background-color', 'transparent', 'important');
+        inner.style.setProperty('color', nextTextColor, 'important');
       }
     }
 
@@ -332,6 +375,7 @@
     }
 
     // Clone an INACTIVE native sibling node so DOM structure, padding, margin, radius, and typography match pixel-for-pixel
+    ensureNavStyle();
     const navItem = inactiveTemplate.cloneNode(true);
     navItem.removeAttribute('id');
     navItem.setAttribute(NAV_ATTR, 'true');
@@ -343,12 +387,15 @@
     navItem.style.outline = 'none';
     navItem.style.boxShadow = 'none';
 
+    navItem.addEventListener('mousedown', (ev) => {
+      ev.preventDefault();
+    });
     navItem.addEventListener('click', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
       navItem.blur?.();
       const layout = findSettingsLayout(sidebar);
-      showMcpManagerPane(layout.outerSidebar, layout.contentPane, navItem);
+      showMcpManagerPane(layout.outerSidebar, listParent, layout.contentPane, navItem);
     });
 
     const clickHost = outerSidebar || sidebar;
