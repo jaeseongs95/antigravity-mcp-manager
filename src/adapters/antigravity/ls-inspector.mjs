@@ -7,8 +7,20 @@
  */
 
 import { redactErrorMessage } from '../../core/secret-redactor.mjs';
+import { isLoopbackHostname } from '../../core/validator.mjs';
 
 const LS_SERVICE_PREFIX = '/exa.language_server_pb.LanguageServerService';
+
+function isSafeLoopbackAddress(lsAddress) {
+  if (typeof lsAddress !== 'string' || !lsAddress.trim()) return false;
+  try {
+    const parsed = new URL(`http://${lsAddress.trim()}`);
+    if (parsed.username || parsed.password || parsed.pathname !== '/') return false;
+    return isLoopbackHostname(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
 
 export function createAntigravityLsInspector({
   lsAddress = process.env.ANTIGRAVITY_LS_ADDRESS || '',
@@ -17,13 +29,13 @@ export function createAntigravityLsInspector({
   timeoutMs = 2500,
 } = {}) {
   async function postLsReadRpc(method, bodyObj = {}) {
-    if (!lsAddress || !csrfToken || typeof fetchImpl !== 'function') {
+    if (!isSafeLoopbackAddress(lsAddress) || !csrfToken || typeof fetchImpl !== 'function') {
       return null;
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const url = `http://${lsAddress}${LS_SERVICE_PREFIX}/${method}`;
+      const url = `http://${lsAddress.trim()}${LS_SERVICE_PREFIX}/${method}`;
       const res = await fetchImpl(url, {
         method: 'POST',
         headers: {

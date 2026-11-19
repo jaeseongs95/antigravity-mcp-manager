@@ -11,12 +11,14 @@ import { createFsConfigStore } from '../../src/adapters/fs-config-store.mjs';
 import { ANTIGRAVITY_DIALECT } from '../../src/adapters/antigravity/dialect.mjs';
 import { resolveAntigravityPaths } from '../../src/adapters/antigravity/paths.mjs';
 import { createAntigravityLsInspector } from '../../src/adapters/antigravity/ls-inspector.mjs';
-import { registerSidecarRoutes } from '../../src/adapters/sidecar/http-app.mjs';
+import { attachSidecarSecurityMiddleware, registerSidecarRoutes } from '../../src/adapters/sidecar/http-app.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UI_DIR = path.join(__dirname, 'ui');
 
-const paths = resolveAntigravityPaths();
+const paths = resolveAntigravityPaths({
+  homeDir: process.env.AGY_MCP_HOME_OVERRIDE || null,
+});
 const configStore = createFsConfigStore({
   globalConfigPath: paths.globalConfigPath,
   pluginRoots: paths.pluginRoots,
@@ -38,4 +40,7 @@ registerSidecarRoutes({
   uiDir: UI_DIR,
 });
 
-app.run();
+const server = await app.run();
+attachSidecarSecurityMiddleware(server, {
+  token: process.env.ANTIGRAVITY_SIDECAR_UI_TOKEN || '',
+});

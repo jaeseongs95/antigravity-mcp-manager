@@ -3,10 +3,13 @@
  *
  * Security & UX Invariants:
  * 1. ZERO unsafe DOM sinks (`innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`).
- * 2. All API requests use `POST` via `x-sidecar-token` (from URL query / `preload.js`).
- * 3. Secret inputs (`env` / `headers` values) default to `type="password"` and scrub on close/cancel.
- * 4. Korean/CJK IME guard (`e.isComposing || e.keyCode === 229`) on Enter/Escape handlers.
- * 5. Explicit fail-closed Raw JSON recovery on `MALFORMED_JSON` and Reload/Retry banner on `409 CONFLICT`.
+ * 2. All API requests use `POST` via `x-sidecar-token`.
+ * 3. Secret inputs default to `type="password"` and scrub on close/cancel/beforeunload.
+ * 4. Clone-to-Global uses `/api/clone-plugin` and Legacy Import uses `/api/import-legacy`
+ *    directly (NEVER sends masked `'••••••••'` secrets into `/api/upsert`).
+ * 5. Raw JSON save requires explicit user confirmation when Stdio commands exist (no hardcoded bypass).
+ * 6. Korean/CJK IME guard (`e.isComposing || e.keyCode === 229`) on Enter/Escape handlers.
+ * 7. Validates `event.source === window.parent` on postMessage workspace updates.
  */
 
 (function () {
@@ -19,7 +22,7 @@
   let bannerState = null;
   let legacyDismissed = false;
   let editorState = null;
-  let pendingStdioConfirm = null;
+  let pendingStdioConfirm = null; // { kind: 'upsert'|'clone'|'legacy'|'raw', payload, preview }
   let pastePreview = null;
   let rawDraft = '';
 
@@ -88,13 +91,16 @@
     return { status: res.status, data };
   }
 
-  function scrubEditorSecrets() {
+  function scrubSensitiveState({ keepRawIfMalformed = false } = {}) {
     if (editorState) {
       editorState.envRows = [];
       editorState.headerRows = [];
       editorState = null;
     }
     pendingStdioConfirm = null;
+    if (!keepRawIfMalformed || !snapshot?.globalConfig?.malformed) {
+      rawDraft = '';
+    }
   }
 
   function setBanner(kind, message, actions = []) {
@@ -105,6 +111,12 @@
   function clearBanner() {
     bannerState = null;
     renderBanners();
+  }
+
+  function handleConflictBanner() {
+    setBanner('warn', 'mcp_config.json changed on disk (409 Conflict). Reload before retrying.', [
+      { label: 'Reload Latest', onClick: () => { clearBanner(); void loadSnapshot(true); } },
+    ]);
   }
 
   function openEditorForServer(serverEntry = null) {
@@ -193,31 +205,141 @@
   async function submitEditor(confirmStdio = false) {
     if (!editorState || !snapshot) return;
     const spec = buildSpecFromEditor();
-    const { status, data } = await apiPost('/api/upsert', {
+    const payload = {
       name: editorState.name.trim(),
       originalName: editorState.originalName,
       spec,
       expectedSha256: snapshot.globalConfig.sha256,
       confirmStdio,
-    });
-    if (data.code === 'CONFIRMATION_REQUIRED') {
-      pendingStdioConfirm = data.confirmationPreview || { name: editorState.name, command: spec.command, args: spec.args || [] };
+    };
+    const { status, data } = await apiPost('/api/upsert', payload);
+    if (status === 428 || data.code === 'CONFIRMATION_REQUIRED') {
+      pendingStdioConfirm = {
+        kind: 'upsert',
+        payload,
+        preview: data.confirmationPreview || { name: payload.name, command: spec.command, args: spec.args || [] },
+      };
       renderAll();
       return;
     }
     if (status === 409 || data.code === 'CONFLICT') {
-      setBanner('warn', 'mcp_config.json changed on disk (409 Conflict). Reload before retrying.', [
-        { label: 'Reload Latest', onClick: () => { clearBanner(); void loadSnapshot(true); } },
-      ]);
+      handleConflictBanner();
       return;
     }
     if (!data.ok) {
       setBanner('error', (data.errors || ['Save failed']).join(' '));
       return;
     }
-    scrubEditorSecrets();
+    scrubSensitiveState({ keepRawIfMalformed: true });
     clearBanner();
     await loadSnapshot(activeTab === 'raw');
+  }
+
+  async function submitClonePlugin(ps, confirmStdio = false) {
+    if (!snapshot) return;
+    const targetName = `${ps.name}-copy`;
+    const payload = {
+      pluginDir: ps.pluginDir,
+      serverName: ps.name,
+      targetName,
+      expectedSha256: snapshot.globalConfig.sha256,
+      confirmStdio,
+    };
+    const { status, data } = await apiPost('/api/clone-plugin', payload);
+    if (status === 428 || data.code === 'CONFIRMATION_REQUIRED') {
+      pendingStdioConfirm = {
+        kind: 'clone',
+        payload,
+        preview: data.confirmationPreview || { name: targetName, command: ps.spec?.command || '', args: ps.spec?.args || [] },
+      };
+      renderAll();
+      return;
+    }
+    if (status === 409 || data.code === 'CONFLICT') {
+      handleConflictBanner();
+      return;
+    }
+    if (!data.ok) {
+      setBanner('error', (data.errors || ['Clone failed']).join(' '));
+      return;
+    }
+    pendingStdioConfirm = null;
+    clearBanner();
+    await loadSnapshot(false);
+  }
+
+  async function submitImportLegacy(ls, confirmStdio = false) {
+    if (!snapshot) return;
+    const payload = {
+      serverName: ls.name,
+      expectedSha256: snapshot.globalConfig.sha256,
+      confirmStdio,
+    };
+    const { status, data } = await apiPost('/api/import-legacy', payload);
+    if (status === 428 || data.code === 'CONFIRMATION_REQUIRED') {
+      pendingStdioConfirm = {
+        kind: 'legacy',
+        payload,
+        preview: data.confirmationPreview || { name: ls.name, command: ls.spec?.command || '', args: ls.spec?.args || [] },
+      };
+      renderAll();
+      return;
+    }
+    if (status === 409 || data.code === 'CONFLICT') {
+      handleConflictBanner();
+      return;
+    }
+    if (!data.ok) {
+      setBanner('error', (data.errors || ['Import failed']).join(' '));
+      return;
+    }
+    pendingStdioConfirm = null;
+    clearBanner();
+    await loadSnapshot(false);
+  }
+
+  async function submitRawJson(confirmStdio = false) {
+    if (!snapshot) return;
+    const payload = {
+      rawText: rawDraft,
+      expectedSha256: snapshot.globalConfig.sha256,
+      confirmStdio,
+    };
+    const { status, data } = await apiPost('/api/save-raw', payload);
+    if (status === 428 || data.code === 'CONFIRMATION_REQUIRED') {
+      pendingStdioConfirm = {
+        kind: 'raw',
+        payload,
+        preview: { name: 'mcp_config.json (Raw JSON)', command: 'Contains Stdio command server(s)', args: [] },
+      };
+      renderAll();
+      return;
+    }
+    if (status === 409 || data.code === 'CONFLICT') {
+      handleConflictBanner();
+      return;
+    }
+    if (!data.ok) {
+      setBanner('error', (data.errors || ['Raw JSON save failed']).join(' '));
+      return;
+    }
+    pendingStdioConfirm = null;
+    clearBanner();
+    await loadSnapshot(true);
+  }
+
+  async function confirmPendingStdio() {
+    if (!pendingStdioConfirm) return;
+    const pending = pendingStdioConfirm;
+    if (pending.kind === 'upsert') {
+      await submitEditor(true);
+    } else if (pending.kind === 'clone') {
+      await submitClonePlugin({ pluginDir: pending.payload.pluginDir, name: pending.payload.serverName }, true);
+    } else if (pending.kind === 'legacy') {
+      await submitImportLegacy({ name: pending.payload.serverName }, true);
+    } else if (pending.kind === 'raw') {
+      await submitRawJson(true);
+    }
   }
 
   async function handleToggleDisabled(server) {
@@ -227,9 +349,7 @@
       expectedSha256: snapshot.globalConfig.sha256,
     });
     if (status === 409 || data.code === 'CONFLICT') {
-      setBanner('warn', 'mcp_config.json changed on disk (409 Conflict). Reload before retrying.', [
-        { label: 'Reload Latest', onClick: () => { clearBanner(); void loadSnapshot(true); } },
-      ]);
+      handleConflictBanner();
       return;
     }
     if (!data.ok) {
@@ -246,9 +366,7 @@
       expectedSha256: snapshot.globalConfig.sha256,
     });
     if (status === 409 || data.code === 'CONFLICT') {
-      setBanner('warn', 'mcp_config.json changed on disk (409 Conflict). Reload before retrying.', [
-        { label: 'Reload Latest', onClick: () => { clearBanner(); void loadSnapshot(true); } },
-      ]);
+      handleConflictBanner();
       return;
     }
     if (!data.ok) {
@@ -257,6 +375,33 @@
     }
     clearBanner();
     await loadSnapshot(false);
+  }
+
+  function renderStdioConfirmPanel() {
+    if (!pendingStdioConfirm) return null;
+    const p = pendingStdioConfirm.preview || {};
+    return el(
+      'div',
+      { className: 'banner banner-warn', dataset: { testid: 'stdio-confirm-panel' } },
+      el('strong', null, `Confirm Local Stdio Command: ${p.name || ''}`),
+      el('div', { className: 'server-meta' }, `${p.command || ''} ${(p.args || []).join(' ')}`.trim()),
+      el(
+        'div',
+        { className: 'banner-actions' },
+        el('button', {
+          type: 'button',
+          className: 'btn btn-primary btn-sm',
+          dataset: { testid: 'btn-confirm-stdio' },
+          onClick: () => void confirmPendingStdio(),
+        }, 'Confirm & Save'),
+        el('button', {
+          type: 'button',
+          className: 'btn btn-sm',
+          dataset: { testid: 'btn-cancel-stdio' },
+          onClick: () => { pendingStdioConfirm = null; renderAll(); },
+        }, 'Cancel')
+      )
+    );
   }
 
   function renderBanners() {
@@ -278,8 +423,11 @@
               className: 'btn btn-secondary btn-sm',
               dataset: { testid: 'btn-restore-backup' },
               onClick: async () => {
-                const { data } = await apiPost('/api/restore-backup', {});
-                if (!data.ok) setBanner('error', (data.errors || ['Restore failed']).join(' '));
+                const { status, data } = await apiPost('/api/restore-backup', {
+                  expectedSha256: snapshot.globalConfig.sha256,
+                });
+                if (status === 409 || data.code === 'CONFLICT') handleConflictBanner();
+                else if (!data.ok) setBanner('error', (data.errors || ['Restore failed']).join(' '));
                 else { clearBanner(); await loadSnapshot(true); }
               },
             }, 'Restore Last Good Backup')
@@ -446,7 +594,7 @@
         onKeydown: (e) => {
           if (isImeComposing(e)) return;
           if (e.key === 'Escape') {
-            scrubEditorSecrets();
+            scrubSensitiveState({ keepRawIfMalformed: true });
             renderAll();
           }
         },
@@ -492,31 +640,22 @@
             ),
             renderKvEditor('HTTP Header', editorState.headerRows, () => {}),
           ],
-      pendingStdioConfirm
-        ? el(
-            'div',
-            { className: 'banner banner-warn', dataset: { testid: 'stdio-confirm-panel' } },
-            el('strong', null, 'Confirm Local Command Execution Spec'),
-            el('div', { className: 'server-meta' }, `${pendingStdioConfirm.command} ${(pendingStdioConfirm.args || []).join(' ')}`),
-            el(
-              'div',
-              { className: 'banner-actions' },
-              el('button', { type: 'button', className: 'btn btn-primary btn-sm', dataset: { testid: 'btn-confirm-stdio' }, onClick: () => submitEditor(true) }, 'Confirm & Save Stdio'),
-              el('button', { type: 'button', className: 'btn btn-sm', onClick: () => { pendingStdioConfirm = null; renderAll(); } }, 'Back')
-            )
-          )
-        : null,
+      pendingStdioConfirm?.kind === 'upsert' ? renderStdioConfirmPanel() : null,
       el(
         'div',
         { className: 'row-actions' },
-        el('button', { type: 'button', className: 'btn btn-primary', dataset: { testid: 'btn-save-server' }, onClick: () => submitEditor(false) }, 'Save'),
-        el('button', { type: 'button', className: 'btn', onClick: () => { scrubEditorSecrets(); renderAll(); } }, 'Cancel')
+        el('button', { type: 'button', className: 'btn btn-primary', dataset: { testid: 'btn-save-server' }, onClick: () => void submitEditor(false) }, 'Save'),
+        el('button', { type: 'button', className: 'btn', onClick: () => { scrubSensitiveState({ keepRawIfMalformed: true }); renderAll(); } }, 'Cancel')
       )
     );
   }
 
   function renderServersTab() {
     const nodes = [];
+    if (pendingStdioConfirm && (pendingStdioConfirm.kind === 'clone' || pendingStdioConfirm.kind === 'legacy')) {
+      nodes.push(renderStdioConfirmPanel());
+    }
+
     if (snapshot?.legacyImport?.exists && !legacyDismissed) {
       nodes.push(
         el(
@@ -531,24 +670,8 @@
               el('button', {
                 type: 'button',
                 className: 'btn btn-sm',
-                onClick: async () => {
-                  const { data } = await apiPost('/api/import-legacy', {
-                    serverName: ls.name,
-                    expectedSha256: snapshot.globalConfig.sha256,
-                    confirmStdio: false,
-                  });
-                  if (data.code === 'CONFIRMATION_REQUIRED') {
-                    openEditorForServer({ name: ls.name, spec: ls.spec, disabled: false });
-                    editorState.mode = 'create';
-                    editorState.originalName = null;
-                    pendingStdioConfirm = data.confirmationPreview;
-                    renderAll();
-                  } else if (!data.ok) {
-                    setBanner('error', (data.errors || ['Import failed']).join(' '));
-                  } else {
-                    await loadSnapshot(false);
-                  }
-                },
+                dataset: { testid: `btn-import-legacy-${ls.name}` },
+                onClick: () => void submitImportLegacy(ls, false),
               }, `Import "${ls.name}"`)
             ),
             el('button', { type: 'button', className: 'btn btn-sm', onClick: () => { legacyDismissed = true; renderAll(); } }, 'Dismiss')
@@ -582,9 +705,9 @@
           el('div', { className: 'server-meta' }, s.spec?.url || s.spec?.command || ''),
           s.runtime?.error ? el('div', { className: 'badge badge-err' }, s.runtime.error) : null,
           el('div', { className: 'row-actions' },
-            el('button', { type: 'button', className: 'btn btn-sm', onClick: () => handleToggleDisabled(s) }, s.disabled ? 'Enable' : 'Disable'),
+            el('button', { type: 'button', className: 'btn btn-sm', onClick: () => void handleToggleDisabled(s) }, s.disabled ? 'Enable' : 'Disable'),
             el('button', { type: 'button', className: 'btn btn-sm', onClick: () => openEditorForServer(s) }, 'Edit'),
-            el('button', { type: 'button', className: 'btn btn-danger btn-sm', onClick: () => handleDelete(s) }, 'Delete')
+            el('button', { type: 'button', className: 'btn btn-danger btn-sm', onClick: () => void handleDelete(s) }, 'Delete')
           )
         )
       );
@@ -608,7 +731,7 @@
             el('div', { className: 'server-header' },
               el('span', { className: 'server-name' }, ps.name),
               el('div', { className: 'row-actions' },
-                el('span', { className: 'badge badge-muted' }, `Plugin: ${ps.pluginName}`),
+                el('span', { className: 'badge badge-muted' }, `Plugin: ${ps.pluginName}${ps.pluginDisabled ? ' (Disabled)' : ''}`),
                 collision ? el('span', { className: 'badge badge-warn' }, `Collides with global "${collision.globalName}"`) : null
               )
             ),
@@ -617,12 +740,8 @@
               el('button', {
                 type: 'button',
                 className: 'btn btn-sm',
-                onClick: () => {
-                  openEditorForServer({ name: `${ps.name}-copy`, spec: ps.spec, disabled: false });
-                  editorState.mode = 'create';
-                  editorState.originalName = null;
-                  renderAll();
-                },
+                dataset: { testid: `btn-clone-${ps.pluginDir}-${ps.name}` },
+                onClick: () => void submitClonePlugin(ps, false),
               }, 'Clone to Global')
             )
           )
@@ -647,6 +766,7 @@
         { className: 'card' },
         el('strong', null, snapshot?.globalConfig?.displayPath || '~/.gemini/config/mcp_config.json'),
         ta,
+        pendingStdioConfirm?.kind === 'raw' ? renderStdioConfirmPanel() : null,
         el(
           'div',
           { className: 'row-actions' },
@@ -654,23 +774,7 @@
             type: 'button',
             className: 'btn btn-primary',
             dataset: { testid: 'btn-save-raw' },
-            onClick: async () => {
-              const { status, data } = await apiPost('/api/save-raw', {
-                rawText: rawDraft,
-                expectedSha256: snapshot?.globalConfig?.sha256,
-                confirmStdio: true,
-              });
-              if (status === 409 || data.code === 'CONFLICT') {
-                setBanner('warn', 'mcp_config.json changed on disk (409 Conflict). Reload before retrying.', [
-                  { label: 'Reload Latest', onClick: () => { clearBanner(); void loadSnapshot(true); } },
-                ]);
-              } else if (!data.ok) {
-                setBanner('error', (data.errors || ['Raw JSON save failed']).join(' '));
-              } else {
-                clearBanner();
-                await loadSnapshot(true);
-              }
-            },
+            onClick: () => void submitRawJson(false),
           }, 'Validate & Save Raw JSON')
         )
       ),
@@ -692,6 +796,7 @@
 
   tabServers.addEventListener('click', () => {
     activeTab = 'servers';
+    scrubSensitiveState({ keepRawIfMalformed: true });
     renderAll();
   });
   tabRaw.addEventListener('click', () => {
@@ -702,13 +807,26 @@
   btnAdd.addEventListener('click', () => openEditorForServer(null));
 
   window.addEventListener('message', (event) => {
+    if (window.parent && window.parent !== window && event.source !== window.parent) return;
     if (event.data?.type === 'workspace-change' && Array.isArray(event.data.payload?.workspaceUris)) {
       workspaceUris = [...event.data.payload.workspaceUris];
       void loadSnapshot(activeTab === 'raw');
     }
   });
 
-  window.addEventListener('beforeunload', () => scrubEditorSecrets());
+  window.addEventListener('beforeunload', () => scrubSensitiveState({ keepRawIfMalformed: false }));
 
-  void loadSnapshot(false);
+  async function init() {
+    if (window.sidecar && typeof window.sidecar.getWorkspaceUris === 'function') {
+      try {
+        const initialUris = await window.sidecar.getWorkspaceUris();
+        if (Array.isArray(initialUris)) workspaceUris = [...initialUris];
+      } catch {
+        // Ignore if preload does not provide workspace list yet
+      }
+    }
+    await loadSnapshot(false);
+  }
+
+  void init();
 })();

@@ -67,6 +67,12 @@ test('NMCP-TC-003: validator enforces Stdio & Streamable HTTP invariants, blocks
   });
   assert.equal(badHttp.ok, false);
 
+  // Cleartext http:// with sensitive query token on non-loopback blocked (NB4)
+  const badHttpQuery = validateServerSpec({
+    url: 'http://api.example.com/mcp?api_key=secret123',
+  });
+  assert.equal(badHttpQuery.ok, false);
+
   // Loopback http:// with Authorization allowed
   const loopbackHttp = validateServerSpec({
     url: 'http://127.0.0.1:8080/mcp',

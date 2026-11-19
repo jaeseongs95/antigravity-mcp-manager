@@ -17,7 +17,7 @@ export function resolveAntigravityPaths({ homeDir = null, workspaceUris = [] } =
   const globalConfigPath = path.join(configDir, 'mcp_config.json');
   const globalPluginsDir = path.join(configDir, 'plugins');
   const legacyConfigPath = path.join(home, '.gemini', 'antigravity', 'mcp_config.json');
-  const backupDir = path.join(globalPluginsDir, 'antigravity-mcp-manager', '.backups');
+  const backupDir = path.join(configDir, '.mcp-manager-backups');
 
   const pluginRoots = [globalPluginsDir];
   for (const uri of workspaceUris) {

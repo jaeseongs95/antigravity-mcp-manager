@@ -26,8 +26,11 @@ function createMemoryStore({ initialRaw = null, plugins = [], legacyRaw = null }
       };
     },
     async writeGlobalConfig({ rawText, expectedSha256 }) {
+      if (expectedSha256 === undefined) {
+        return { ok: false, code: ERROR_CODES.VALIDATION_ERROR, error: 'expectedSha256 required' };
+      }
       const currentSha = state.exists ? sha256Hex(state.rawText) : null;
-      if (expectedSha256 !== undefined && currentSha !== expectedSha256) {
+      if (currentSha !== expectedSha256) {
         return { ok: false, code: ERROR_CODES.CONFLICT, error: 'CAS mismatch', actualSha256: currentSha };
       }
       if (state.exists) state.backupText = state.rawText;
@@ -43,8 +46,15 @@ function createMemoryStore({ initialRaw = null, plugins = [], legacyRaw = null }
         ? { exists: true, rawText: state.legacyRaw, displayPath: '/virtual/legacy/mcp_config.json' }
         : { exists: false, rawText: '', displayPath: '' };
     },
-    async restoreLastBackup() {
+    async restoreLastBackup({ expectedSha256 } = {}) {
+      if (expectedSha256 === undefined) {
+        return { ok: false, code: ERROR_CODES.VALIDATION_ERROR, error: 'expectedSha256 required' };
+      }
       if (!state.backupText) return { ok: false, code: ERROR_CODES.NOT_FOUND, error: 'No backup' };
+      const currentSha = state.exists ? sha256Hex(state.rawText) : null;
+      if (currentSha !== expectedSha256) {
+        return { ok: false, code: ERROR_CODES.CONFLICT, error: 'CAS mismatch', actualSha256: currentSha };
+      }
       state.exists = true;
       state.rawText = state.backupText;
       return { ok: true, sha256: sha256Hex(state.rawText) };
@@ -52,13 +62,13 @@ function createMemoryStore({ initialRaw = null, plugins = [], legacyRaw = null }
   };
 }
 
-test('NMCP-TC-007: lossless unknown-key preservation & masked secret preservation across updates and toggles', async () => {
+test('NMCP-TC-007: lossless unknown-key preservation & masked secret + URL query REDACTED restoration across updates and toggles', async () => {
   const initial = JSON.stringify({
     $schema: 'https://example.com/mcp-schema.json',
     customTopLevel: { keepMe: true },
     mcpServers: {
       api: {
-        url: 'https://api.example.com/mcp',
+        url: 'https://api.example.com/mcp?api_key=real-query-secret&mode=read',
         headers: { Authorization: 'Bearer real-secret-token' },
         disabledTools: ['dangerous_tool'],
         futureHostOption: 42,
@@ -70,13 +80,14 @@ test('NMCP-TC-007: lossless unknown-key preservation & masked secret preservatio
   const svc = new McpManagerService({ configStore: store });
   const snap = await svc.getSnapshot();
   assert.equal(snap.globalConfig.servers[0].spec.headers.Authorization, REDACTED_MASK);
+  assert.equal(snap.globalConfig.servers[0].spec.url.includes('REDACTED'), true);
 
-  // Edit URL while sending back masked Authorization -> real secret + unknown keys MUST be preserved!
+  // Edit while passing back redacted URL query + masked Authorization -> BOTH secrets + unknown keys MUST be preserved!
   const res = await svc.upsertServer({
     name: 'api',
     originalName: 'api',
     spec: {
-      url: 'https://api-v2.example.com/mcp',
+      url: snap.globalConfig.servers[0].spec.url,
       headers: { Authorization: REDACTED_MASK },
     },
     expectedSha256: snap.globalConfig.sha256,
@@ -85,7 +96,7 @@ test('NMCP-TC-007: lossless unknown-key preservation & masked secret preservatio
 
   const saved = JSON.parse(store.state.rawText);
   assert.equal(saved.customTopLevel.keepMe, true);
-  assert.equal(saved.mcpServers.api.url, 'https://api-v2.example.com/mcp');
+  assert.equal(saved.mcpServers.api.url, 'https://api.example.com/mcp?api_key=real-query-secret&mode=read');
   assert.equal(saved.mcpServers.api.headers.Authorization, 'Bearer real-secret-token');
   assert.deepEqual(saved.mcpServers.api.disabledTools, ['dangerous_tool']);
   assert.equal(saved.mcpServers.api.futureHostOption, 42);
@@ -131,14 +142,38 @@ test('NMCP-TC-008: fail-closed malformed JSON blocks structured edits and allows
   assert.equal(JSON.parse(store.state.rawText).mcpServers.good.url, 'https://mcp.example.com/mcp');
 });
 
-test('NMCP-TC-009: stale baseSha256 CAS rejects with CONFLICT without mutating disk', async () => {
-  const store = createMemoryStore({ initialRaw: '{\n  "mcpServers": {}\n}\n' });
+test('NMCP-TC-009: mandatory expectedSha256 CAS rejects undefined and stale digests, and blocks exact same-name create overwrite (F3)', async () => {
+  const store = createMemoryStore({
+    initialRaw: '{\n  "mcpServers": { "existing": { "url": "https://existing.example.com/mcp" } }\n}\n',
+  });
   const svc = new McpManagerService({ configStore: store });
   const snap = await svc.getSnapshot();
 
-  // Simulate concurrent external edit
-  store.state.rawText = '{\n  "mcpServers": { "ext": { "url": "https://ext.example.com/mcp" } }\n}\n';
+  // Undefined expectedSha256 MUST be rejected (never bypass CAS)
+  const missingCas = await svc.upsertServer({
+    name: 'fresh',
+    spec: { url: 'https://fresh.example.com/mcp' },
+  });
+  assert.equal(missingCas.ok, false);
+  assert.equal(missingCas.code, ERROR_CODES.VALIDATION_ERROR);
 
+  const missingRestoreCas = await svc.restoreBackup({});
+  assert.equal(missingRestoreCas.ok, false);
+  assert.equal(missingRestoreCas.code, ERROR_CODES.VALIDATION_ERROR);
+
+  // Creating a new server with exact same name as existing server MUST fail with COLLISION (originalName === null)
+  const exactCollision = await svc.upsertServer({
+    name: 'existing',
+    originalName: null,
+    spec: { url: 'https://hijack.example.com/mcp' },
+    expectedSha256: snap.globalConfig.sha256,
+  });
+  assert.equal(exactCollision.ok, false);
+  assert.equal(exactCollision.code, ERROR_CODES.COLLISION);
+  assert.equal(JSON.parse(store.state.rawText).mcpServers.existing.url, 'https://existing.example.com/mcp');
+
+  // Stale CAS rejects with CONFLICT
+  store.state.rawText = '{\n  "mcpServers": { "ext": { "url": "https://ext.example.com/mcp" } }\n}\n';
   const conflict = await svc.upsertServer({
     name: 'mine',
     spec: { url: 'https://mine.example.com/mcp' },
@@ -146,28 +181,44 @@ test('NMCP-TC-009: stale baseSha256 CAS rejects with CONFLICT without mutating d
   });
   assert.equal(conflict.ok, false);
   assert.equal(conflict.code, ERROR_CODES.CONFLICT);
-  assert.equal(JSON.parse(store.state.rawText).mcpServers.mine, undefined);
 });
 
-test('NMCP-TC-010: ManagerService enforces Stdio confirmation gate, RO plugin clone, and non-mutating legacy import', async () => {
+test('NMCP-TC-010: ManagerService preserves real secrets on clone/import, enforces Stdio gate, and surfaces runtime.plugins status (F2/F5)', async () => {
   const pluginRaw = JSON.stringify({
-    mcpServers: { p1: { url: 'https://plugin.example.com/mcp' } },
+    mcpServers: {
+      p1: {
+        url: 'https://plugin.example.com/mcp',
+        headers: { Authorization: 'Bearer real-plugin-secret' },
+        disabledTools: ['t1'],
+      },
+    },
   });
   const legacyRaw = JSON.stringify({
-    mcpServers: { oldStdio: { command: 'node', args: ['old.js'] } },
+    mcpServers: {
+      oldStdio: { command: 'node', args: ['old.js'], env: { API_TOKEN: 'real-legacy-secret' } },
+    },
   });
   const store = createMemoryStore({
     initialRaw: '{\n  "mcpServers": {}\n}\n',
     plugins: [{ pluginName: 'Demo Plugin', pluginDir: 'demo', rawText: pluginRaw, displayPath: '/plugins/demo/mcp_config.json' }],
     legacyRaw,
   });
-  const svc = new McpManagerService({ configStore: store });
+  const runtimeInspector = {
+    async inspectRuntime() {
+      return {
+        available: true,
+        servers: {},
+        plugins: [{ name: 'Demo Plugin', dir: 'demo', disabled: true, isGlobal: true, mcpServerNames: ['p1'] }],
+      };
+    },
+  };
+  const svc = new McpManagerService({ configStore: store, runtimeInspector });
   const snap = await svc.getSnapshot();
   assert.equal(snap.pluginServers.length, 1);
-  assert.equal(snap.pluginServers[0].readOnly, true);
-  assert.equal(snap.legacyImport.exists, true);
+  assert.equal(snap.pluginServers[0].pluginDisabled, true);
+  assert.equal(snap.runtimePlugins.length, 1);
 
-  // Clone HTTP plugin server to global
+  // Clone preserves real unmasked secret + disabledTools
   const cloned = await svc.clonePluginServer({
     pluginDir: 'demo',
     serverName: 'p1',
@@ -175,8 +226,11 @@ test('NMCP-TC-010: ManagerService enforces Stdio confirmation gate, RO plugin cl
     expectedSha256: snap.globalConfig.sha256,
   });
   assert.equal(cloned.ok, true);
+  const afterClone = JSON.parse(store.state.rawText);
+  assert.equal(afterClone.mcpServers['p1-local'].headers.Authorization, 'Bearer real-plugin-secret');
+  assert.deepEqual(afterClone.mcpServers['p1-local'].disabledTools, ['t1']);
 
-  // Legacy Stdio import requires explicit confirmStdio
+  // Legacy Stdio import requires confirmation and preserves real env secret
   const needConfirm = await svc.importLegacyServer({
     serverName: 'oldStdio',
     expectedSha256: cloned.sha256,
@@ -191,6 +245,6 @@ test('NMCP-TC-010: ManagerService enforces Stdio confirmation gate, RO plugin cl
     confirmStdio: true,
   });
   assert.equal(imported.ok, true);
-  // Legacy source remains untouched
+  assert.equal(JSON.parse(store.state.rawText).mcpServers.oldStdio.env.API_TOKEN, 'real-legacy-secret');
   assert.equal(store.state.legacyRaw, legacyRaw);
 });

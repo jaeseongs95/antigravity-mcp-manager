@@ -172,9 +172,12 @@ export function validateServerSpec(spec) {
           const hasAuthHeader =
             isPlainObject(spec.headers) &&
             Object.keys(spec.headers).some((hk) => SENSITIVE_HEADER_RE.test(hk));
+          const hasSensitiveQueryParam = [...parsed.searchParams.keys()].some((qk) =>
+            /token|api_?key|secret|auth|pass|code|sig/i.test(qk)
+          );
           if (parsed.protocol === 'http:' && !isLoopbackHostname(parsed.hostname)) {
-            if (hasAuthHeader) {
-              errors.push('Cleartext http:// with authentication headers is forbidden on non-loopback hosts; use https://.');
+            if (hasAuthHeader || hasSensitiveQueryParam) {
+              errors.push('Cleartext http:// with authentication headers or credential query parameters is forbidden on non-loopback hosts; use https://.');
             } else {
               warnings.push('Using unencrypted http:// on a non-loopback host; prefer https://.');
             }

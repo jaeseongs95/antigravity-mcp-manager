@@ -1,6 +1,6 @@
 /**
- * Local Filesystem `ConfigStorePort` with Write Jail, Symlink Guard,
- * Advisory Lock, SHA-256 CAS, Private Backup, and Same-FS Atomic Replace.
+ * Local Filesystem `ConfigStorePort` with Write Jail, Ancestor Symlink/Junction Guard,
+ * TOCTOU-Safe Advisory Lock, Mandatory SHA-256 CAS, Private Backup, and Same-FS Atomic Replace.
  */
 
 import fs from 'node:fs';
@@ -11,12 +11,10 @@ import { sha256Hex } from '../core/sha256.mjs';
 
 const LOCK_STALE_MS = 15000;
 const RETRYABLE_RENAME_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
+const SLEEP_BUF = new Int32Array(new SharedArrayBuffer(4));
 
 function sleepSync(ms) {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    // Bounded short spin for Windows antivirus/watcher transient handle release
-  }
+  Atomics.wait(SLEEP_BUF, 0, 0, ms);
 }
 
 function assertCanonicalWriteTarget(globalConfigPath) {
@@ -38,35 +36,41 @@ function assertCanonicalWriteTarget(globalConfigPath) {
   return resolved;
 }
 
-function verifySymlinkSafety(targetPath) {
-  const parentDir = path.dirname(targetPath);
-  fs.mkdirSync(parentDir, { recursive: true });
-  const parentReal = fs.realpathSync(parentDir);
+/**
+ * Checks that NEITHER the target file NOR any parent directory component from its root
+ * (starting at the deepest existing ancestor) is a symbolic link or Windows junction.
+ */
+function verifyNoSymlinkInChain(targetPath, { createParent = false } = {}) {
+  const resolved = path.resolve(targetPath);
+  const parsed = path.parse(resolved);
+  const rel = resolved.slice(parsed.root.length);
+  const segments = rel.split(path.sep).filter(Boolean);
 
-  if (fs.existsSync(targetPath)) {
-    const lst = fs.lstatSync(targetPath);
-    if (lst.isSymbolicLink()) {
-      const targetReal = fs.realpathSync(targetPath);
-      const targetDirReal = path.dirname(targetReal);
-      if (targetDirReal !== parentReal) {
-        throw Object.assign(
-          new Error('Write jail violation: symlink escapes canonical config directory.'),
-          { code: ERROR_CODES.WRITE_JAIL_VIOLATION }
-        );
+  let current = parsed.root;
+  for (let i = 0; i < segments.length; i += 1) {
+    current = path.join(current, segments[i]);
+    const isLeaf = i === segments.length - 1;
+    if (!fs.existsSync(current)) {
+      if (!isLeaf && createParent) {
+        fs.mkdirSync(current, { recursive: true });
       }
+      continue;
+    }
+    const lst = fs.lstatSync(current);
+    if (lst.isSymbolicLink()) {
       throw Object.assign(
-        new Error('Write jail violation: refusing to overwrite symbolic link target directly.'),
+        new Error(`Write jail violation: symbolic link / junction detected at "${current}".`),
         { code: ERROR_CODES.WRITE_JAIL_VIOLATION }
       );
     }
-    if (!lst.isFile()) {
+    if (isLeaf && !lst.isFile()) {
       throw Object.assign(
         new Error('Write jail violation: target path is not a regular file.'),
         { code: ERROR_CODES.WRITE_JAIL_VIOLATION }
       );
     }
   }
-  return path.join(parentReal, path.basename(targetPath));
+  return resolved;
 }
 
 function acquireLock(lockPath) {
@@ -82,14 +86,25 @@ function acquireLock(lockPath) {
       return true;
     } catch (err) {
       if (err && err.code === 'EEXIST') {
+        let st;
         try {
-          const st = fs.statSync(lockPath);
-          if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
-            fs.unlinkSync(lockPath);
+          st = fs.statSync(lockPath);
+        } catch (statErr) {
+          if (statErr && statErr.code === 'ENOENT') continue;
+          throw statErr;
+        }
+        if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+          // Atomic TOCTOU-safe stale lock reclaim: only one racer wins renameSync
+          const tomb = `${lockPath}.stale.${process.pid}.${crypto.randomBytes(4).toString('hex')}`;
+          try {
+            fs.renameSync(lockPath, tomb);
+            try { fs.unlinkSync(tomb); } catch {}
             continue;
+          } catch (renErr) {
+            if (renErr && renErr.code === 'ENOENT') continue;
+            if (renErr && (renErr.code === 'EACCES' || renErr.code === 'EPERM')) throw renErr;
+            return false;
           }
-        } catch {
-          continue;
         }
         return false;
       }
@@ -157,6 +172,11 @@ function writePrivateBackup(backupDir, rawText) {
   return backupPath;
 }
 
+function isPathInsideDir(childReal, parentReal) {
+  const rel = path.relative(parentReal, childReal);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
 export function createFsConfigStore({
   globalConfigPath,
   pluginRoots = [],
@@ -167,6 +187,7 @@ export function createFsConfigStore({
   const lockPath = `${canonicalTarget}.lock`;
 
   async function readGlobalConfig() {
+    verifyNoSymlinkInChain(canonicalTarget, { createParent: false });
     if (!fs.existsSync(canonicalTarget)) {
       return {
         exists: false,
@@ -174,13 +195,6 @@ export function createFsConfigStore({
         sha256: null,
         displayPath: canonicalTarget,
       };
-    }
-    const lst = fs.lstatSync(canonicalTarget);
-    if (lst.isSymbolicLink() || !lst.isFile()) {
-      throw Object.assign(
-        new Error('Refusing to read non-regular or symlinked mcp_config.json.'),
-        { code: ERROR_CODES.WRITE_JAIL_VIOLATION }
-      );
     }
     const rawText = fs.readFileSync(canonicalTarget, 'utf8');
     return {
@@ -192,9 +206,17 @@ export function createFsConfigStore({
   }
 
   async function writeGlobalConfig({ rawText, expectedSha256 }) {
+    if (expectedSha256 === undefined) {
+      return {
+        ok: false,
+        code: ERROR_CODES.VALIDATION_ERROR,
+        error: 'expectedSha256 is required (pass null only when creating a new file).',
+      };
+    }
+
     let safeTarget;
     try {
-      safeTarget = verifySymlinkSafety(canonicalTarget);
+      safeTarget = verifyNoSymlinkInChain(canonicalTarget, { createParent: true });
     } catch (err) {
       return {
         ok: false,
@@ -203,7 +225,17 @@ export function createFsConfigStore({
       };
     }
 
-    if (!acquireLock(lockPath)) {
+    let locked = false;
+    try {
+      locked = acquireLock(lockPath);
+    } catch (err) {
+      return {
+        ok: false,
+        code: ERROR_CODES.IO_ERROR,
+        error: err?.message || String(err),
+      };
+    }
+    if (!locked) {
       return {
         ok: false,
         code: ERROR_CODES.LOCK_BUSY,
@@ -216,7 +248,7 @@ export function createFsConfigStore({
       const currentText = exists ? fs.readFileSync(safeTarget, 'utf8') : '';
       const currentSha = exists ? sha256Hex(currentText) : null;
 
-      if (expectedSha256 !== undefined && currentSha !== expectedSha256) {
+      if (currentSha !== expectedSha256) {
         return {
           ok: false,
           code: ERROR_CODES.CONFLICT,
@@ -256,43 +288,51 @@ export function createFsConfigStore({
 
     for (const root of pluginRoots) {
       if (!root || !fs.existsSync(root)) continue;
+      let rootReal;
       let entries;
       try {
-        entries = fs.readdirSync(root, { withFileTypes: true });
+        rootReal = fs.realpathSync(root);
+        entries = fs.readdirSync(rootReal, { withFileTypes: true });
       } catch {
         continue;
       }
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
         const pluginDir = entry.name;
-        const pluginPath = path.join(root, pluginDir);
+        const pluginPath = path.join(rootReal, pluginDir);
         const mcpPath = path.join(pluginPath, 'mcp_config.json');
         if (!fs.existsSync(mcpPath)) continue;
         try {
+          const pluginReal = fs.realpathSync(pluginPath);
+          if (!isPathInsideDir(pluginReal, rootReal)) continue;
           const realMcp = fs.realpathSync(mcpPath);
+          if (!isPathInsideDir(realMcp, pluginReal)) continue;
           if (seenPaths.has(realMcp)) continue;
           seenPaths.add(realMcp);
 
           let pluginName = pluginDir;
-          const manifestPath = path.join(pluginPath, 'plugin.json');
+          const manifestPath = path.join(pluginReal, 'plugin.json');
           if (fs.existsSync(manifestPath)) {
             try {
-              const m = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-              if (typeof m?.displayName === 'string' && m.displayName.trim()) pluginName = m.displayName.trim();
-              else if (typeof m?.name === 'string' && m.name.trim()) pluginName = m.name.trim();
+              const realManifest = fs.realpathSync(manifestPath);
+              if (isPathInsideDir(realManifest, pluginReal)) {
+                const m = JSON.parse(fs.readFileSync(realManifest, 'utf8'));
+                if (typeof m?.displayName === 'string' && m.displayName.trim()) pluginName = m.displayName.trim();
+                else if (typeof m?.name === 'string' && m.name.trim()) pluginName = m.name.trim();
+              }
             } catch {
               // Fall back to directory name
             }
           }
-          const rawText = fs.readFileSync(mcpPath, 'utf8');
+          const rawText = fs.readFileSync(realMcp, 'utf8');
           results.push({
             pluginName,
             pluginDir,
             rawText,
-            displayPath: mcpPath,
+            displayPath: realMcp,
           });
         } catch {
-          // Skip unreadable plugin config
+          // Skip unreadable or escaped plugin config
         }
       }
     }
@@ -304,10 +344,7 @@ export function createFsConfigStore({
       return { exists: false, rawText: '', displayPath: legacyConfigPath || '' };
     }
     try {
-      const lst = fs.lstatSync(legacyConfigPath);
-      if (lst.isSymbolicLink() || !lst.isFile()) {
-        return { exists: false, rawText: '', displayPath: legacyConfigPath };
-      }
+      verifyNoSymlinkInChain(legacyConfigPath, { createParent: false });
       return {
         exists: true,
         rawText: fs.readFileSync(legacyConfigPath, 'utf8'),
@@ -318,7 +355,10 @@ export function createFsConfigStore({
     }
   }
 
-  async function restoreLastBackup() {
+  async function restoreLastBackup({ expectedSha256 } = {}) {
+    if (expectedSha256 === undefined) {
+      return { ok: false, code: ERROR_CODES.VALIDATION_ERROR, error: 'expectedSha256 is required for CAS-protected backup restore.' };
+    }
     if (!backupDir) {
       return { ok: false, code: ERROR_CODES.NOT_FOUND, error: 'Backup directory is not configured.' };
     }
@@ -326,19 +366,47 @@ export function createFsConfigStore({
     if (!fs.existsSync(backupPath)) {
       return { ok: false, code: ERROR_CODES.NOT_FOUND, error: 'No previous backup file found.' };
     }
-    const backupText = fs.readFileSync(backupPath, 'utf8');
+
+    let backupText;
     try {
+      backupText = fs.readFileSync(backupPath, 'utf8');
       JSON.parse(backupText);
-    } catch {
-      return { ok: false, code: ERROR_CODES.MALFORMED_JSON, error: 'Backup file is not valid JSON.' };
+    } catch (err) {
+      return { ok: false, code: ERROR_CODES.MALFORMED_JSON, error: err?.message || 'Backup file is not valid JSON.' };
     }
-    const safeTarget = verifySymlinkSafety(canonicalTarget);
-    if (!acquireLock(lockPath)) {
+
+    let safeTarget;
+    try {
+      safeTarget = verifyNoSymlinkInChain(canonicalTarget, { createParent: true });
+    } catch (err) {
+      return { ok: false, code: err?.code || ERROR_CODES.WRITE_JAIL_VIOLATION, error: err?.message || String(err) };
+    }
+
+    let locked = false;
+    try {
+      locked = acquireLock(lockPath);
+    } catch (err) {
+      return { ok: false, code: ERROR_CODES.IO_ERROR, error: err?.message || String(err) };
+    }
+    if (!locked) {
       return { ok: false, code: ERROR_CODES.LOCK_BUSY, error: 'Lock busy while restoring backup.' };
     }
     try {
+      const exists = fs.existsSync(safeTarget);
+      const currentText = exists ? fs.readFileSync(safeTarget, 'utf8') : '';
+      const currentSha = exists ? sha256Hex(currentText) : null;
+      if (currentSha !== expectedSha256) {
+        return {
+          ok: false,
+          code: ERROR_CODES.CONFLICT,
+          error: 'mcp_config.json changed on disk before backup restore could commit.',
+          actualSha256: currentSha,
+        };
+      }
       atomicWriteSameFs(safeTarget, backupText);
       return { ok: true, sha256: sha256Hex(backupText) };
+    } catch (err) {
+      return { ok: false, code: err?.code || ERROR_CODES.IO_ERROR, error: err?.message || String(err) };
     } finally {
       releaseLock(lockPath);
     }

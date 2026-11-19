@@ -1,3 +1,5 @@
+.backups/
+.mcp-manager-backups/
+*.lock
+*.tmp.*
 node_modules/
-.DS_Store
-*.log

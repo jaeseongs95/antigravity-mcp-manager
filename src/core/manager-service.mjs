@@ -18,11 +18,37 @@ import { parseDeclarativeInput } from './input-parser.mjs';
 import { ERROR_CODES, isPlainObject } from './model.mjs';
 import { DEFAULT_GENERIC_DIALECT, assertConfigStorePort } from './ports.mjs';
 import { REDACTED_MASK, redactErrorMessage, redactServerSpec } from './secret-redactor.mjs';
+import { sha256Hex } from './sha256.mjs';
 import { validateServerName, validateServerSpec } from './validator.mjs';
+
+function restoreMaskedUrlQuery(existingUrl, incomingUrl) {
+  if (typeof existingUrl !== 'string' || typeof incomingUrl !== 'string') return incomingUrl;
+  try {
+    const prev = new URL(existingUrl.trim());
+    const next = new URL(incomingUrl.trim());
+    if (prev.origin === next.origin && prev.pathname === next.pathname) {
+      let changed = false;
+      for (const [k, v] of next.searchParams.entries()) {
+        if (v === 'REDACTED' && prev.searchParams.has(k)) {
+          next.searchParams.set(k, prev.searchParams.get(k));
+          changed = true;
+        }
+      }
+      if (changed) return next.href;
+    }
+  } catch {
+    // Keep incomingUrl as-is if non-URL
+  }
+  return incomingUrl;
+}
 
 function restoreMaskedSecrets(existingSpec, incomingSpec) {
   if (!isPlainObject(existingSpec) || !isPlainObject(incomingSpec)) return incomingSpec;
   const out = { ...incomingSpec };
+  const prevUrl = typeof existingSpec.url === 'string' ? existingSpec.url : existingSpec.serverUrl;
+  if (typeof out.url === 'string' && prevUrl) {
+    out.url = restoreMaskedUrlQuery(prevUrl, out.url);
+  }
   for (const mapKey of ['env', 'headers']) {
     if (isPlainObject(out[mapKey]) && isPlainObject(existingSpec[mapKey])) {
       const mergedMap = { ...out[mapKey] };
@@ -61,10 +87,16 @@ export class McpManagerService {
       ? await this.configStore.readPluginConfigs().catch(() => [])
       : [];
 
+    const runtimePluginsByDir = new Map();
+    for (const rp of Array.isArray(runtime.plugins) ? runtime.plugins : []) {
+      if (rp?.dir) runtimePluginsByDir.set(rp.dir, rp);
+    }
+
     const pluginServers = [];
     for (const pFile of pluginReads) {
       const pParsed = parseConfigDocument(pFile.rawText, true, this.dialect.serversRootKey);
       if (!pParsed.ok) continue;
+      const livePlugin = runtimePluginsByDir.get(pFile.pluginDir) || null;
       for (const [sName, sSpec] of Object.entries(pParsed.servers)) {
         const val = validateServerSpec(sSpec);
         const rt = runtime.servers?.[sName] || null;
@@ -72,6 +104,7 @@ export class McpManagerService {
           name: sName,
           pluginName: pFile.pluginName,
           pluginDir: pFile.pluginDir,
+          pluginDisabled: livePlugin ? Boolean(livePlugin.disabled) : false,
           displayPath: pFile.displayPath,
           transport: val.transport,
           disabled: Boolean(sSpec?.disabled),
@@ -147,6 +180,7 @@ export class McpManagerService {
       },
       collisions,
       runtimeAvailable: Boolean(runtime.available),
+      runtimePlugins: Array.isArray(runtime.plugins) ? runtime.plugins : [],
       capabilities: {
         supportsNativeDisabled: Boolean(this.dialect.supportsNativeDisabled),
       },
@@ -158,6 +192,9 @@ export class McpManagerService {
   }
 
   async upsertServer({ name, originalName = null, spec, expectedSha256, confirmStdio = false }) {
+    if (expectedSha256 === undefined) {
+      return { ok: false, code: ERROR_CODES.VALIDATION_ERROR, errors: ['expectedSha256 is required for CAS-protected saves (pass null only when creating a new file).'] };
+    }
     const nameCheck = validateServerName(name);
     if (!nameCheck.ok) {
       return { ok: false, code: ERROR_CODES.VALIDATION_ERROR, errors: nameCheck.errors };
@@ -173,7 +210,7 @@ export class McpManagerService {
       };
     }
 
-    if (expectedSha256 !== undefined && parsed.sha256 !== expectedSha256) {
+    if (parsed.sha256 !== expectedSha256) {
       return {
         ok: false,
         code: ERROR_CODES.CONFLICT,
@@ -183,16 +220,17 @@ export class McpManagerService {
     }
 
     const existingNames = Object.keys(parsed.servers);
-    const conflict = findCaseInsensitiveConflict(existingNames, name, originalName || name);
+    // When originalName is null (create/clone/import), forbid overwriting ANY existing exact or case-insensitive server!
+    const conflict = findCaseInsensitiveConflict(existingNames, name, originalName);
     if (conflict) {
       return {
         ok: false,
         code: ERROR_CODES.COLLISION,
-        errors: [`Server name "${name}" conflicts with existing server "${conflict}" (case-insensitive).`],
+        errors: [`Server name "${name}" conflicts with existing server "${conflict}".`],
       };
     }
 
-    const existingSpec = parsed.servers[originalName || name] || null;
+    const existingSpec = originalName ? parsed.servers[originalName] || null : null;
     const unmaskedSpec = restoreMaskedSecrets(existingSpec, spec);
     const specCheck = validateServerSpec(unmaskedSpec);
     if (!specCheck.ok) {
@@ -232,6 +270,9 @@ export class McpManagerService {
   }
 
   async toggleServerDisabled({ name, disabled, expectedSha256 }) {
+    if (expectedSha256 === undefined) {
+      return { ok: false, code: ERROR_CODES.VALIDATION_ERROR, errors: ['expectedSha256 is required for CAS-protected toggle.'] };
+    }
     if (!this.dialect.supportsNativeDisabled) {
       return { ok: false, code: ERROR_CODES.VALIDATION_ERROR, errors: ['Native disabled toggle is not supported by this host dialect.'] };
     }
@@ -240,7 +281,7 @@ export class McpManagerService {
     if (!parsed.ok) {
       return { ok: false, code: ERROR_CODES.MALFORMED_JSON, errors: [parsed.parseError?.message || 'Malformed JSON'] };
     }
-    if (expectedSha256 !== undefined && parsed.sha256 !== expectedSha256) {
+    if (parsed.sha256 !== expectedSha256) {
       return { ok: false, code: ERROR_CODES.CONFLICT, errors: ['Config changed on disk. Reload first.'], actualSha256: parsed.sha256 };
     }
 
@@ -264,12 +305,15 @@ export class McpManagerService {
   }
 
   async deleteServer({ name, expectedSha256 }) {
+    if (expectedSha256 === undefined) {
+      return { ok: false, code: ERROR_CODES.VALIDATION_ERROR, errors: ['expectedSha256 is required for CAS-protected delete.'] };
+    }
     const readRes = await this.configStore.readGlobalConfig();
     const parsed = parseConfigDocument(readRes.rawText, readRes.exists, this.dialect.serversRootKey);
     if (!parsed.ok) {
       return { ok: false, code: ERROR_CODES.MALFORMED_JSON, errors: [parsed.parseError?.message || 'Malformed JSON'] };
     }
-    if (expectedSha256 !== undefined && parsed.sha256 !== expectedSha256) {
+    if (parsed.sha256 !== expectedSha256) {
       return { ok: false, code: ERROR_CODES.CONFLICT, errors: ['Config changed on disk. Reload first.'], actualSha256: parsed.sha256 };
     }
 
@@ -330,6 +374,9 @@ export class McpManagerService {
   }
 
   async saveRawJson({ rawText, expectedSha256, confirmStdio = false }) {
+    if (expectedSha256 === undefined) {
+      return { ok: false, code: ERROR_CODES.VALIDATION_ERROR, errors: ['expectedSha256 is required for CAS-protected raw save.'] };
+    }
     const parsedNext = parseConfigDocument(rawText, true, this.dialect.serversRootKey);
     if (!parsedNext.ok) {
       return {
@@ -355,6 +402,18 @@ export class McpManagerService {
     if (errors.length > 0) {
       return { ok: false, code: ERROR_CODES.VALIDATION_ERROR, errors };
     }
+
+    const currentRead = await this.configStore.readGlobalConfig();
+    const currentSha256 = currentRead.exists ? sha256Hex(currentRead.rawText) : null;
+    if (currentSha256 !== expectedSha256) {
+      return {
+        ok: false,
+        code: ERROR_CODES.CONFLICT,
+        errors: ['Config changed on disk since last load. Reload before retrying.'],
+        actualSha256: currentSha256,
+      };
+    }
+
     if (hasStdio && !confirmStdio) {
       return {
         ok: false,
@@ -379,13 +438,16 @@ export class McpManagerService {
     return { ok: true, sha256: writeRes.sha256 };
   }
 
-  async restoreBackup() {
+  async restoreBackup({ expectedSha256 } = {}) {
+    if (expectedSha256 === undefined) {
+      return { ok: false, code: ERROR_CODES.VALIDATION_ERROR, errors: ['expectedSha256 is required for CAS-protected backup restore.'] };
+    }
     if (typeof this.configStore.restoreLastBackup !== 'function') {
       return { ok: false, code: ERROR_CODES.IO_ERROR, errors: ['Backup restore is not supported by this config store.'] };
     }
-    const res = await this.configStore.restoreLastBackup();
+    const res = await this.configStore.restoreLastBackup({ expectedSha256 });
     if (!res.ok) {
-      return { ok: false, code: res.code || ERROR_CODES.IO_ERROR, errors: [res.error || 'No backup available to restore.'] };
+      return { ok: false, code: res.code || ERROR_CODES.IO_ERROR, errors: [res.error || 'No backup available to restore.'], actualSha256: res.actualSha256 ?? null };
     }
     return { ok: true, sha256: res.sha256 };
   }

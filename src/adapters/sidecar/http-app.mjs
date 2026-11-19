@@ -3,17 +3,24 @@
  *
  * Security Invariants:
  * 1. Zero `child_process` imports or command execution.
- * 2. All `/api/*` endpoints are registered as `POST` ONLY so `SidecarApp.#validateToken`
- *    enforces `ANTIGRAVITY_SIDECAR_UI_TOKEN` (`x-sidecar-token`) on every data & write route.
- * 3. Every HTML/CSS/JS/JSON response includes strict `Content-Security-Policy`,
- *    `X-Content-Type-Options: nosniff`, and `Cache-Control: no-store`.
- * 4. Error responses redact credentials and never echo `process.env` or `ANTIGRAVITY_CSRF_TOKEN`.
+ * 2. All `/api/*` endpoints are registered as `POST` ONLY.
+ * 3. `attachSidecarSecurityMiddleware(server, { token, maxBodyBytes })` enforces:
+ *    - Loopback-only `Host` header allowlist (blocks DNS rebinding -> `403`).
+ *    - `Origin` + `Sec-Fetch-Site` validation (blocks cross-site CSRF -> `403`).
+ *    - Constant-time `crypto.timingSafeEqual` `x-sidecar-token` check on non-GET requests (`401`).
+ *    - Bounded request body size (`1 MiB` default -> `413 Payload Too Large`).
+ * 4. Every HTML/CSS/JS/JSON response includes strict `Content-Security-Policy`,
+ *    `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`, and `Referrer-Policy: no-referrer`.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { ERROR_CODES } from '../../core/model.mjs';
 import { redactErrorMessage } from '../../core/secret-redactor.mjs';
+import { isLoopbackHostname } from '../../core/validator.mjs';
+
+export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024; // 1 MiB
 
 export const STRICT_SIDECAR_CSP =
   "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; font-src 'self' data:; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
@@ -25,7 +32,7 @@ export const SECURITY_HEADERS = Object.freeze({
   'Referrer-Policy': 'no-referrer',
 });
 
-function statusForErrorCode(code) {
+export function statusForErrorCode(code) {
   switch (code) {
     case ERROR_CODES.CONFLICT:
       return 409;
@@ -35,13 +42,109 @@ function statusForErrorCode(code) {
       return 423;
     case ERROR_CODES.WRITE_JAIL_VIOLATION:
       return 403;
+    case ERROR_CODES.CONFIRMATION_REQUIRED:
+      return 428;
+    case ERROR_CODES.IO_ERROR:
+      return 500;
     case ERROR_CODES.VALIDATION_ERROR:
     case ERROR_CODES.MALFORMED_JSON:
     case ERROR_CODES.COLLISION:
       return 400;
     default:
-      return 200;
+      return 500;
   }
+}
+
+function constantTimeTokenEquals(expected, provided) {
+  if (typeof expected !== 'string' || typeof provided !== 'string') return false;
+  const a = Buffer.from(expected, 'utf8');
+  const b = Buffer.from(provided, 'utf8');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+function isAllowedLoopbackHostHeader(hostHeader) {
+  if (typeof hostHeader !== 'string' || !hostHeader.trim()) return false;
+  try {
+    const parsed = new URL(`http://${hostHeader.trim()}`);
+    return isLoopbackHostname(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isAllowedOriginHeader(originHeader) {
+  if (!originHeader || originHeader === 'null') return true;
+  try {
+    const parsed = new URL(originHeader);
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && isLoopbackHostname(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Wraps the `http.Server` returned by `SidecarApp.run()` with Host/Origin/Sec-Fetch-Site,
+ * `timingSafeEqual` token verification, and `maxBodyBytes` guards.
+ */
+export function attachSidecarSecurityMiddleware(server, { token = '', maxBodyBytes = DEFAULT_MAX_BODY_BYTES } = {}) {
+  const existingListeners = server.listeners('request');
+  server.removeAllListeners('request');
+
+  server.on('request', (req, res) => {
+    const sendJsonErr = (status, error) => {
+      if (res.headersSent) return;
+      res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...SECURITY_HEADERS });
+      res.end(JSON.stringify({ ok: false, error }));
+    };
+
+    if (!isAllowedLoopbackHostHeader(req.headers.host)) {
+      sendJsonErr(403, 'Forbidden Host header');
+      return;
+    }
+
+    const fetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+    if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'same-site' && fetchSite !== 'none') {
+      sendJsonErr(403, 'Forbidden cross-site request');
+      return;
+    }
+
+    if (req.headers.origin && !isAllowedOriginHeader(String(req.headers.origin))) {
+      sendJsonErr(403, 'Forbidden Origin header');
+      return;
+    }
+
+    if (req.method !== 'GET' && token) {
+      const provided = typeof req.headers['x-sidecar-token'] === 'string' ? req.headers['x-sidecar-token'] : '';
+      if (!constantTimeTokenEquals(token, provided)) {
+        sendJsonErr(401, 'Unauthorized');
+        return;
+      }
+    }
+
+    const declaredLen = Number(req.headers['content-length']);
+    if (Number.isFinite(declaredLen) && declaredLen > maxBodyBytes) {
+      sendJsonErr(413, 'Payload Too Large');
+      return;
+    }
+
+    let receivedBytes = 0;
+    let oversized = false;
+    req.on('data', (chunk) => {
+      receivedBytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk));
+      if (!oversized && receivedBytes > maxBodyBytes) {
+        oversized = true;
+        sendJsonErr(413, 'Payload Too Large');
+        req.destroy();
+      }
+    });
+
+    for (const listener of existingListeners) {
+      listener.call(server, req, res);
+    }
+  });
+
+  return server;
 }
 
 export function registerSidecarRoutes({ app, ResponseClass, service, uiDir }) {
@@ -90,7 +193,6 @@ export function registerSidecarRoutes({ app, ResponseClass, service, uiDir }) {
     );
   };
 
-  // ALL data & mutation routes are POST-only to enforce SidecarApp x-sidecar-token auth
   wrapPost('/api/snapshot', (data) =>
     service.getSnapshot({
       workspaceUris: Array.isArray(data.workspaceUris) ? data.workspaceUris : [],
@@ -152,5 +254,9 @@ export function registerSidecarRoutes({ app, ResponseClass, service, uiDir }) {
     })
   );
 
-  wrapPost('/api/restore-backup', () => service.restoreBackup());
+  wrapPost('/api/restore-backup', (data) =>
+    service.restoreBackup({
+      expectedSha256: data.expectedSha256,
+    })
+  );
 }
