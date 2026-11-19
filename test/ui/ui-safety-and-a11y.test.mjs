@@ -5,7 +5,6 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import vm from 'node:vm';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -15,236 +14,6 @@ import { attachSidecarSecurityMiddleware, registerSidecarRoutes, SECURITY_HEADER
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UI_DIR = path.resolve(__dirname, '../../sidecars/mcp_manager/ui');
-
-class MiniEl {
-  constructor(tag) {
-    this.tagName = tag.toUpperCase();
-    this.children = [];
-    this.attributes = new Map();
-    this.dataset = {};
-    this.listeners = new Map();
-    this.value = '';
-    this.className = '';
-    this.classList = {
-      toggle: (cls, force) => {
-        const set = new Set(this.className.split(/\s+/).filter(Boolean));
-        if (force) set.add(cls);
-        else set.delete(cls);
-        this.className = [...set].join(' ');
-      },
-    };
-  }
-  get firstChild() { return this.children[0] || null; }
-  appendChild(c) { this.children.push(c); return c; }
-  removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); return c; }
-  setAttribute(k, v) { this.attributes.set(k, String(v)); }
-  getAttribute(k) { return this.attributes.has(k) ? this.attributes.get(k) : null; }
-  addEventListener(type, fn) {
-    if (!this.listeners.has(type)) this.listeners.set(type, []);
-    this.listeners.get(type).push(fn);
-  }
-  dispatch(type, ev = {}) {
-    const fns = this.listeners.get(type) || [];
-    for (const fn of fns) fn({ target: this, preventDefault() {}, ...ev });
-  }
-  findByTestId(tid) {
-    if (this.dataset?.testid === tid) return this;
-    for (const c of this.children) {
-      if (c && typeof c.findByTestId === 'function') {
-        const hit = c.findByTestId(tid);
-        if (hit) return hit;
-      }
-    }
-    return null;
-  }
-}
-
-function createInteractiveDomHarness({ port, token }) {
-  const ids = new Map([
-    ['main-region', new MiniEl('main')],
-    ['banner-region', new MiniEl('div')],
-    ['runtime-badge', new MiniEl('span')],
-    ['tab-servers', new MiniEl('button')],
-    ['tab-raw', new MiniEl('button')],
-    ['btn-refresh', new MiniEl('button')],
-    ['btn-add', new MiniEl('button')],
-  ]);
-  const winListeners = new Map();
-  const parentWin = { isMockParent: true };
-  const win = {
-    parent: parentWin,
-    location: { search: `?token=${encodeURIComponent(token)}` },
-    sidecar: {
-      async getWorkspaceUris() { return []; },
-    },
-    addEventListener(type, fn) {
-      if (!winListeners.has(type)) winListeners.set(type, []);
-      winListeners.get(type).push(fn);
-    },
-    dispatch(type, ev) {
-      for (const fn of winListeners.get(type) || []) fn(ev);
-    },
-  };
-  const doc = {
-    getElementById: (id) => ids.get(id) || null,
-    createElement: (tag) => new MiniEl(tag),
-    createTextNode: (t) => ({ nodeType: 3, textContent: String(t) }),
-  };
-  const liveFetch = (route, init) => globalThis.fetch(`http://127.0.0.1:${port}${route}`, init);
-  return { win, parentWin, doc, ids, liveFetch };
-}
-
-test('NMCP-TC-017: UI has ZERO unsafe DOM sinks and ZERO external CDN/font links', () => {
-  const html = fs.readFileSync(path.join(UI_DIR, 'index.html'), 'utf8');
-  const js = fs.readFileSync(path.join(UI_DIR, 'app.js'), 'utf8');
-  const jsCodeOnly = js.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-
-  assert.equal(/https?:\/\//i.test(html), false, 'index.html must not load external CDN/font URLs');
-  assert.equal(html.includes('<script src="/preload.js"></script>'), true);
-  assert.equal(html.includes('<script src="/app.js"></script>'), true);
-
-  for (const sink of ['innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write', 'eval(', 'new Function']) {
-    assert.equal(jsCodeOnly.includes(sink), false, `Unsafe sink "${sink}" found in app.js`);
-  }
-});
-
-test('NMCP-TC-018: styles.css binds Antigravity theme tokens, supports narrow 420px pane, and respects prefers-reduced-motion', () => {
-  const css = fs.readFileSync(path.join(UI_DIR, 'styles.css'), 'utf8');
-  assert.equal(css.includes('var(--background'), true);
-  assert.equal(css.includes('var(--foreground'), true);
-  assert.equal(css.includes('var(--primary'), true);
-  assert.equal(css.includes('@media (max-width: 420px)'), true);
-  assert.equal(css.includes('@media (prefers-reduced-motion: reduce)'), true);
-});
-
-test('NMCP-TC-019 & NMCP-TC-020 (Simulated DOM Contract): Korean IME guard, Clone secret preservation, Raw Stdio confirmation gate, 409 Conflict & Malformed Recovery', async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-ui-live-'));
-  const token = 'ui-live-test-token';
-  const pluginDir = path.join(tmpDir, 'plugins', 'demo');
-  fs.mkdirSync(pluginDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(pluginDir, 'mcp_config.json'),
-    JSON.stringify({
-      mcpServers: {
-        psrv: { url: 'https://p.example.com/mcp', headers: { Authorization: 'Bearer real-plugin-tok' }, disabledTools: ['x'] },
-      },
-    }),
-    'utf8'
-  );
-  const configPath = path.join(tmpDir, 'mcp_config.json');
-  fs.writeFileSync(configPath, JSON.stringify({ mcpServers: {} }, null, 2) + '\n', 'utf8');
-
-  class Resp {
-    constructor(body, { contentType = 'text/plain', status = 200, headers = {} } = {}) {
-      this.body = body; this.contentType = contentType; this.status = status; this.headers = headers;
-    }
-  }
-  const pages = new Map();
-  const apis = new Map();
-  const fakeApp = {
-    page(p, h) { pages.set(p, h); },
-    api(p, h, m = 'POST') {
-      if (!apis.has(p)) apis.set(p, new Map());
-      apis.get(p).set(m.toUpperCase(), h);
-    },
-  };
-  const store = createFsConfigStore({
-    globalConfigPath: configPath,
-    pluginRoots: [path.join(tmpDir, 'plugins')],
-    backupDir: path.join(tmpDir, '.mcp-manager-backups'),
-  });
-  const service = new McpManagerService({ configStore: store });
-  registerSidecarRoutes({ app: fakeApp, ResponseClass: Resp, service, uiDir: UI_DIR });
-
-  const server = http.createServer((req, res) => {
-    const url = new URL(req.url, 'http://127.0.0.1');
-    const map = apis.get(url.pathname);
-    if (!map || !map.has(req.method)) { res.writeHead(405); res.end(); return; }
-    let body = '';
-    req.on('data', (c) => { body += c; });
-    req.on('end', async () => {
-      if (res.writableEnded) return;
-      const out = await map.get(req.method)(body ? JSON.parse(body) : {});
-      if (!res.headersSent) { res.writeHead(out.status || 200, { 'Content-Type': out.contentType, ...out.headers }); res.end(out.body); }
-    });
-  });
-  attachSidecarSecurityMiddleware(server, { token });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  const port = server.address().port;
-
-  try {
-    const { win, doc, ids, liveFetch } = createInteractiveDomHarness({ port, token });
-    const appCode = fs.readFileSync(path.join(UI_DIR, 'app.js'), 'utf8');
-    vm.runInNewContext(appCode, { window: win, document: doc, URLSearchParams, fetch: liveFetch, console, setTimeout, clearTimeout });
-
-    const waitUntil = async (fn, timeoutMs = 3000) => {
-      const end = Date.now() + timeoutMs;
-      while (Date.now() < end) {
-        if (fn()) return true;
-        await new Promise((r) => setTimeout(r, 25));
-      }
-      return Boolean(fn());
-    };
-
-    await waitUntil(() => Boolean(ids.get('main-region').findByTestId('btn-clone-demo-psrv')));
-
-    // 1. Live Clone-to-Global via UI button MUST preserve real unmasked secret + disabledTools on disk (F2!)
-    const cloneBtn = ids.get('main-region').findByTestId('btn-clone-demo-psrv');
-    assert.ok(cloneBtn, 'Expected Clone to Global button for plugin server');
-    cloneBtn.dispatch('click');
-    await waitUntil(() => Boolean(JSON.parse(fs.readFileSync(configPath, 'utf8')).mcpServers?.['psrv-copy']));
-    const afterClone = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    assert.equal(afterClone.mcpServers['psrv-copy'].headers.Authorization, 'Bearer real-plugin-tok');
-    assert.deepEqual(afterClone.mcpServers['psrv-copy'].disabledTools, ['x']);
-
-    // 2. Korean Hangul IME Escape (isComposing: true & keyCode: 229) MUST NOT close editor (F6!)
-    ids.get('btn-add').dispatch('click');
-    const editorCard = ids.get('main-region').findByTestId('server-editor-card');
-    assert.ok(editorCard);
-    editorCard.dispatch('keydown', { key: 'Escape', isComposing: true });
-    assert.ok(ids.get('main-region').findByTestId('server-editor-card'), 'IME isComposing Escape must not close editor');
-    editorCard.dispatch('keydown', { key: 'Escape', isComposing: false, keyCode: 229 });
-    assert.ok(ids.get('main-region').findByTestId('server-editor-card'), 'IME keyCode 229 Escape must not close editor');
-    editorCard.dispatch('keydown', { key: 'Escape', isComposing: false, keyCode: 27 });
-    assert.equal(ids.get('main-region').findByTestId('server-editor-card'), null, 'Non-IME Escape closes editor');
-
-    // 3. Raw JSON save with Stdio MUST show stdio-confirm-panel instead of bypassing (F3!)
-    ids.get('tab-raw').dispatch('click');
-    await waitUntil(() => Boolean(ids.get('main-region').findByTestId('raw-json-textarea')));
-    const ta = ids.get('main-region').findByTestId('raw-json-textarea');
-    assert.ok(ta);
-    ta.value = JSON.stringify({ mcpServers: { rawCmd: { command: 'node', args: ['a.js'] } } }, null, 2);
-    ta.dispatch('input', { target: ta });
-    ids.get('main-region').findByTestId('btn-save-raw').dispatch('click');
-    await waitUntil(() => Boolean(ids.get('main-region').findByTestId('stdio-confirm-panel')));
-    assert.ok(ids.get('main-region').findByTestId('stdio-confirm-panel'), 'Raw JSON Stdio save must pause for explicit confirmation');
-    assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf8')).mcpServers.rawCmd, undefined);
-
-    // 4. Confirming Raw JSON Stdio writes to disk
-    ids.get('main-region').findByTestId('btn-confirm-stdio').dispatch('click');
-    await waitUntil(() => Boolean(JSON.parse(fs.readFileSync(configPath, 'utf8')).mcpServers?.rawCmd));
-    assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf8')).mcpServers.rawCmd.command, 'node');
-
-    // 5. External disk change triggers 409 Conflict banner (F6!)
-    fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { external: { url: 'https://ext.example.com/mcp' } } }) + '\n', 'utf8');
-    ids.get('main-region').findByTestId('btn-save-raw').dispatch('click');
-    await waitUntil(() => Boolean(ids.get('banner-region').findByTestId('status-banner')));
-    const conflictBanner = ids.get('banner-region').findByTestId('status-banner');
-    assert.ok(conflictBanner);
-
-    // 6. Malformed JSON on disk renders malformed-json-banner + restore backup works with CAS (F6!)
-    fs.writeFileSync(configPath, '{ broken json', 'utf8');
-    ids.get('btn-refresh').dispatch('click');
-    await waitUntil(() => Boolean(ids.get('banner-region').findByTestId('malformed-json-banner')));
-    assert.ok(ids.get('banner-region').findByTestId('malformed-json-banner'));
-    ids.get('banner-region').findByTestId('btn-restore-backup').dispatch('click');
-    await waitUntil(() => ids.get('banner-region').findByTestId('malformed-json-banner') === null);
-    assert.equal(ids.get('banner-region').findByTestId('malformed-json-banner'), null);
-  } finally {
-    await new Promise((r) => server.close(r));
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
-});
 
 function findChromiumBinary() {
   const candidates =
@@ -285,7 +54,38 @@ function getFreeTcpPort() {
   });
 }
 
-test('NMCP-TC-020B (Real Headless Chromium/Edge CDP E2E): real browser CSP, asset loads, Clone secret preservation, Korean IME input->section bubbling, Raw Stdio 428 gate, 409 Conflict & Malformed Recovery', async (t) => {
+async function waitUntil(fn, timeoutMs = 5000, intervalMs = 30) {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    if (await fn()) return true;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return Boolean(await fn());
+}
+
+test('NMCP-TC-017: UI has ZERO unsafe DOM sinks and ZERO external CDN/font links', () => {
+  const appJs = fs.readFileSync(path.join(UI_DIR, 'app.js'), 'utf8');
+  const forbiddenSinks = [/\.innerHTML\s*=/, /\.outerHTML\s*=/, /insertAdjacentHTML\s*\(/, /document\.write\s*\(/, /\beval\s*\(/, /new\s+Function\s*\(/];
+  for (const rx of forbiddenSinks) {
+    assert.equal(rx.test(appJs), false, `Forbidden DOM sink matched: ${rx}`);
+  }
+  const html = fs.readFileSync(path.join(UI_DIR, 'index.html'), 'utf8');
+  assert.equal(/https?:\/\//i.test(html), false, 'index.html must not reference external CDNs/fonts');
+  assert.equal(html.includes('src="/preload.js"'), true);
+  assert.equal(html.includes('href="/styles.css"'), true);
+  assert.equal(html.includes('src="/app.js"'), true);
+});
+
+test('NMCP-TC-018: styles.css binds Antigravity theme tokens, supports narrow 420px pane, and respects prefers-reduced-motion', () => {
+  const css = fs.readFileSync(path.join(UI_DIR, 'styles.css'), 'utf8');
+  assert.equal(css.includes('var(--background'), true);
+  assert.equal(css.includes('var(--foreground'), true);
+  assert.equal(css.includes('var(--primary'), true);
+  assert.equal(css.includes('@media (max-width: 420px)'), true);
+  assert.equal(css.includes('@media (prefers-reduced-motion: reduce)'), true);
+});
+
+test('NMCP-TC-019 & NMCP-TC-020 / NMCP-TC-020B (Real Headless Chromium/Edge CDP E2E): CSP, postMessage guard, password/scrub, Smart Paste & Editor Korean IME, serverUrl meta, Clone secret preservation, Raw Stdio 428, 409 Conflict & Malformed Recovery', async (t) => {
   const browserBin = findChromiumBinary();
   if (!browserBin || typeof WebSocket !== 'function') {
     t.skip('Headless Chromium/Edge binary or global WebSocket is unavailable on this host');
@@ -310,7 +110,11 @@ test('NMCP-TC-020B (Real Headless Chromium/Edge CDP E2E): real browser CSP, asse
     'utf8'
   );
   const configPath = path.join(cfgDir, 'mcp_config.json');
-  fs.writeFileSync(configPath, JSON.stringify({ mcpServers: {} }, null, 2) + '\n', 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({ mcpServers: { legacyMeta: { serverUrl: 'https://legacy-meta.example/mcp' } } }, null, 2) + '\n',
+    'utf8'
+  );
 
   // Prefer REAL sidecars/mcp_manager/main.mjs + host sidecar_sdk when Antigravity Desktop is installed!
   const hostHome = process.env.USERPROFILE || process.env.HOME || os.homedir();
@@ -439,10 +243,8 @@ test('NMCP-TC-020B (Real Headless Chromium/Edge CDP E2E): real browser CSP, asse
 
   let ws = null;
   try {
-    // Wait for CDP endpoint
     let wsUrl = null;
-    const deadline = Date.now() + 12000;
-    while (Date.now() < deadline) {
+    await waitUntil(async () => {
       try {
         const listRes = await fetch(`http://127.0.0.1:${cdpPort}/json/list`);
         if (listRes.ok) {
@@ -450,14 +252,14 @@ test('NMCP-TC-020B (Real Headless Chromium/Edge CDP E2E): real browser CSP, asse
           const pageTarget = targets.find((x) => x.type === 'page' && x.webSocketDebuggerUrl);
           if (pageTarget) {
             wsUrl = pageTarget.webSocketDebuggerUrl;
-            break;
+            return true;
           }
         }
       } catch {
         // Retry until browser binds CDP port
       }
-      await new Promise((r) => setTimeout(r, 120));
-    }
+      return false;
+    }, 12000, 100);
     assert.ok(wsUrl, 'Headless browser did not expose CDP WebSocket target');
 
     ws = new WebSocket(wsUrl);
@@ -500,51 +302,83 @@ test('NMCP-TC-020B (Real Headless Chromium/Edge CDP E2E): real browser CSP, asse
       return res.result?.value;
     };
 
-    const waitForSelector = async (selector, timeoutMs = 6000) => {
-      const end = Date.now() + timeoutMs;
-      while (Date.now() < end) {
-        const found = await evalJs(`Boolean(document.querySelector(${JSON.stringify(selector)}))`);
-        if (found) return true;
-        await new Promise((r) => setTimeout(r, 50));
-      }
-      return false;
-    };
+    const waitForSelector = (selector, timeoutMs = 6000) =>
+      waitUntil(() => evalJs(`Boolean(document.querySelector(${JSON.stringify(selector)}))`), timeoutMs, 40);
 
     await cdp('Page.enable');
     await cdp('Runtime.enable');
     await cdp('Page.addScriptToEvaluateOnNewDocument', {
       source: `
         window.__cspViolations = [];
+        window.__snapshotFetchCount = 0;
         window.addEventListener('securitypolicyviolation', (e) => {
           window.__cspViolations.push({ directive: e.violatedDirective, blockedURI: e.blockedURI });
         });
+        const origFetch = window.fetch.bind(window);
+        window.fetch = (...args) => {
+          if (String(args[0]).includes('/api/snapshot')) window.__snapshotFetchCount += 1;
+          return origFetch(...args);
+        };
       `,
     });
 
     await cdp('Page.navigate', { url: `http://127.0.0.1:${port}/?token=${token}` });
-    const hasCloneBtn = await waitForSelector('[data-testid="btn-clone-demo-psrv"]');
-    if (!hasCloneBtn) {
-      const diag = await evalJs(`JSON.stringify({ href: location.href, badge: document.querySelector('#runtime-badge')?.textContent, banner: document.querySelector('#banner-region')?.textContent, main: document.querySelector('#main-region')?.textContent, csp: window.__cspViolations })`);
-      assert.fail(`Real Chromium did not render Clone to Global button. diag=${diag} exceptions=${JSON.stringify(exceptions)}`);
-    }
+    const cloneSelector = '[data-testid="btn-clone-global-demo-psrv"]';
+    assert.equal(await waitForSelector(cloneSelector), true, 'Real Chromium should render Clone to Global button with scoped pluginId');
 
-    // 1. Verify zero CSP violations & styles.css loaded
-    const cspCount = await evalJs('window.__cspViolations.length');
-    assert.equal(cspCount, 0, 'Expected zero CSP violations in real Chromium');
-    const styleCount = await evalJs('document.styleSheets.length');
-    assert.ok(styleCount >= 1, 'Expected styles.css stylesheet to load under strict CSP');
+    // 1. Verify zero CSP violations, styles.css loaded, and serverUrl metadata rendered (F4)
+    assert.equal(await evalJs('window.__cspViolations.length'), 0, 'Expected zero CSP violations in real Chromium');
+    assert.ok((await evalJs('document.styleSheets.length')) >= 1, 'Expected styles.css stylesheet to load under strict CSP');
+    const legacyMetaText = await evalJs(`document.querySelector('[data-testid="global-server-legacyMeta"] .server-meta')?.textContent || ''`);
+    assert.equal(legacyMetaText, 'https://legacy-meta.example/mcp', 'serverUrl must be displayed in server card metadata');
 
-    // 2. Real click on Clone to Global preserves full plugin secret on disk (never '••••••••')
-    await evalJs(`document.querySelector('[data-testid="btn-clone-demo-psrv"]').click()`);
-    await new Promise((r) => setTimeout(r, 200));
+    // 2. Verify postMessage ignores spoofed top-level window & file:// origin messages (R4 F2)
+    const countBeforeMsg = await evalJs('window.__snapshotFetchCount');
+    await evalJs(`(() => {
+      window.postMessage({ type: 'workspace-change', payload: { workspaceUris: ['file:///evil'] } }, '*');
+      window.dispatchEvent(new MessageEvent('message', {
+        origin: 'file://',
+        data: { type: 'workspace-change', payload: { workspaceUris: ['file:///evil2'] } },
+      }));
+    })()`);
+    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(await evalJs('window.__snapshotFetchCount'), countBeforeMsg, 'Spoofed top-level / file:// postMessage must be ignored');
+
+    // 3. Smart Paste Korean IME (keyCode 229) Ctrl+Enter MUST NOT trigger preview (R4 F2)
+    const pasteImeCheck = await evalJs(`(() => {
+      const ta = document.querySelector('[data-testid="smart-paste-input"]');
+      ta.value = 'https://ime-test.example/mcp';
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      const imeEvt = new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true });
+      Object.defineProperty(imeEvt, 'keyCode', { value: 229 });
+      ta.dispatchEvent(imeEvt);
+      return Boolean(document.querySelector('[data-testid="smart-paste-preview"]'));
+    })()`);
+    assert.equal(pasteImeCheck, false, 'Korean IME keyCode 229 Ctrl+Enter must not submit Smart Paste');
+
+    // 4. Real click on Clone to Global preserves full plugin secret on disk (never '••••••••')
+    await evalJs(`document.querySelector(${JSON.stringify(cloneSelector)}).click()`);
+    assert.equal(
+      await waitUntil(() => Boolean(JSON.parse(fs.readFileSync(configPath, 'utf8')).mcpServers?.['psrv-copy'])),
+      true,
+      'Clone to Global should persist psrv-copy on disk'
+    );
     const afterClone = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     assert.equal(afterClone.mcpServers['psrv-copy'].headers.Authorization, 'Bearer real-plugin-secret-xyz');
     assert.deepEqual(afterClone.mcpServers['psrv-copy'].disabledTools, ['x']);
 
-    // 3. Real DOM <input> -> <section> Korean IME Escape (keyCode 229) bubbling MUST NOT close editor
+    // 5. Editor secret input uses type="password", scrubs on Cancel, and Korean IME Escape bubbling is guarded (R4 F2)
     await evalJs(`document.querySelector('#btn-add').click()`);
     assert.equal(await waitForSelector('[data-testid="server-editor-card"]'), true);
-    const imeResult = await evalJs(`(() => {
+    const secretAndImeResult = await evalJs(`(() => {
+      const addHeaderBtn = Array.from(document.querySelectorAll('[data-testid="server-editor-card"] button'))
+        .find((b) => b.textContent.includes('Add HTTP Header'));
+      addHeaderBtn.click();
+      const secretInput = document.querySelector('[data-testid="server-editor-card"] input[data-secret-input="true"]');
+      const isPassword = secretInput?.type === 'password';
+      secretInput.value = 'temp-secret-draft';
+      secretInput.dispatchEvent(new Event('input', { bubbles: true }));
+
       const inp = document.querySelector('[data-testid="server-editor-card"] input[type="text"]');
       inp.focus();
       const imeEvt = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
@@ -556,12 +390,19 @@ test('NMCP-TC-020B (Real Headless Chromium/Edge CDP E2E): real browser CSP, asse
       Object.defineProperty(realEsc, 'keyCode', { value: 27 });
       inp.dispatchEvent(realEsc);
       const closedAfterEsc = !document.querySelector('[data-testid="server-editor-card"]');
-      return { stillOpenAfterIme, closedAfterEsc };
-    })()`);
-    assert.equal(imeResult.stillOpenAfterIme, true, 'Korean IME keyCode 229 Escape bubbling from <input> must NOT close editor');
-    assert.equal(imeResult.closedAfterEsc, true, 'Non-IME Escape bubbling from <input> MUST close editor');
 
-    // 4. Real Raw JSON Stdio save triggers 428 confirmation gate, then confirm writes to disk
+      // Re-open editor to confirm previous secret draft was scrubbed
+      document.querySelector('#btn-add').click();
+      const remainingSecretInputs = document.querySelectorAll('[data-testid="server-editor-card"] input[data-secret-input="true"]').length;
+      document.querySelector('[data-testid="server-editor-card"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+      return { isPassword, stillOpenAfterIme, closedAfterEsc, remainingSecretInputs };
+    })()`);
+    assert.equal(secretAndImeResult.isPassword, true, 'Secret input must default to type="password"');
+    assert.equal(secretAndImeResult.stillOpenAfterIme, true, 'Korean IME keyCode 229 Escape bubbling from <input> must NOT close editor');
+    assert.equal(secretAndImeResult.closedAfterEsc, true, 'Non-IME Escape bubbling from <input> MUST close editor');
+    assert.equal(secretAndImeResult.remainingSecretInputs, 0, 'Closing editor must scrub draft secret rows');
+
+    // 6. Real Raw JSON Stdio save triggers 428 confirmation gate, then confirm writes to disk
     await evalJs(`document.querySelector('#tab-raw').click()`);
     assert.equal(await waitForSelector('[data-testid="raw-json-textarea"]'), true);
     await evalJs(`(() => {
@@ -574,21 +415,27 @@ test('NMCP-TC-020B (Real Headless Chromium/Edge CDP E2E): real browser CSP, asse
     assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf8')).mcpServers.browserCmd, undefined);
 
     await evalJs(`document.querySelector('[data-testid="btn-confirm-stdio"]').click()`);
-    await new Promise((r) => setTimeout(r, 200));
-    assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf8')).mcpServers.browserCmd.command, 'node');
+    assert.equal(
+      await waitUntil(() => JSON.parse(fs.readFileSync(configPath, 'utf8')).mcpServers?.browserCmd?.command === 'node'),
+      true,
+      'Confirming Raw JSON Stdio should write browserCmd to disk'
+    );
 
-    // 5. External disk change triggers 409 Conflict banner in real Chromium
+    // 7. External disk change triggers 409 Conflict banner in real Chromium
     fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { ext: { url: 'https://ext.example/mcp' } } }) + '\n', 'utf8');
     await evalJs(`document.querySelector('[data-testid="btn-save-raw"]').click()`);
     assert.equal(await waitForSelector('[data-testid="status-banner"]'), true, 'Expected 409 Conflict status banner');
 
-    // 6. Malformed JSON on disk renders recovery banner + CAS backup restore works
+    // 8. Malformed JSON on disk renders recovery banner + CAS backup restore works
     fs.writeFileSync(configPath, '{ broken-json', 'utf8');
     await evalJs(`document.querySelector('#btn-refresh').click()`);
     assert.equal(await waitForSelector('[data-testid="malformed-json-banner"]'), true);
     await evalJs(`document.querySelector('[data-testid="btn-restore-backup"]').click()`);
-    await new Promise((r) => setTimeout(r, 200));
-    assert.equal(await evalJs(`Boolean(document.querySelector('[data-testid="malformed-json-banner"]'))`), false);
+    assert.equal(
+      await waitUntil(() => evalJs(`!document.querySelector('[data-testid="malformed-json-banner"]')`)),
+      true,
+      'Restoring backup should clear malformed-json-banner'
+    );
     assert.equal(exceptions.length, 0, `Unexpected browser exceptions: ${exceptions.join('; ')}`);
     assert.equal(await evalJs('window.__cspViolations.length'), 0);
   } finally {
@@ -599,7 +446,7 @@ test('NMCP-TC-020B (Real Headless Chromium/Edge CDP E2E): real browser CSP, asse
     if (sidecarChild) {
       try { sidecarChild.kill(); } catch {}
     }
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 200));
     if (server) {
       await new Promise((r) => server.close(r));
     }

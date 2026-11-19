@@ -185,7 +185,15 @@ function atomicWriteSameFs(targetPath, content) {
 
 function writePrivateBackup(backupDir, rawText) {
   if (!backupDir) return null;
-  const backupPath = path.join(backupDir, 'mcp_config.last-good.json');
+  const resolvedBackupDir = path.resolve(backupDir);
+  const normalizedBackupDir = resolvedBackupDir.replace(/\\/g, '/').toLowerCase();
+  if (normalizedBackupDir.includes('/plugins/')) {
+    throw Object.assign(
+      new Error('Write jail violation: backupDir must not reside inside /plugins/.'),
+      { code: ERROR_CODES.WRITE_JAIL_VIOLATION }
+    );
+  }
+  const backupPath = path.join(resolvedBackupDir, 'mcp_config.last-good.json');
   verifyNoSymlinkInChain(backupPath, { createParent: true, parentLevels: 1 });
   try {
     fs.chmodSync(backupDir, 0o700);
@@ -229,7 +237,7 @@ export function createFsConfigStore({
     return {
       exists: true,
       rawText,
-      sha256: sha256Hex(rawText),
+      sha256: await sha256Hex(rawText),
       displayPath: canonicalTarget,
     };
   }
@@ -273,9 +281,11 @@ export function createFsConfigStore({
     }
 
     try {
+      // Re-verify symlink/junction chain inside the lock to close TOCTOU window (NB2)
+      safeTarget = verifyNoSymlinkInChain(canonicalTarget, { createParent: true });
       const exists = fs.existsSync(safeTarget);
       const currentText = exists ? fs.readFileSync(safeTarget, 'utf8') : '';
-      const currentSha = exists ? sha256Hex(currentText) : null;
+      const currentSha = exists ? await sha256Hex(currentText) : null;
 
       if (currentSha !== expectedSha256) {
         return {
@@ -302,7 +312,7 @@ export function createFsConfigStore({
       atomicWriteSameFs(safeTarget, String(rawText));
       return {
         ok: true,
-        sha256: sha256Hex(String(rawText)),
+        sha256: await sha256Hex(String(rawText)),
       };
     } catch (err) {
       return {
@@ -319,18 +329,28 @@ export function createFsConfigStore({
     const results = [];
     const seenPaths = new Set();
 
-    const effectiveRoots = [...pluginRoots];
+    const effectiveRoots = pluginRoots.map((root, idx) => ({
+      root,
+      pluginScope: idx === 0 ? 'global' : 'workspace',
+      scopePrefix: idx === 0 ? 'global' : `workspace:${idx - 1}`,
+    }));
+    let wsCounter = Math.max(0, pluginRoots.length - 1);
     for (const uri of Array.isArray(workspaceUris) ? workspaceUris : []) {
       if (typeof uri !== 'string' || !uri.startsWith('file://')) continue;
       try {
         const wsPath = fileURLToPath(uri);
-        effectiveRoots.push(path.join(wsPath, '.agents', 'plugins'));
+        effectiveRoots.push({
+          root: path.join(wsPath, '.agents', 'plugins'),
+          pluginScope: 'workspace',
+          scopePrefix: `workspace:${wsCounter}`,
+        });
+        wsCounter += 1;
       } catch {
         // Ignore malformed workspace URI
       }
     }
 
-    for (const root of effectiveRoots) {
+    for (const { root, pluginScope, scopePrefix } of effectiveRoots) {
       if (!root || !fs.existsSync(root)) continue;
       let rootReal;
       let entries;
@@ -343,6 +363,7 @@ export function createFsConfigStore({
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
         const pluginDir = entry.name;
+        const pluginId = `${scopePrefix}:${pluginDir}`;
         const pluginPath = path.join(rootReal, pluginDir);
         const mcpPath = path.join(pluginPath, 'mcp_config.json');
         if (!fs.existsSync(mcpPath)) continue;
@@ -370,6 +391,8 @@ export function createFsConfigStore({
           }
           const rawText = fs.readFileSync(realMcp, 'utf8');
           results.push({
+            pluginId,
+            pluginScope,
             pluginName,
             pluginDir,
             rawText,
@@ -380,7 +403,7 @@ export function createFsConfigStore({
         }
       }
     }
-    return results.sort((a, b) => a.pluginDir.localeCompare(b.pluginDir));
+    return results.sort((a, b) => a.pluginId.localeCompare(b.pluginId));
   }
 
   async function readLegacyConfig() {
@@ -441,9 +464,11 @@ export function createFsConfigStore({
       return { ok: false, code: ERROR_CODES.LOCK_BUSY, error: 'Lock busy while restoring backup.' };
     }
     try {
+      // Re-verify symlink/junction chain inside the lock to close TOCTOU window (NB2)
+      safeTarget = verifyNoSymlinkInChain(canonicalTarget, { createParent: true });
       const exists = fs.existsSync(safeTarget);
       const currentText = exists ? fs.readFileSync(safeTarget, 'utf8') : '';
-      const currentSha = exists ? sha256Hex(currentText) : null;
+      const currentSha = exists ? await sha256Hex(currentText) : null;
       if (currentSha !== expectedSha256) {
         return {
           ok: false,
@@ -453,7 +478,7 @@ export function createFsConfigStore({
         };
       }
       atomicWriteSameFs(safeTarget, backupText);
-      return { ok: true, sha256: sha256Hex(backupText) };
+      return { ok: true, sha256: await sha256Hex(backupText) };
     } catch (err) {
       return { ok: false, code: err?.code || ERROR_CODES.IO_ERROR, error: err?.message || String(err) };
     } finally {

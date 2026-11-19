@@ -118,7 +118,7 @@ test('NMCP-TC-012: fs-config-store enforces atomic write, mandatory CAS, stale-l
     assert.equal(restoreConflict.ok, false);
     assert.equal(restoreConflict.code, ERROR_CODES.CONFLICT);
 
-    const restored = await store.restoreLastBackup({ expectedSha256: sha256Hex(broken) });
+    const restored = await store.restoreLastBackup({ expectedSha256: await sha256Hex(broken) });
     assert.equal(restored.ok, true);
     assert.equal(fs.readFileSync(targetPath, 'utf8'), v1);
 
@@ -128,12 +128,21 @@ test('NMCP-TC-012: fs-config-store enforces atomic write, mandatory CAS, stale-l
     const linkedBackupDir = path.join(dir, 'linked-backup');
     fs.symlinkSync(outsideBackup, linkedBackupDir, process.platform === 'win32' ? 'junction' : 'dir');
     const evilBackupStore = createFsConfigStore({ globalConfigPath: targetPath, backupDir: linkedBackupDir });
-    const badBackupWrite = await evilBackupStore.writeGlobalConfig({ rawText: v2, expectedSha256: sha256Hex(v1) });
+    const badBackupWrite = await evilBackupStore.writeGlobalConfig({ rawText: v2, expectedSha256: await sha256Hex(v1) });
     assert.equal(badBackupWrite.ok, false);
     assert.equal(badBackupWrite.code, ERROR_CODES.WRITE_JAIL_VIOLATION);
-    const badBackupRestore = await evilBackupStore.restoreLastBackup({ expectedSha256: sha256Hex(v1) });
+    const badBackupRestore = await evilBackupStore.restoreLastBackup({ expectedSha256: await sha256Hex(v1) });
     assert.equal(badBackupRestore.ok, false);
     assert.equal(badBackupRestore.code, ERROR_CODES.WRITE_JAIL_VIOLATION);
+
+    // backupDir inside /plugins/ MUST be rejected with WRITE_JAIL_VIOLATION (NB2)
+    const pluginBackupStore = createFsConfigStore({
+      globalConfigPath: targetPath,
+      backupDir: path.join(dir, 'plugins', 'antigravity-mcp-manager', '.backups'),
+    });
+    const pluginBackupRes = await pluginBackupStore.writeGlobalConfig({ rawText: v2, expectedSha256: await sha256Hex(v1) });
+    assert.equal(pluginBackupRes.ok, false);
+    assert.equal(pluginBackupRes.code, ERROR_CODES.WRITE_JAIL_VIOLATION);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -149,13 +158,20 @@ test('NMCP-TC-013: Antigravity paths keep backups outside plugins/, and ls-inspe
     assert.equal(paths.globalConfigPath, path.join(dir, '.gemini', 'config', 'mcp_config.json'));
     assert.equal(paths.backupDir.replace(/\\/g, '/').includes('/plugins/'), false);
 
-    // Dynamic workspaceUris .agents/plugins discovery + clone with secret preservation (R3 F2)
+    // Dynamic workspaceUris .agents/plugins discovery + same-basename global vs workspace pluginId isolation (R3 F2 + R4 F4)
+    const globalSameDir = path.join(dir, '.gemini', 'config', 'plugins', 'shared-name');
+    fs.mkdirSync(globalSameDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(globalSameDir, 'mcp_config.json'),
+      JSON.stringify({ mcpServers: { sharedSrv: { url: 'https://global.example/mcp', headers: { Authorization: 'Bearer global-tok' } } } }),
+      'utf8'
+    );
     const wsDir = path.join(dir, 'my-workspace');
-    const wsPluginDir = path.join(wsDir, '.agents', 'plugins', 'ws-demo');
+    const wsPluginDir = path.join(wsDir, '.agents', 'plugins', 'shared-name');
     fs.mkdirSync(wsPluginDir, { recursive: true });
     fs.writeFileSync(
       path.join(wsPluginDir, 'mcp_config.json'),
-      JSON.stringify({ mcpServers: { wsSrv: { url: 'https://ws.example/mcp', headers: { Authorization: 'Bearer ws-secret-777' } } } }),
+      JSON.stringify({ mcpServers: { sharedSrv: { url: 'https://ws.example/mcp', headers: { Authorization: 'Bearer ws-secret-777' } } } }),
       'utf8'
     );
     const wsUri = pathToFileURL(wsDir).href;
@@ -167,17 +183,31 @@ test('NMCP-TC-013: Antigravity paths keep backups outside plugins/, and ls-inspe
       pluginRoots: paths.pluginRoots,
       backupDir: paths.backupDir,
     });
-    const wsService = new McpManagerService({ configStore: wsStore });
+    const wsService = new McpManagerService({
+      configStore: wsStore,
+      runtimeInspector: {
+        inspectRuntime: async () => ({
+          available: true,
+          servers: {},
+          plugins: [{ dir: 'shared-name', scope: 'global', disabled: true }],
+        }),
+      },
+    });
     const snap = await wsService.getSnapshot({ workspaceUris: [wsUri] });
-    assert.equal(snap.pluginServers.some((p) => p.pluginDir === 'ws-demo' && p.name === 'wsSrv'), true);
+    const globalEntry = snap.pluginServers.find((p) => p.pluginId === 'global:shared-name');
+    const wsEntry = snap.pluginServers.find((p) => p.pluginId === 'workspace:0:shared-name');
+    assert.ok(globalEntry && wsEntry, 'Both global and workspace plugins with identical folder names must have distinct pluginIds');
+    assert.equal(globalEntry.pluginDisabled, true);
+    assert.equal(wsEntry.pluginDisabled, false, 'Global disabled state must NOT overwrite workspace plugin with same basename');
+
     const cloneRes = await wsService.clonePluginServer({
-      pluginDir: 'ws-demo',
-      serverName: 'wsSrv',
+      pluginId: wsEntry.pluginId,
+      serverName: 'sharedSrv',
       workspaceUris: [wsUri],
       expectedSha256: snap.globalConfig.sha256,
     });
     assert.equal(cloneRes.ok, true);
-    assert.equal(JSON.parse(fs.readFileSync(paths.globalConfigPath, 'utf8')).mcpServers.wsSrv.headers.Authorization, 'Bearer ws-secret-777');
+    assert.equal(JSON.parse(fs.readFileSync(paths.globalConfigPath, 'utf8')).mcpServers.sharedSrv.headers.Authorization, 'Bearer ws-secret-777');
 
     // Non-loopback lsAddress MUST make 0 network calls and NEVER send CSRF token
     let leakedCalls = 0;

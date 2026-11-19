@@ -50,7 +50,7 @@ function hasForbiddenKeyRecursive(node) {
  * - `exists === false` -> empty valid document `{ mcpServers: {} }` with `sha256: null`.
  * - `exists === true` and whitespace-only -> fail-closed `MALFORMED_JSON` (never silently overwrites empty/corrupt file).
  */
-export function parseConfigDocument(rawText, exists = true, serversRootKey = 'mcpServers') {
+export async function parseConfigDocument(rawText, exists = true, serversRootKey = 'mcpServers') {
   if (!exists) {
     return {
       ok: true,
@@ -65,7 +65,7 @@ export function parseConfigDocument(rawText, exists = true, serversRootKey = 'mc
   }
 
   const text = String(rawText ?? '');
-  const sha256 = sha256Hex(text);
+  const sha256 = await sha256Hex(text);
   const eol = detectEol(text);
 
   if (!text.trim()) {

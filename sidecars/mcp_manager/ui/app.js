@@ -250,6 +250,7 @@
     if (!snapshot) return;
     const targetName = `${ps.name}-copy`;
     const payload = {
+      pluginId: ps.pluginId || null,
       pluginDir: ps.pluginDir,
       serverName: ps.name,
       targetName,
@@ -714,7 +715,7 @@
               el('span', { className: 'badge badge-muted' }, s.transport || 'unknown')
             )
           ),
-          el('div', { className: 'server-meta' }, s.spec?.url || s.spec?.command || ''),
+          el('div', { className: 'server-meta' }, s.spec?.url || s.spec?.serverUrl || s.spec?.command || ''),
           s.runtime?.error ? el('div', { className: 'badge badge-err' }, s.runtime.error) : null,
           el('div', { className: 'row-actions' },
             el('button', { type: 'button', className: 'btn btn-sm', onClick: () => void handleToggleDisabled(s) }, s.disabled ? 'Enable' : 'Disable'),
@@ -736,23 +737,24 @@
         const collision = (snapshot.collisions?.pluginCollisions || []).find(
           (c) => c.pluginDir === ps.pluginDir && c.serverName === ps.name
         );
+        const safePluginKey = String(ps.pluginId || ps.pluginDir).replace(/[^a-zA-Z0-9_-]/g, '-');
         pluginList.appendChild(
           el(
             'div',
-            { className: 'card', dataset: { testid: `plugin-server-${ps.pluginDir}-${ps.name}` } },
+            { className: 'card', dataset: { testid: `plugin-server-${safePluginKey}-${ps.name}` } },
             el('div', { className: 'server-header' },
               el('span', { className: 'server-name' }, ps.name),
               el('div', { className: 'row-actions' },
-                el('span', { className: 'badge badge-muted' }, `Plugin: ${ps.pluginName}${ps.pluginDisabled ? ' (Disabled)' : ''}`),
+                el('span', { className: 'badge badge-muted' }, `Plugin (${ps.pluginScope || 'global'}): ${ps.pluginName}${ps.pluginDisabled ? ' (Disabled)' : ''}`),
                 collision ? el('span', { className: 'badge badge-warn' }, `Collides with global "${collision.globalName}"`) : null
               )
             ),
-            el('div', { className: 'server-meta' }, ps.spec?.url || ps.spec?.command || ''),
+            el('div', { className: 'server-meta' }, ps.spec?.url || ps.spec?.serverUrl || ps.spec?.command || ''),
             el('div', { className: 'row-actions' },
               el('button', {
                 type: 'button',
                 className: 'btn btn-sm',
-                dataset: { testid: `btn-clone-${ps.pluginDir}-${ps.name}` },
+                dataset: { testid: `btn-clone-${safePluginKey}-${ps.name}` },
                 onClick: () => void submitClonePlugin(ps, false),
               }, 'Clone to Global')
             )
@@ -823,15 +825,16 @@
   function isTrustedParentOrigin(origin) {
     if (!origin || origin === 'null') return false;
     if (origin === window.location.origin) return true;
-    return /^(?:vscode-webview|antigravity|app|file):/i.test(origin);
+    return /^(?:vscode-webview|antigravity|app):/i.test(origin);
   }
 
   window.addEventListener('message', (event) => {
-    if (window.parent && window.parent !== window && event.source !== window.parent) return;
+    if (!window.parent || window.parent === window || event.source !== window.parent) return;
     if (!isTrustedParentOrigin(event.origin)) return;
     if (event.data?.type === 'workspace-change' && Array.isArray(event.data.payload?.workspaceUris)) {
       workspaceUris = [...event.data.payload.workspaceUris];
-      void loadSnapshot(activeTab === 'raw');
+      // Preserve in-progress Raw JSON draft when workspace changes (NB3)
+      void loadSnapshot(false);
     }
   });
 

@@ -49,6 +49,9 @@ function restoreMaskedSecrets(existingSpec, incomingSpec) {
   if (typeof out.url === 'string' && prevUrl) {
     out.url = restoreMaskedUrlQuery(prevUrl, out.url);
   }
+  if (typeof out.serverUrl === 'string' && prevUrl) {
+    out.serverUrl = restoreMaskedUrlQuery(prevUrl, out.serverUrl);
+  }
   for (const mapKey of ['env', 'headers']) {
     if (isPlainObject(out[mapKey]) && isPlainObject(existingSpec[mapKey])) {
       const mergedMap = { ...out[mapKey] };
@@ -73,7 +76,7 @@ export class McpManagerService {
 
   async getSnapshot({ workspaceUris = [], includeRawText = false } = {}) {
     const globalRead = await this.configStore.readGlobalConfig();
-    const parsedGlobal = parseConfigDocument(globalRead.rawText, globalRead.exists, this.dialect.serversRootKey);
+    const parsedGlobal = await parseConfigDocument(globalRead.rawText, globalRead.exists, this.dialect.serversRootKey);
 
     const runtime = this.runtimeInspector
       ? await this.runtimeInspector.inspectRuntime(workspaceUris).catch(() => ({
@@ -87,21 +90,32 @@ export class McpManagerService {
       ? await this.configStore.readPluginConfigs({ workspaceUris }).catch(() => [])
       : [];
 
-    const runtimePluginsByDir = new Map();
+    const runtimePluginsById = new Map();
+    const runtimeGlobalPluginsByDir = new Map();
     for (const rp of Array.isArray(runtime.plugins) ? runtime.plugins : []) {
-      if (rp?.dir) runtimePluginsByDir.set(rp.dir, rp);
+      if (rp?.pluginId) runtimePluginsById.set(rp.pluginId, rp);
+      if (rp?.dir && (!rp.scope || rp.scope === 'global')) {
+        runtimeGlobalPluginsByDir.set(rp.dir, rp);
+      }
     }
 
     const pluginServers = [];
     for (const pFile of pluginReads) {
-      const pParsed = parseConfigDocument(pFile.rawText, true, this.dialect.serversRootKey);
+      const pParsed = await parseConfigDocument(pFile.rawText, true, this.dialect.serversRootKey);
       if (!pParsed.ok) continue;
-      const livePlugin = runtimePluginsByDir.get(pFile.pluginDir) || null;
+      const pluginScope = pFile.pluginScope || 'global';
+      const pluginId = pFile.pluginId || `${pluginScope}:${pFile.pluginDir}`;
+      const livePlugin =
+        runtimePluginsById.get(pluginId) ||
+        (pluginScope === 'global' ? runtimeGlobalPluginsByDir.get(pFile.pluginDir) : null) ||
+        null;
       for (const [sName, sSpec] of Object.entries(pParsed.servers)) {
         const val = validateServerSpec(sSpec);
         const rt = runtime.servers?.[sName] || null;
         pluginServers.push({
           name: sName,
+          pluginId,
+          pluginScope,
           pluginName: pFile.pluginName,
           pluginDir: pFile.pluginDir,
           pluginDisabled: livePlugin ? Boolean(livePlugin.disabled) : false,
@@ -121,7 +135,7 @@ export class McpManagerService {
 
     const legacyServers = [];
     if (legacyRead.exists) {
-      const lParsed = parseConfigDocument(legacyRead.rawText, true, this.dialect.serversRootKey);
+      const lParsed = await parseConfigDocument(legacyRead.rawText, true, this.dialect.serversRootKey);
       if (lParsed.ok) {
         for (const [sName, sSpec] of Object.entries(lParsed.servers)) {
           const val = validateServerSpec(sSpec);
@@ -201,7 +215,7 @@ export class McpManagerService {
     }
 
     const readRes = await this.configStore.readGlobalConfig();
-    const parsed = parseConfigDocument(readRes.rawText, readRes.exists, this.dialect.serversRootKey);
+    const parsed = await parseConfigDocument(readRes.rawText, readRes.exists, this.dialect.serversRootKey);
     if (!parsed.ok) {
       return {
         ok: false,
@@ -277,7 +291,7 @@ export class McpManagerService {
       return { ok: false, code: ERROR_CODES.VALIDATION_ERROR, errors: ['Native disabled toggle is not supported by this host dialect.'] };
     }
     const readRes = await this.configStore.readGlobalConfig();
-    const parsed = parseConfigDocument(readRes.rawText, readRes.exists, this.dialect.serversRootKey);
+    const parsed = await parseConfigDocument(readRes.rawText, readRes.exists, this.dialect.serversRootKey);
     if (!parsed.ok) {
       return { ok: false, code: ERROR_CODES.MALFORMED_JSON, errors: [parsed.parseError?.message || 'Malformed JSON'] };
     }
@@ -309,7 +323,7 @@ export class McpManagerService {
       return { ok: false, code: ERROR_CODES.VALIDATION_ERROR, errors: ['expectedSha256 is required for CAS-protected delete.'] };
     }
     const readRes = await this.configStore.readGlobalConfig();
-    const parsed = parseConfigDocument(readRes.rawText, readRes.exists, this.dialect.serversRootKey);
+    const parsed = await parseConfigDocument(readRes.rawText, readRes.exists, this.dialect.serversRootKey);
     if (!parsed.ok) {
       return { ok: false, code: ERROR_CODES.MALFORMED_JSON, errors: [parsed.parseError?.message || 'Malformed JSON'] };
     }
@@ -336,17 +350,19 @@ export class McpManagerService {
     return { ok: true, sha256: writeRes.sha256 };
   }
 
-  async clonePluginServer({ pluginDir, serverName, targetName = null, workspaceUris = [], expectedSha256, confirmStdio = false }) {
+  async clonePluginServer({ pluginId = null, pluginDir = null, serverName, targetName = null, workspaceUris = [], expectedSha256, confirmStdio = false }) {
     const pluginReads = this.configStore.readPluginConfigs
       ? await this.configStore.readPluginConfigs({ workspaceUris })
       : [];
-    const targetPlugin = pluginReads.find((p) => p.pluginDir === pluginDir);
+    const targetPlugin = pluginId
+      ? pluginReads.find((p) => (p.pluginId || `${p.pluginScope || 'global'}:${p.pluginDir}`) === pluginId)
+      : pluginReads.find((p) => p.pluginDir === pluginDir);
     if (!targetPlugin) {
-      return { ok: false, code: ERROR_CODES.NOT_FOUND, errors: [`Plugin "${pluginDir}" not found.`] };
+      return { ok: false, code: ERROR_CODES.NOT_FOUND, errors: [`Plugin "${pluginId || pluginDir}" not found.`] };
     }
-    const pParsed = parseConfigDocument(targetPlugin.rawText, true, this.dialect.serversRootKey);
+    const pParsed = await parseConfigDocument(targetPlugin.rawText, true, this.dialect.serversRootKey);
     if (!pParsed.ok || !Object.prototype.hasOwnProperty.call(pParsed.servers, serverName)) {
-      return { ok: false, code: ERROR_CODES.NOT_FOUND, errors: [`Server "${serverName}" not found in plugin "${pluginDir}".`] };
+      return { ok: false, code: ERROR_CODES.NOT_FOUND, errors: [`Server "${serverName}" not found in plugin "${pluginId || pluginDir}".`] };
     }
     return this.upsertServer({
       name: targetName || serverName,
@@ -363,7 +379,7 @@ export class McpManagerService {
     if (!legacyRead.exists) {
       return { ok: false, code: ERROR_CODES.NOT_FOUND, errors: ['Legacy config file does not exist.'] };
     }
-    const lParsed = parseConfigDocument(legacyRead.rawText, true, this.dialect.serversRootKey);
+    const lParsed = await parseConfigDocument(legacyRead.rawText, true, this.dialect.serversRootKey);
     if (!lParsed.ok || !Object.prototype.hasOwnProperty.call(lParsed.servers, serverName)) {
       return { ok: false, code: ERROR_CODES.NOT_FOUND, errors: [`Server "${serverName}" not found in legacy config.`] };
     }
@@ -379,7 +395,7 @@ export class McpManagerService {
     if (expectedSha256 === undefined) {
       return { ok: false, code: ERROR_CODES.VALIDATION_ERROR, errors: ['expectedSha256 is required for CAS-protected raw save.'] };
     }
-    const parsedNext = parseConfigDocument(rawText, true, this.dialect.serversRootKey);
+    const parsedNext = await parseConfigDocument(rawText, true, this.dialect.serversRootKey);
     if (!parsedNext.ok) {
       return {
         ok: false,
@@ -406,7 +422,7 @@ export class McpManagerService {
     }
 
     const currentRead = await this.configStore.readGlobalConfig();
-    const currentSha256 = currentRead.exists ? sha256Hex(currentRead.rawText) : null;
+    const currentSha256 = currentRead.exists ? await sha256Hex(currentRead.rawText) : null;
     if (currentSha256 !== expectedSha256) {
       return {
         ok: false,

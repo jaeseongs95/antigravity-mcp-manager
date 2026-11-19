@@ -5,7 +5,7 @@
   "description": "Vendor-independent MCP Server Manager with official Antigravity 2.0 Plugin and AUX_PANE UI Sidecar adapter.",
   "license": "MIT",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "scripts": {
     "test": "node scripts/run-tests.mjs"

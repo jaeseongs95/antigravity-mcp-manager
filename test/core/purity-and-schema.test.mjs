@@ -32,11 +32,11 @@ test('NMCP-TC-001: src/core/** is 100% vendor-independent and free of Node/DOM/S
   }
 });
 
-test('NMCP-TC-002: sha256Hex matches Node crypto FIPS 180-4 across ASCII, Korean UTF-8, and emoji surrogate pairs', () => {
+test('NMCP-TC-002: sha256Hex (Web Crypto standard API) matches Node crypto FIPS 180-4 across ASCII, Korean UTF-8, and emoji surrogate pairs', async () => {
   const samples = ['', 'abc', '한글 MCP 설정 🚀\n{"mcpServers":{}}'];
   for (const s of samples) {
     const expected = crypto.createHash('sha256').update(s, 'utf8').digest('hex');
-    assert.equal(sha256Hex(s), expected);
+    assert.equal(await sha256Hex(s), expected);
   }
 });
 

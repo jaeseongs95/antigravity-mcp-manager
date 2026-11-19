@@ -276,7 +276,8 @@ export function registerSidecarRoutes({ app, ResponseClass, service, uiDir }) {
 
   wrapPost('/api/clone-plugin', (data) =>
     service.clonePluginServer({
-      pluginDir: data.pluginDir,
+      pluginId: data.pluginId || null,
+      pluginDir: data.pluginDir || null,
       serverName: data.serverName,
       targetName: data.targetName || null,
       workspaceUris: Array.isArray(data.workspaceUris) ? data.workspaceUris : [],

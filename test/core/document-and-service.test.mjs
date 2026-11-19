@@ -21,7 +21,7 @@ function createMemoryStore({ initialRaw = null, plugins = [], legacyRaw = null }
       return {
         exists: state.exists,
         rawText: state.rawText,
-        sha256: state.exists ? sha256Hex(state.rawText) : null,
+        sha256: state.exists ? await sha256Hex(state.rawText) : null,
         displayPath: '/virtual/mcp_config.json',
       };
     },
@@ -29,14 +29,14 @@ function createMemoryStore({ initialRaw = null, plugins = [], legacyRaw = null }
       if (expectedSha256 === undefined) {
         return { ok: false, code: ERROR_CODES.VALIDATION_ERROR, error: 'expectedSha256 required' };
       }
-      const currentSha = state.exists ? sha256Hex(state.rawText) : null;
+      const currentSha = state.exists ? await sha256Hex(state.rawText) : null;
       if (currentSha !== expectedSha256) {
         return { ok: false, code: ERROR_CODES.CONFLICT, error: 'CAS mismatch', actualSha256: currentSha };
       }
       if (state.exists) state.backupText = state.rawText;
       state.exists = true;
       state.rawText = rawText;
-      return { ok: true, sha256: sha256Hex(rawText) };
+      return { ok: true, sha256: await sha256Hex(rawText) };
     },
     async readPluginConfigs() {
       return plugins;
@@ -51,13 +51,13 @@ function createMemoryStore({ initialRaw = null, plugins = [], legacyRaw = null }
         return { ok: false, code: ERROR_CODES.VALIDATION_ERROR, error: 'expectedSha256 required' };
       }
       if (!state.backupText) return { ok: false, code: ERROR_CODES.NOT_FOUND, error: 'No backup' };
-      const currentSha = state.exists ? sha256Hex(state.rawText) : null;
+      const currentSha = state.exists ? await sha256Hex(state.rawText) : null;
       if (currentSha !== expectedSha256) {
         return { ok: false, code: ERROR_CODES.CONFLICT, error: 'CAS mismatch', actualSha256: currentSha };
       }
       state.exists = true;
       state.rawText = state.backupText;
-      return { ok: true, sha256: sha256Hex(state.rawText) };
+      return { ok: true, sha256: await sha256Hex(state.rawText) };
     },
   };
 }
@@ -109,11 +109,30 @@ test('NMCP-TC-007: lossless unknown-key preservation & masked secret + URL query
   const t2 = await svc.toggleServerDisabled({ name: 'api', disabled: false, expectedSha256: t1.sha256 });
   assert.equal(t2.ok, true);
   assert.equal(JSON.parse(store.state.rawText).mcpServers.api.disabled, undefined);
+
+  // serverUrl query secret restoration symmetry (R4 F4)
+  const serverUrlInitial = JSON.stringify({
+    mcpServers: {
+      legacyRemote: { serverUrl: 'https://legacy.example.com/mcp?token=secret-srv-url' },
+    },
+  }, null, 2) + '\n';
+  const suStore = createMemoryStore({ initialRaw: serverUrlInitial });
+  const suSvc = new McpManagerService({ configStore: suStore });
+  const suSnap = await suSvc.getSnapshot();
+  assert.equal(suSnap.globalConfig.servers[0].spec.serverUrl.includes('REDACTED'), true);
+  const suRes = await suSvc.upsertServer({
+    name: 'legacyRemote',
+    originalName: 'legacyRemote',
+    spec: { serverUrl: suSnap.globalConfig.servers[0].spec.serverUrl },
+    expectedSha256: suSnap.globalConfig.sha256,
+  });
+  assert.equal(suRes.ok, true);
+  assert.equal(JSON.parse(suStore.state.rawText).mcpServers.legacyRemote.url, 'https://legacy.example.com/mcp?token=secret-srv-url');
 });
 
 test('NMCP-TC-008: fail-closed malformed JSON blocks structured edits and allows explicit Raw JSON repair', async () => {
   const broken = '{\n  "mcpServers": { "broken": \n';
-  const parsed = parseConfigDocument(broken, true);
+  const parsed = await parseConfigDocument(broken, true);
   assert.equal(parsed.ok, false);
   assert.equal(parsed.code, ERROR_CODES.MALFORMED_JSON);
 
