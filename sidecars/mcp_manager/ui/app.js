@@ -15,7 +15,22 @@
 (function () {
   'use strict';
 
-  const token = new URLSearchParams(window.location.search).get('token') || '';
+  const urlParams = new URLSearchParams(window.location.search);
+  const token = urlParams.get('token') || '';
+  (() => {
+    const hostFont = urlParams.get('hostFont');
+    if (hostFont && /^[a-zA-Z0-9\s,'"._-]{1,240}$/.test(hostFont)) {
+      document.documentElement.style.setProperty('--font-family', hostFont);
+    }
+    const safeColor = (v) => typeof v === 'string' && /^(?:#[0-9a-fA-F]{3,8}|rgba?\([0-9.,\s%]+\))$/.test(v.trim());
+    const hostBg = urlParams.get('hostBg');
+    if (safeColor(hostBg)) document.documentElement.style.setProperty('--background', hostBg.trim());
+    const hostFg = urlParams.get('hostFg');
+    if (safeColor(hostFg)) document.documentElement.style.setProperty('--foreground', hostFg.trim());
+    if (urlParams.get('hostMode') === 'settings' && document.body) {
+      document.body.classList.add('host-settings-mode');
+    }
+  })();
   let workspaceUris = [];
   let activeTab = 'servers';
   let snapshot = null;

@@ -1,9 +1,9 @@
 :root {
-  --bg: var(--background, #0f1117);
+  --bg: var(--background, #0a0a0c);
   --fg: var(--foreground, #e5e7eb);
   --muted: var(--muted-foreground, #9ca3af);
-  --surface: var(--card, #181b23);
-  --border-color: var(--border, rgba(255, 255, 255, 0.12));
+  --surface: var(--card, #141518);
+  --border-color: var(--border, rgba(255, 255, 255, 0.09));
   --accent: var(--primary, #3b82f6);
   --accent-fg: var(--primary-foreground, #ffffff);
   --danger: #ef4444;
@@ -25,6 +25,7 @@ html, body {
   font-family: var(--font);
   font-size: 13px;
   line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
 }
 
 .app-shell {
@@ -35,6 +36,23 @@ html, body {
   margin: 0 auto;
   padding: 12px;
   gap: 10px;
+}
+
+body.host-settings-mode .app-shell {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 28px 48px 36px 40px;
+  gap: 14px;
+}
+
+body.host-settings-mode .app-header {
+  padding-right: 48px;
+}
+
+body.host-settings-mode .header-title-row h1 {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 .app-header {
