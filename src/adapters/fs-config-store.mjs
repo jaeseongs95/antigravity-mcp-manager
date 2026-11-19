@@ -37,19 +37,25 @@ function assertCanonicalWriteTarget(globalConfigPath) {
 }
 
 /**
- * Checks that NEITHER the target file NOR any parent directory component from its root
- * (starting at the deepest existing ancestor) is a symbolic link or Windows junction.
+ * Checks that NEITHER the target file NOR its immediate config/parent directories
+ * (up to `parentLevels`, default 2: e.g. `.gemini`, `.gemini/config`, `mcp_config.json`)
+ * are symbolic links or Windows junctions, without false-positiving on OS-level root
+ * symlinks such as macOS `/var -> /private/var` or `/tmp -> /private/tmp`.
  */
-function verifyNoSymlinkInChain(targetPath, { createParent = false } = {}) {
+function verifyNoSymlinkInChain(targetPath, { createParent = false, parentLevels = 2 } = {}) {
   const resolved = path.resolve(targetPath);
-  const parsed = path.parse(resolved);
-  const rel = resolved.slice(parsed.root.length);
-  const segments = rel.split(path.sep).filter(Boolean);
+  const chain = [];
+  let cursor = resolved;
+  for (let depth = 0; depth <= parentLevels; depth += 1) {
+    chain.unshift(cursor);
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
 
-  let current = parsed.root;
-  for (let i = 0; i < segments.length; i += 1) {
-    current = path.join(current, segments[i]);
-    const isLeaf = i === segments.length - 1;
+  for (let i = 0; i < chain.length; i += 1) {
+    const current = chain[i];
+    const isLeaf = i === chain.length - 1;
     if (!fs.existsSync(current)) {
       if (!isLeaf && createParent) {
         fs.mkdirSync(current, { recursive: true });
