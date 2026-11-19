@@ -24,7 +24,7 @@
 
 ## 롤백 절차 (`v2.0.0` → `v1.4.18`)
 1. Antigravity **Customizations** 또는 `agy plugin disable antigravity-mcp-manager`로 플러그인을 비활성화한 뒤 `~/.gemini/config/plugins/antigravity-mcp-manager/` 폴더를 삭제합니다.
-2. `~/.gemini/config/mcp_config.json`을 이전 상태로 되돌려야 하면 `~/.gemini/config/.mcp-manager-backups/`의 타임스탬프 백업 파일로 복원합니다.
+2. `~/.gemini/config/mcp_config.json`을 직전 정상 상태로 되돌려야 하면 `~/.gemini/config/.mcp-manager-backups/mcp_config.last-good.json` 파일을 복사해 복원합니다.
 3. 구버전 `v1.4.18`이 꼭 필요한 경우 별도 경로에 `v1.4.18` 태그를 체크아웃하여 해당 버전의 README 절차에 따라 설치합니다.
 
 ## 시험 실행

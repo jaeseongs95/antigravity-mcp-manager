@@ -73,11 +73,15 @@ function isAllowedLoopbackHostHeader(hostHeader) {
   }
 }
 
-function isAllowedOriginHeader(originHeader) {
-  if (!originHeader || originHeader === 'null') return true;
+function isAllowedOriginHeader(originHeader, expectedHostHeader) {
+  if (!originHeader || originHeader === 'null') return false;
+  if (typeof expectedHostHeader !== 'string' || !expectedHostHeader.trim()) return false;
   try {
-    const parsed = new URL(originHeader);
-    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && isLoopbackHostname(parsed.hostname);
+    const parsedOrigin = new URL(originHeader);
+    const parsedHost = new URL(`http://${expectedHostHeader.trim()}`);
+    if (parsedOrigin.protocol !== 'http:' && parsedOrigin.protocol !== 'https:') return false;
+    if (!isLoopbackHostname(parsedOrigin.hostname)) return false;
+    return parsedOrigin.host.toLowerCase() === parsedHost.host.toLowerCase();
   } catch {
     return false;
   }
@@ -85,9 +89,10 @@ function isAllowedOriginHeader(originHeader) {
 
 /**
  * Wraps the `http.Server` returned by `SidecarApp.run()` with Host/Origin/Sec-Fetch-Site,
- * `timingSafeEqual` token verification, and `maxBodyBytes` guards.
+ * fail-closed `timingSafeEqual` token verification, and `maxBodyBytes` guards.
  */
 export function attachSidecarSecurityMiddleware(server, { token = '', maxBodyBytes = DEFAULT_MAX_BODY_BYTES } = {}) {
+  const expectedToken = typeof token === 'string' ? token.trim() : '';
   const existingListeners = server.listeners('request');
   server.removeAllListeners('request');
 
@@ -104,19 +109,19 @@ export function attachSidecarSecurityMiddleware(server, { token = '', maxBodyByt
     }
 
     const fetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase();
-    if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'same-site' && fetchSite !== 'none') {
+    if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none') {
       sendJsonErr(403, 'Forbidden cross-site request');
       return;
     }
 
-    if (req.headers.origin && !isAllowedOriginHeader(String(req.headers.origin))) {
+    if (req.headers.origin !== undefined && !isAllowedOriginHeader(String(req.headers.origin), req.headers.host)) {
       sendJsonErr(403, 'Forbidden Origin header');
       return;
     }
 
-    if (req.method !== 'GET' && token) {
+    if (req.method !== 'GET') {
       const provided = typeof req.headers['x-sidecar-token'] === 'string' ? req.headers['x-sidecar-token'] : '';
-      if (!constantTimeTokenEquals(token, provided)) {
+      if (!expectedToken || !constantTimeTokenEquals(expectedToken, provided)) {
         sendJsonErr(401, 'Unauthorized');
         return;
       }
@@ -179,13 +184,15 @@ export function registerSidecarRoutes({ app, ResponseClass, service, uiDir }) {
           const httpStatus = result?.ok === false ? statusForErrorCode(result.code) : 200;
           return jsonResponse(result, httpStatus);
         } catch (err) {
+          const knownCodes = Object.values(ERROR_CODES);
+          const errCode = err?.code && knownCodes.includes(err.code) ? err.code : ERROR_CODES.IO_ERROR;
           return jsonResponse(
             {
               ok: false,
-              code: ERROR_CODES.IO_ERROR,
+              code: errCode,
               errors: [redactErrorMessage(err?.message || 'Unexpected sidecar error')],
             },
-            500
+            statusForErrorCode(errCode)
           );
         }
       },

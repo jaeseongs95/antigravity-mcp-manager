@@ -33,14 +33,20 @@ function assertCanonicalWriteTarget(globalConfigPath) {
       { code: ERROR_CODES.WRITE_JAIL_VIOLATION }
     );
   }
+  if (normalizedSlashes.endsWith('/antigravity/mcp_config.json')) {
+    throw Object.assign(
+      new Error('Write jail violation: legacy ~/.gemini/antigravity/mcp_config.json is strictly read-only.'),
+      { code: ERROR_CODES.WRITE_JAIL_VIOLATION }
+    );
+  }
   return resolved;
 }
 
 /**
  * Checks that NEITHER the target file NOR its immediate config/parent directories
  * (up to `parentLevels`, default 2: e.g. `.gemini`, `.gemini/config`, `mcp_config.json`)
- * are symbolic links or Windows junctions, without false-positiving on OS-level root
- * symlinks such as macOS `/var -> /private/var` or `/tmp -> /private/tmp`.
+ * are symbolic links or Windows junctions (including dangling symlinks), without
+ * false-positiving on OS-level root symlinks such as macOS `/var -> /private/var`.
  */
 function verifyNoSymlinkInChain(targetPath, { createParent = false, parentLevels = 2 } = {}) {
   const resolved = path.resolve(targetPath);
@@ -56,13 +62,18 @@ function verifyNoSymlinkInChain(targetPath, { createParent = false, parentLevels
   for (let i = 0; i < chain.length; i += 1) {
     const current = chain[i];
     const isLeaf = i === chain.length - 1;
-    if (!fs.existsSync(current)) {
-      if (!isLeaf && createParent) {
-        fs.mkdirSync(current, { recursive: true });
+    let lst;
+    try {
+      lst = fs.lstatSync(current);
+    } catch (err) {
+      if (err && err.code === 'ENOENT') {
+        if (!isLeaf && createParent) {
+          fs.mkdirSync(current, { recursive: true });
+        }
+        continue;
       }
-      continue;
+      throw err;
     }
-    const lst = fs.lstatSync(current);
     if (lst.isSymbolicLink()) {
       throw Object.assign(
         new Error(`Write jail violation: symbolic link / junction detected at "${current}".`),
@@ -167,8 +178,13 @@ function atomicWriteSameFs(targetPath, content) {
 
 function writePrivateBackup(backupDir, rawText) {
   if (!backupDir) return null;
-  fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
   const backupPath = path.join(backupDir, 'mcp_config.last-good.json');
+  verifyNoSymlinkInChain(backupPath, { createParent: true, parentLevels: 1 });
+  try {
+    fs.chmodSync(backupDir, 0o700);
+  } catch {
+    // Windows ignores POSIX chmod
+  }
   atomicWriteSameFs(backupPath, rawText);
   try {
     fs.chmodSync(backupPath, 0o600);
@@ -264,11 +280,15 @@ export function createFsConfigStore({
       }
 
       if (exists && currentText.trim()) {
+        let validJson = false;
         try {
           JSON.parse(currentText);
-          writePrivateBackup(backupDir, currentText);
+          validJson = true;
         } catch {
           // Do not overwrite last-good backup with malformed JSON
+        }
+        if (validJson) {
+          writePrivateBackup(backupDir, currentText);
         }
       }
 
@@ -369,6 +389,11 @@ export function createFsConfigStore({
       return { ok: false, code: ERROR_CODES.NOT_FOUND, error: 'Backup directory is not configured.' };
     }
     const backupPath = path.join(backupDir, 'mcp_config.last-good.json');
+    try {
+      verifyNoSymlinkInChain(backupPath, { createParent: false, parentLevels: 1 });
+    } catch (err) {
+      return { ok: false, code: err?.code || ERROR_CODES.WRITE_JAIL_VIOLATION, error: err?.message || String(err) };
+    }
     if (!fs.existsSync(backupPath)) {
       return { ok: false, code: ERROR_CODES.NOT_FOUND, error: 'No previous backup file found.' };
     }

@@ -26,6 +26,10 @@ test('NMCP-TC-011: fs-config-store enforces Write Jail (blocks config.json, plug
       () => createFsConfigStore({ globalConfigPath: path.join(dir, 'plugins', 'demo', 'mcp_config.json') }),
       /Write jail violation/i
     );
+    assert.throws(
+      () => createFsConfigStore({ globalConfigPath: path.join(dir, '.gemini', 'antigravity', 'mcp_config.json') }),
+      /Write jail violation/i
+    );
 
     // Parent directory symlink (POSIX) / directory junction (Windows, works without admin/Dev Mode!)
     const outsideDir = path.join(dir, 'outside');
@@ -43,6 +47,21 @@ test('NMCP-TC-011: fs-config-store enforces Write Jail (blocks config.json, plug
     assert.equal(wr.ok, false);
     assert.equal(wr.code, ERROR_CODES.WRITE_JAIL_VIOLATION);
     assert.equal(fs.existsSync(path.join(outsideDir, 'mcp_config.json')), false);
+
+    // Dangling parent directory junction/symlink MUST be caught by lstatSync (never bypassed via existsSync)
+    const missingTarget = path.join(dir, 'nonexistent-outside-dir');
+    const danglingParent = path.join(dir, 'dangling-cfg');
+    fs.symlinkSync(missingTarget, danglingParent, process.platform === 'win32' ? 'junction' : 'dir');
+    const danglingStore = createFsConfigStore({
+      globalConfigPath: path.join(danglingParent, 'mcp_config.json'),
+    });
+    const danglingWr = await danglingStore.writeGlobalConfig({
+      rawText: '{"mcpServers":{}}\n',
+      expectedSha256: null,
+    });
+    assert.equal(danglingWr.ok, false);
+    assert.equal(danglingWr.code, ERROR_CODES.WRITE_JAIL_VIOLATION);
+    await assert.rejects(() => danglingStore.readGlobalConfig(), /Write jail violation/i);
 
     // Plugin root escape via directory junction MUST be skipped by readPluginConfigs
     const pluginRoot = path.join(dir, 'plugins');
@@ -100,6 +119,19 @@ test('NMCP-TC-012: fs-config-store enforces atomic write, mandatory CAS, stale-l
     const restored = await store.restoreLastBackup({ expectedSha256: sha256Hex(broken) });
     assert.equal(restored.ok, true);
     assert.equal(fs.readFileSync(targetPath, 'utf8'), v1);
+
+    // Symlinked/junctioned backupDir MUST be rejected with WRITE_JAIL_VIOLATION on write & restore
+    const outsideBackup = path.join(dir, 'outside-backup');
+    fs.mkdirSync(outsideBackup, { recursive: true });
+    const linkedBackupDir = path.join(dir, 'linked-backup');
+    fs.symlinkSync(outsideBackup, linkedBackupDir, process.platform === 'win32' ? 'junction' : 'dir');
+    const evilBackupStore = createFsConfigStore({ globalConfigPath: targetPath, backupDir: linkedBackupDir });
+    const badBackupWrite = await evilBackupStore.writeGlobalConfig({ rawText: v2, expectedSha256: sha256Hex(v1) });
+    assert.equal(badBackupWrite.ok, false);
+    assert.equal(badBackupWrite.code, ERROR_CODES.WRITE_JAIL_VIOLATION);
+    const badBackupRestore = await evilBackupStore.restoreLastBackup({ expectedSha256: sha256Hex(v1) });
+    assert.equal(badBackupRestore.ok, false);
+    assert.equal(badBackupRestore.code, ERROR_CODES.WRITE_JAIL_VIOLATION);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

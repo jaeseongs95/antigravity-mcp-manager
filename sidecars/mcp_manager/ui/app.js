@@ -796,18 +796,27 @@
 
   tabServers.addEventListener('click', () => {
     activeTab = 'servers';
+    pastePreview = null;
     scrubSensitiveState({ keepRawIfMalformed: true });
     renderAll();
   });
   tabRaw.addEventListener('click', () => {
     activeTab = 'raw';
+    pastePreview = null;
     void loadSnapshot(true);
   });
   btnRefresh.addEventListener('click', () => void loadSnapshot(activeTab === 'raw'));
   btnAdd.addEventListener('click', () => openEditorForServer(null));
 
+  function isTrustedParentOrigin(origin) {
+    if (!origin || origin === 'null') return false;
+    if (origin === window.location.origin) return true;
+    return /^(?:vscode-webview|antigravity|app|file):/i.test(origin);
+  }
+
   window.addEventListener('message', (event) => {
     if (window.parent && window.parent !== window && event.source !== window.parent) return;
+    if (!isTrustedParentOrigin(event.origin)) return;
     if (event.data?.type === 'workspace-change' && Array.isArray(event.data.payload?.workspaceUris)) {
       workspaceUris = [...event.data.payload.workspaceUris];
       void loadSnapshot(activeTab === 'raw');

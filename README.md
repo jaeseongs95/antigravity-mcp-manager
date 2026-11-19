@@ -31,7 +31,7 @@ If you previously installed `v1.x` (which injected `mcp_manager_autoinject.js`),
 
 ## Rollback (`v2.0.0` → `v1.4.18`)
 1. Disable or remove `~/.gemini/config/plugins/antigravity-mcp-manager/` (e.g., `agy plugin disable antigravity-mcp-manager` and delete the plugin folder).
-2. If you need to restore a prior `~/.gemini/config/mcp_config.json`, copy the desired timestamped snapshot from `~/.gemini/config/.mcp-manager-backups/`.
+2. If you need to restore the last good `~/.gemini/config/mcp_config.json`, copy `~/.gemini/config/.mcp-manager-backups/mcp_config.last-good.json` back to `~/.gemini/config/mcp_config.json`.
 3. If you specifically require legacy `v1.4.18`, check out tag `v1.4.18` separately and follow its README instructions.
 
 ## Development & Tests

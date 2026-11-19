@@ -169,18 +169,70 @@ test('NMCP-TC-015 & NMCP-TC-016: Sidecar security middleware enforces Host/Origi
     });
     assert.equal(badHost.status, 403);
 
-    // 2. Cross-site Origin & Sec-Fetch-Site rejected with 403
+    // 2. Cross-site, cross-port loopback, null Origin & Sec-Fetch-Site: same-site rejected with 403
     const badOrigin = await sendRawHttpRequest({
       port,
       headers: { Host: `127.0.0.1:${port}`, Origin: 'https://evil.example', 'x-sidecar-token': token, 'Content-Type': 'application/json' },
     });
     assert.equal(badOrigin.status, 403);
 
+    const crossPortOrigin = await sendRawHttpRequest({
+      port,
+      headers: { Host: `127.0.0.1:${port}`, Origin: 'http://localhost:3000', 'x-sidecar-token': token, 'Content-Type': 'application/json' },
+    });
+    assert.equal(crossPortOrigin.status, 403);
+
+    const nullOrigin = await sendRawHttpRequest({
+      port,
+      headers: { Host: `127.0.0.1:${port}`, Origin: 'null', 'x-sidecar-token': token, 'Content-Type': 'application/json' },
+    });
+    assert.equal(nullOrigin.status, 403);
+
     const badFetchSite = await sendRawHttpRequest({
       port,
       headers: { Host: `127.0.0.1:${port}`, 'Sec-Fetch-Site': 'cross-site', 'x-sidecar-token': token, 'Content-Type': 'application/json' },
     });
     assert.equal(badFetchSite.status, 403);
+
+    const sameSiteFetch = await sendRawHttpRequest({
+      port,
+      headers: { Host: `127.0.0.1:${port}`, 'Sec-Fetch-Site': 'same-site', 'x-sidecar-token': token, 'Content-Type': 'application/json' },
+    });
+    assert.equal(sameSiteFetch.status, 403);
+
+    // 2b. Empty token fails closed (401 on POST, never fail-open)
+    const emptyTokenApp = new TestSidecarApp();
+    registerSidecarRoutes({ app: emptyTokenApp, ResponseClass: TestResponse, service, uiDir: UI_DIR });
+    const emptyPort = await emptyTokenApp.start('', 1024);
+    try {
+      const failClosedRes = await sendRawHttpRequest({
+        port: emptyPort,
+        headers: { Host: `127.0.0.1:${emptyPort}`, 'Content-Type': 'application/json' },
+      });
+      assert.equal(failClosedRes.status, 401);
+    } finally {
+      await emptyTokenApp.close();
+    }
+
+    // 2c. WRITE_JAIL_VIOLATION thrown by service maps to 403 (not 500 IO_ERROR)
+    const jailApp = new TestSidecarApp();
+    const throwingService = {
+      getSnapshot: async () => {
+        throw Object.assign(new Error('Write jail violation: symlink'), { code: 'WRITE_JAIL_VIOLATION' });
+      },
+    };
+    registerSidecarRoutes({ app: jailApp, ResponseClass: TestResponse, service: throwingService, uiDir: UI_DIR });
+    const jailPort = await jailApp.start(token, 1024);
+    try {
+      const jailRes = await sendRawHttpRequest({
+        port: jailPort,
+        headers: { Host: `127.0.0.1:${jailPort}`, 'x-sidecar-token': token, 'Content-Type': 'application/json' },
+      });
+      assert.equal(jailRes.status, 403);
+      assert.equal(JSON.parse(jailRes.body).code, 'WRITE_JAIL_VIOLATION');
+    } finally {
+      await jailApp.close();
+    }
 
     // 3. Unauthenticated POST rejected with 401
     const unauth = await sendRawHttpRequest({
@@ -236,11 +288,11 @@ test('NMCP-TC-015 & NMCP-TC-016: Sidecar security middleware enforces Host/Origi
   }
 });
 
-test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with real sidecar_sdk when installed on host', async () => {
+test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with real sidecar_sdk and serves assets + security guards', async (t) => {
   const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
   const sdkLoader = path.join(home, '.gemini', 'antigravity', 'lib', 'node_modules', 'sidecar_sdk', 'register_loader.js');
   if (!fs.existsSync(sdkLoader)) {
-    // CI runners without Antigravity desktop installed skip live SDK boot; covered by NMCP-TC-015 above
+    t.skip('Antigravity Desktop sidecar_sdk is not installed on this host');
     return;
   }
 
@@ -289,11 +341,37 @@ test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with r
       });
     });
 
+    // Verify GET /, /styles.css, /app.js with strict CSP & nosniff
+    for (const assetPath of ['/', '/styles.css', '/app.js']) {
+      const assetRes = await sendRawHttpRequest({
+        port,
+        method: 'GET',
+        reqPath: assetPath,
+        headers: { Host: `127.0.0.1:${port}` },
+        body: '',
+      });
+      assert.equal(assetRes.status, 200, `Expected 200 for GET ${assetPath}`);
+      assert.equal(assetRes.headers['content-security-policy'], STRICT_SIDECAR_CSP);
+      assert.equal(assetRes.headers['x-content-type-options'], 'nosniff');
+    }
+
     const badHost = await sendRawHttpRequest({
       port,
       headers: { Host: 'evil.example:999', 'x-sidecar-token': token, 'Content-Type': 'application/json' },
     });
     assert.equal(badHost.status, 403);
+
+    const badOrigin = await sendRawHttpRequest({
+      port,
+      headers: { Host: `127.0.0.1:${port}`, Origin: 'http://localhost:3000', 'x-sidecar-token': token, 'Content-Type': 'application/json' },
+    });
+    assert.equal(badOrigin.status, 403);
+
+    const badFetchSite = await sendRawHttpRequest({
+      port,
+      headers: { Host: `127.0.0.1:${port}`, 'Sec-Fetch-Site': 'same-site', 'x-sidecar-token': token, 'Content-Type': 'application/json' },
+    });
+    assert.equal(badFetchSite.status, 403);
 
     const unauth = await sendRawHttpRequest({
       port,
@@ -303,7 +381,13 @@ test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with r
 
     const okRes = await sendRawHttpRequest({
       port,
-      headers: { Host: `127.0.0.1:${port}`, 'x-sidecar-token': token, 'Content-Type': 'application/json' },
+      headers: {
+        Host: `127.0.0.1:${port}`,
+        Origin: `http://127.0.0.1:${port}`,
+        'Sec-Fetch-Site': 'same-origin',
+        'x-sidecar-token': token,
+        'Content-Type': 'application/json',
+      },
     });
     assert.equal(okRes.status, 200);
     assert.equal(okRes.headers['content-security-policy'], STRICT_SIDECAR_CSP);

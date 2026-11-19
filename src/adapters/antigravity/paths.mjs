@@ -4,7 +4,7 @@
  * Sole R/W Target: `~/.gemini/config/mcp_config.json`
  * Read-Only Plugin Roots: `~/.gemini/config/plugins`, `<workspace>/.agents/plugins`
  * Read-Only Legacy Detection: `~/.gemini/antigravity/mcp_config.json`
- * Private Backup Dir: `~/.gemini/config/plugins/antigravity-mcp-manager/.backups`
+ * Private Backup Dir: `~/.gemini/config/.mcp-manager-backups`
  */
 
 import os from 'node:os';

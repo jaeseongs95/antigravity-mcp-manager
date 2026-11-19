@@ -40,7 +40,12 @@ registerSidecarRoutes({
   uiDir: UI_DIR,
 });
 
+const sidecarToken = String(process.env.ANTIGRAVITY_SIDECAR_UI_TOKEN || '').trim();
+if (!sidecarToken) {
+  throw new Error('ANTIGRAVITY_SIDECAR_UI_TOKEN is required (fail-closed).');
+}
+
 const server = await app.run();
 attachSidecarSecurityMiddleware(server, {
-  token: process.env.ANTIGRAVITY_SIDECAR_UI_TOKEN || '',
+  token: sidecarToken,
 });
