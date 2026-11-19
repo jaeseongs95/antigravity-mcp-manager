@@ -459,7 +459,11 @@ test('NMCP-TC-019 & NMCP-TC-020 / NMCP-TC-020B (Real Headless Chromium/Edge CDP 
 
     // 6. Real Raw JSON Stdio save triggers 428 confirmation gate, then confirm writes to disk
     await evalJs(`document.querySelector('#tab-raw').click()`);
-    assert.equal(await waitForSelector('[data-testid="raw-json-textarea"]'), true);
+    assert.equal(
+      await waitUntil(() => evalJs(`Boolean(document.querySelector('[data-testid="raw-json-textarea"]')?.value.includes('cmdSrv-copy'))`)),
+      true,
+      'Raw JSON textarea should finish loading latest snapshot before editing'
+    );
     await evalJs(`(() => {
       const ta = document.querySelector('[data-testid="raw-json-textarea"]');
       ta.value = JSON.stringify({ mcpServers: { browserCmd: { command: 'node', args: ['x.js'] } } }, null, 2);
