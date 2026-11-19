@@ -250,8 +250,19 @@ test('NMCP-TC-021 (Real Chromium CDP E2E): Settings sidebar injector mounts MCP 
     assert.equal(placement.nextAttr, 'true');
     assert.equal(placement.totalCount, 1);
 
-    // 2. Click MCP Manager -> hides native pane (without removing it) and renders desktop-server.mjs UI inside iframe
+    // 2. Capture exact navItem & Projects geometry BEFORE click, then click MCP Manager -> assert 0px layout shift!
+    const beforeClickRect = await evalMain(`(() => {
+      const nav = document.querySelector('[data-agy-mcp-manager-nav="true"]').getBoundingClientRect();
+      const proj = document.getElementById('left-sidebar-projects').getBoundingClientRect();
+      return { left: nav.left, top: nav.top, width: nav.width, height: nav.height, projTop: proj.top };
+    })()`);
     await evalMain(`document.querySelector('[data-agy-mcp-manager-nav="true"]').click()`);
+    const afterClickRect = await evalMain(`(() => {
+      const nav = document.querySelector('[data-agy-mcp-manager-nav="true"]').getBoundingClientRect();
+      const proj = document.getElementById('left-sidebar-projects').getBoundingClientRect();
+      return { left: nav.left, top: nav.top, width: nav.width, height: nav.height, projTop: proj.top };
+    })()`);
+    assert.deepEqual(afterClickRect, beforeClickRect, 'Clicking MCP Manager nav button MUST cause 0px layout shift');
     assert.equal(await waitUntil(() => Boolean(iframeSessionId || iframeContextId), 8000, 40), true);
     assert.equal(
       await waitUntil(async () => {

@@ -5,10 +5,10 @@
  * Security & UX Invariants:
  * 1. ZERO unsafe DOM sinks (`innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`).
  * 2. Only accepts loopback `http://127.0.0.1:<port>/?token=...` iframe URLs.
- * 3. Clones an inactive native Settings sidebar item (`cloneNode(true)`) so font, padding,
- *    margin, width, alignment, and border-radius match Antigravity pixel-for-pixel.
- * 4. Swaps native active `className` / visual state cleanly (single active pill, zero dual active)
- *    and preserves top-right Settings close (`X`) controls without destroying native React nodes.
+ * 3. Clones an inactive native Settings sidebar item (`cloneNode(true)`) and NEVER mutates
+ *    `className` or box-model properties on click — only paint-only `background-color` & `color`
+ *    change, guaranteeing 0px layout shift and preserving Antigravity's native focus ring.
+ * 4. Preserves top-right Settings close (`X`) controls without destroying native React nodes.
  * 5. Idempotent across repeated `dom-ready` / `did-finish-load` injections.
  */
 
@@ -16,26 +16,11 @@
   'use strict';
 
   const NAV_ATTR = 'data-agy-mcp-manager-nav';
-  const NAV_STYLE_ID = 'agy-mcp-manager-nav-style';
   const FRAME_ATTR = 'data-agy-mcp-manager-frame';
   const PREV_DISPLAY_ATTR = 'agyMcpPrevDisplay';
-  const SUPPRESSED_CLASS_ATTR = 'agyMcpSuppressedClass';
   const SUPPRESSED_BG_ATTR = 'agyMcpSuppressedBg';
   const SUPPRESSED_COLOR_ATTR = 'agyMcpSuppressedColor';
   const REQUIRED_SIBLING_LABELS = ['general', 'application', 'appearance', 'shortcuts', 'notifications', 'models', 'browser'];
-
-  function ensureNavStyle() {
-    if (document.getElementById(NAV_STYLE_ID)) return;
-    const style = document.createElement('style');
-    style.id = NAV_STYLE_ID;
-    style.textContent =
-      `[${NAV_ATTR}="true"], [${NAV_ATTR}="true"] *, ` +
-      `[${NAV_ATTR}="true"]:focus, [${NAV_ATTR}="true"]:focus-visible, [${NAV_ATTR}="true"]:active { ` +
-      `outline: none !important; box-shadow: none !important; ` +
-      `--tw-ring-shadow: 0 0 #0000 !important; --tw-ring-offset-shadow: 0 0 #0000 !important; ` +
-      `border-color: transparent !important; }\n`;
-    (document.head || document.documentElement).appendChild(style);
-  }
 
   function isSafeLoopbackIframeUrl(rawUrl) {
     if (typeof rawUrl !== 'string' || !rawUrl.trim()) return false;
@@ -100,7 +85,6 @@
             anchor = anchor.parentElement;
           }
           const listParent = anchor.parentElement || container;
-          // Pick a genuinely INACTIVE direct sibling of `anchor` as the visual template so we never clone an active white/highlighted state
           const directSiblings = Array.from(listParent.children).filter(
             (c) => c.nodeType === 1 && !c.hasAttribute(NAV_ATTR) && REQUIRED_SIBLING_LABELS.includes(normalizedText(c))
           );
@@ -193,13 +177,12 @@
     }
   }
 
-  function suppressNativeActiveItems(outerSidebar, listParent, navItem, inactiveClassName, inactiveColor) {
-    let detectedActiveClass = '';
+  // Paint-only active suppression: NEVER mutates className, padding, margin, height, or font-weight (0px layout shift!)
+  function suppressNativeActiveItems(listParent, navItem, inactiveColor) {
     let detectedActiveBg = 'rgba(255, 255, 255, 0.08)';
     let detectedActiveColor = '#ffffff';
     const dimNode = (el) => {
       if (!Object.prototype.hasOwnProperty.call(el.dataset, SUPPRESSED_BG_ATTR)) {
-        el.dataset[SUPPRESSED_CLASS_ATTR] = el.className || '';
         el.dataset[SUPPRESSED_BG_ATTR] = el.style.backgroundColor || '';
         el.dataset[SUPPRESSED_COLOR_ATTR] = el.style.color || '';
       }
@@ -209,47 +192,32 @@
       }
     };
 
-    const items = outerSidebar ? outerSidebar.querySelectorAll('button, a, [role="tab"], [role="menuitem"], [role="button"], li, div') : [];
-    for (const item of items) {
-      if (item === navItem || item.hasAttribute(NAV_ATTR) || item.contains(navItem) || navItem.contains(item)) continue;
-      if (item.children.length > 2) continue;
-      const r = item.getBoundingClientRect?.();
-      if (!r || r.height < 22 || r.height > 48 || r.width < 80 || r.width > 260) continue;
-      const cs = window.getComputedStyle(item);
-      if (hasVisibleBg(item)) {
-        detectedActiveBg = cs.backgroundColor;
-        if (cs.color) detectedActiveColor = cs.color;
-        if (item.className && item.className !== inactiveClassName) {
-          detectedActiveClass = item.className;
-        }
-        dimNode(item);
-        if (inactiveClassName && item.className !== inactiveClassName) {
-          item.className = inactiveClassName;
-        }
-      }
-    }
-
-    // Also dim all direct native sibling items in the Settings nav list (e.g. Browser text stayed bright white)
     if (listParent) {
       for (const sib of Array.from(listParent.children)) {
         if (sib.nodeType !== 1 || sib === navItem || sib.hasAttribute(NAV_ATTR)) continue;
+        const cs = window.getComputedStyle(sib);
+        if (hasVisibleBg(sib)) {
+          detectedActiveBg = cs.backgroundColor;
+          if (cs.color) detectedActiveColor = cs.color;
+        }
         dimNode(sib);
         for (const inner of Array.from(sib.querySelectorAll('button, span, div'))) {
+          const ics = window.getComputedStyle(inner);
+          if (hasVisibleBg(inner)) {
+            detectedActiveBg = ics.backgroundColor;
+            if (ics.color) detectedActiveColor = ics.color;
+          }
           dimNode(inner);
         }
       }
     }
-    return { activeClass: detectedActiveClass, activeBg: detectedActiveBg, activeColor: detectedActiveColor };
+    return { activeBg: detectedActiveBg, activeColor: detectedActiveColor };
   }
 
   function restoreNativeActiveItems(outerSidebar) {
     if (!outerSidebar) return;
     const suppressed = outerSidebar.querySelectorAll('[data-agy-mcp-suppressed-bg]');
     for (const item of suppressed) {
-      if (Object.prototype.hasOwnProperty.call(item.dataset, SUPPRESSED_CLASS_ATTR)) {
-        item.className = item.dataset[SUPPRESSED_CLASS_ATTR];
-        delete item.dataset[SUPPRESSED_CLASS_ATTR];
-      }
       item.style.removeProperty('background-color');
       item.style.removeProperty('color');
       if (item.dataset[SUPPRESSED_BG_ATTR]) {
@@ -268,9 +236,6 @@
     if (navItem) {
       navItem.setAttribute('aria-selected', 'false');
       navItem.dataset.agyMcpActive = 'false';
-      if (Object.prototype.hasOwnProperty.call(navItem.dataset, 'agyMcpInactiveClass')) {
-        navItem.className = navItem.dataset.agyMcpInactiveClass;
-      }
       navItem.style.removeProperty('background-color');
       navItem.style.removeProperty('color');
       for (const inner of Array.from(navItem.querySelectorAll('button, span, div'))) {
@@ -294,26 +259,14 @@
     const baseUrl = window.__AGY_MCP_MANAGER_URL__;
     if (!isSafeLoopbackIframeUrl(baseUrl) || !contentPane) return;
 
-    const inactiveClassName = navItem?.dataset?.agyMcpInactiveClass || '';
     const inactiveColor = navItem?.dataset?.agyMcpInactiveColor || '';
-    const { activeClass, activeBg, activeColor } = suppressNativeActiveItems(
-      outerSidebar,
-      listParent,
-      navItem,
-      inactiveClassName,
-      inactiveColor
-    );
+    const { activeBg, activeColor } = suppressNativeActiveItems(listParent, navItem, inactiveColor);
 
     if (navItem) {
       navItem.setAttribute('aria-selected', 'true');
       navItem.dataset.agyMcpActive = 'true';
-      if (activeClass) {
-        navItem.className = activeClass;
-        navItem.style.removeProperty('background-color');
-      } else {
-        navItem.style.setProperty('background-color', activeBg, 'important');
-      }
       const nextTextColor = activeColor || '#ffffff';
+      navItem.style.setProperty('background-color', activeBg, 'important');
       navItem.style.setProperty('color', nextTextColor, 'important');
       for (const inner of Array.from(navItem.querySelectorAll('button, span, div'))) {
         inner.style.setProperty('background-color', 'transparent', 'important');
@@ -374,26 +327,18 @@
       return;
     }
 
-    // Clone an INACTIVE native sibling node so DOM structure, padding, margin, radius, and typography match pixel-for-pixel
-    ensureNavStyle();
+    // Clone an INACTIVE native sibling node and keep its className immutable forever (0px layout shift, native focus ring intact!)
     const navItem = inactiveTemplate.cloneNode(true);
     navItem.removeAttribute('id');
     navItem.setAttribute(NAV_ATTR, 'true');
     navItem.setAttribute('aria-selected', 'false');
     navItem.dataset.agyMcpActive = 'false';
-    navItem.dataset.agyMcpInactiveClass = inactiveTemplate.className || '';
     navItem.dataset.agyMcpInactiveColor = window.getComputedStyle(inactiveTemplate)?.color || '';
     replaceLeafText(navItem, 'MCP Manager');
-    navItem.style.outline = 'none';
-    navItem.style.boxShadow = 'none';
 
-    navItem.addEventListener('mousedown', (ev) => {
-      ev.preventDefault();
-    });
     navItem.addEventListener('click', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
-      navItem.blur?.();
       const layout = findSettingsLayout(sidebar);
       showMcpManagerPane(layout.outerSidebar, listParent, layout.contentPane, navItem);
     });
