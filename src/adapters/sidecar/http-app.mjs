@@ -5,9 +5,10 @@
  * 1. Zero `child_process` imports or command execution.
  * 2. All `/api/*` endpoints are registered as `POST` ONLY.
  * 3. `attachSidecarSecurityMiddleware(server, { token, maxBodyBytes })` enforces:
- *    - Loopback-only `Host` header allowlist (blocks DNS rebinding -> `403`).
- *    - `Origin` + `Sec-Fetch-Site` validation (blocks cross-site CSRF -> `403`).
- *    - Constant-time `crypto.timingSafeEqual` `x-sidecar-token` check on non-GET requests (`401`).
+ *    - Loopback-only `Host` header allowlist on ALL requests (blocks DNS rebinding -> `403`).
+ *    - `Origin` + `Sec-Fetch-Site` validation on non-GET/HEAD requests (blocks cross-site CSRF -> `403`
+ *      while allowing Antigravity Desktop `AUX_PANE` cross-origin `<iframe>` static `GET` loads).
+ *    - Constant-time `crypto.timingSafeEqual` `x-sidecar-token` check on non-GET/HEAD requests (`401`).
  *    - Bounded request body size (`1 MiB` default -> `413 Payload Too Large`).
  * 4. Every HTML/CSS/JS/JSON response includes strict `Content-Security-Policy`,
  *    `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`, and `Referrer-Policy: no-referrer`.
@@ -114,18 +115,19 @@ export function attachSidecarSecurityMiddleware(server, { token = '', maxBodyByt
       return;
     }
 
-    const fetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase();
-    if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none') {
-      sendJsonErr(403, 'Forbidden cross-site request');
-      return;
-    }
+    const isReadMethod = req.method === 'GET' || req.method === 'HEAD';
+    if (!isReadMethod) {
+      const fetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+      if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none') {
+        sendJsonErr(403, 'Forbidden cross-site request');
+        return;
+      }
 
-    if (req.headers.origin !== undefined && !isAllowedOriginHeader(String(req.headers.origin), req.headers.host)) {
-      sendJsonErr(403, 'Forbidden Origin header');
-      return;
-    }
+      if (req.headers.origin !== undefined && !isAllowedOriginHeader(String(req.headers.origin), req.headers.host)) {
+        sendJsonErr(403, 'Forbidden Origin header');
+        return;
+      }
 
-    if (req.method !== 'GET') {
       const provided = typeof req.headers['x-sidecar-token'] === 'string' ? req.headers['x-sidecar-token'] : '';
       if (!expectedToken || !constantTimeTokenEquals(expectedToken, provided)) {
         sendJsonErr(401, 'Unauthorized');
@@ -140,7 +142,7 @@ export function attachSidecarSecurityMiddleware(server, { token = '', maxBodyByt
       return;
     }
 
-    if (req.method === 'GET' || req.method === 'HEAD') {
+    if (isReadMethod) {
       for (const listener of existingListeners) {
         listener.call(server, req, res);
       }

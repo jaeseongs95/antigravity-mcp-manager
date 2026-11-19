@@ -90,10 +90,12 @@ export class McpManagerService {
       ? await this.configStore.readPluginConfigs({ workspaceUris }).catch(() => [])
       : [];
 
+    const normalizePathForMatch = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const runtimePluginsList = Array.isArray(runtime.plugins) ? runtime.plugins : [];
     const runtimePluginsById = new Map();
     const runtimeGlobalPluginsByDir = new Map();
     const runtimeWorkspacePluginsByDir = new Map();
-    for (const rp of Array.isArray(runtime.plugins) ? runtime.plugins : []) {
+    for (const rp of runtimePluginsList) {
       if (rp?.pluginId) runtimePluginsById.set(rp.pluginId, rp);
       if (rp?.dir) {
         const rpScope =
@@ -112,15 +114,23 @@ export class McpManagerService {
       if (!pParsed.ok) continue;
       const pluginScope = pFile.pluginScope || 'global';
       const pluginId = pFile.pluginId || `${pluginScope}:${pFile.pluginDir}`;
+      const normDisplayPath = normalizePathForMatch(pFile.displayPath);
+      const pathMatchedPlugin = normDisplayPath
+        ? runtimePluginsList.find((rp) => {
+            const normRpPath = normalizePathForMatch(rp?.path);
+            return normRpPath && (normDisplayPath === normRpPath || normDisplayPath.startsWith(`${normRpPath}/`));
+          }) || null
+        : null;
       const livePlugin =
         runtimePluginsById.get(pluginId) ||
+        pathMatchedPlugin ||
         (pluginScope === 'global'
           ? runtimeGlobalPluginsByDir.get(pFile.pluginDir)
           : runtimeWorkspacePluginsByDir.get(pFile.pluginDir)) ||
         null;
       for (const [sName, sSpec] of Object.entries(pParsed.servers)) {
         const val = validateServerSpec(sSpec);
-        const rt = runtime.servers?.[sName] || null;
+        const rt = runtime.servers && Object.hasOwn(runtime.servers, sName) ? runtime.servers[sName] : null;
         pluginServers.push({
           name: sName,
           pluginId,
@@ -163,7 +173,7 @@ export class McpManagerService {
     if (parsedGlobal.ok) {
       for (const [sName, sSpec] of Object.entries(parsedGlobal.servers)) {
         const val = validateServerSpec(sSpec);
-        const rt = runtime.servers?.[sName] || null;
+        const rt = runtime.servers && Object.hasOwn(runtime.servers, sName) ? runtime.servers[sName] : null;
         globalServers.push({
           name: sName,
           transport: val.transport,

@@ -68,7 +68,7 @@ export function createAntigravityLsInspector({
       return { available: false, servers: {}, plugins: [] };
     }
 
-    const servers = {};
+    const servers = Object.create(null);
     for (const st of Array.isArray(statesRes?.states) ? statesRes.states : []) {
       const name = st?.spec?.name || st?.serverId || st?.name || st?.serverInfo?.name;
       if (!name || typeof name !== 'string') continue;
@@ -102,6 +102,7 @@ export function createAntigravityLsInspector({
       plugins.push({
         name: String(p?.name || dir),
         dir,
+        path: typeof p?.path === 'string' ? p.path : '',
         disabled: Boolean(p?.disabled),
         isGlobal,
         scope: isGlobal ? 'global' : 'workspace',

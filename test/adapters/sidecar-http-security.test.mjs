@@ -220,10 +220,12 @@ test('NMCP-TC-015 & NMCP-TC-016: Sidecar security middleware enforces Host/Origi
       await emptyTokenApp.close();
     }
 
-    // 2c. WRITE_JAIL_VIOLATION thrown by service maps to 403 (not 500 IO_ERROR)
+    // 2c. WRITE_JAIL_VIOLATION thrown by service maps to 403, untyped error maps to 500 IO_ERROR (NB5)
     const jailApp = new TestSidecarApp();
+    let throwUntyped = false;
     const throwingService = {
       getSnapshot: async () => {
+        if (throwUntyped) throw new Error('Disk exploded with secret Bearer topsecret123');
         throw Object.assign(new Error('Write jail violation: symlink'), { code: 'WRITE_JAIL_VIOLATION' });
       },
     };
@@ -236,9 +238,39 @@ test('NMCP-TC-015 & NMCP-TC-016: Sidecar security middleware enforces Host/Origi
       });
       assert.equal(jailRes.status, 403);
       assert.equal(JSON.parse(jailRes.body).code, 'WRITE_JAIL_VIOLATION');
+
+      throwUntyped = true;
+      const err500Res = await sendRawHttpRequest({
+        port: jailPort,
+        headers: { Host: `127.0.0.1:${jailPort}`, 'x-sidecar-token': token, 'Content-Type': 'application/json' },
+      });
+      assert.equal(err500Res.status, 500);
+      assert.equal(JSON.parse(err500Res.body).code, 'IO_ERROR');
+      assert.equal(err500Res.body.includes('topsecret123'), false, '500 error message must redact Bearer tokens');
     } finally {
       await jailApp.close();
     }
+
+    // 2d. Cross-origin iframe GET / with Sec-Fetch-Site: cross-site succeeds (200 + strict CSP) for AUX_PANE (R6 F1),
+    // while GET / with attacker Host STILL fails with 403.
+    const crossSiteGet = await sendRawHttpRequest({
+      port,
+      method: 'GET',
+      reqPath: '/',
+      headers: { Host: `127.0.0.1:${port}`, 'Sec-Fetch-Site': 'cross-site' },
+      body: '',
+    });
+    assert.equal(crossSiteGet.status, 200);
+    assert.equal(crossSiteGet.headers['content-security-policy'], STRICT_SIDECAR_CSP);
+
+    const badHostGet = await sendRawHttpRequest({
+      port,
+      method: 'GET',
+      reqPath: '/',
+      headers: { Host: 'evil.example:80', 'Sec-Fetch-Site': 'cross-site' },
+      body: '',
+    });
+    assert.equal(badHostGet.status, 403);
 
     // 3. Unauthenticated POST rejected with 401
     const unauth = await sendRawHttpRequest({
@@ -341,7 +373,7 @@ test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with r
   const token = 'real-sdk-token-999';
   const child = spawn(
     process.execPath,
-    ['--import', `file:///${sdkLoader.replace(/\\/g, '/')}`, path.join(ROOT_DIR, 'sidecars/mcp_manager/main.mjs')],
+    ['--import', pathToFileURL(sdkLoader).href, path.join(ROOT_DIR, 'sidecars/mcp_manager/main.mjs')],
     {
       cwd: path.join(ROOT_DIR, 'sidecars/mcp_manager'),
       env: {
@@ -374,15 +406,16 @@ test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with r
     });
 
     // Verify GET /, /styles.css, /app.js (strict CSP + nosniff) and /preload.js (200)
+    // including Sec-Fetch-Site: cross-site for Antigravity Desktop AUX_PANE cross-origin iframe (R6 F1)
     for (const assetPath of ['/', '/styles.css', '/app.js']) {
       const assetRes = await sendRawHttpRequest({
         port,
         method: 'GET',
         reqPath: assetPath,
-        headers: { Host: `127.0.0.1:${port}` },
+        headers: { Host: `127.0.0.1:${port}`, 'Sec-Fetch-Site': 'cross-site' },
         body: '',
       });
-      assert.equal(assetRes.status, 200, `Expected 200 for GET ${assetPath}`);
+      assert.equal(assetRes.status, 200, `Expected 200 for cross-site iframe GET ${assetPath}`);
       assert.equal(assetRes.headers['content-security-policy'], STRICT_SIDECAR_CSP);
       assert.equal(assetRes.headers['x-content-type-options'], 'nosniff');
     }
@@ -390,10 +423,10 @@ test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with r
       port,
       method: 'GET',
       reqPath: '/preload.js',
-      headers: { Host: `127.0.0.1:${port}` },
+      headers: { Host: `127.0.0.1:${port}`, 'Sec-Fetch-Site': 'cross-site' },
       body: '',
     });
-    assert.equal(preloadRes.status, 200, 'Expected 200 for GET /preload.js from real sidecar_sdk');
+    assert.equal(preloadRes.status, 200, 'Expected 200 for cross-site iframe GET /preload.js from real sidecar_sdk');
 
     // GET /api/snapshot MUST be rejected with 405
     const getApiRes = await sendRawHttpRequest({

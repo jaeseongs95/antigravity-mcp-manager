@@ -144,7 +144,7 @@ test('NMCP-TC-019 & NMCP-TC-020 / NMCP-TC-020B (Real Headless Chromium/Edge CDP 
     port = await getFreeTcpPort();
     sidecarChild = spawn(
       process.execPath,
-      ['--import', `file:///${sdkLoader.replace(/\\/g, '/')}`, path.resolve(UI_DIR, '../main.mjs')],
+      ['--import', pathToFileURL(sdkLoader).href, path.resolve(UI_DIR, '../main.mjs')],
       {
         cwd: path.resolve(UI_DIR, '..'),
         env: {
@@ -520,6 +520,333 @@ test('NMCP-TC-019 & NMCP-TC-020 / NMCP-TC-020B (Real Headless Chromium/Edge CDP 
     if (server) {
       await new Promise((r) => server.close(r));
     }
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch {
+      // Ignore residual OS lock on temp browser profile during CI teardown
+    }
+  }
+});
+
+test('NMCP-TC-020C (Real Cross-Origin Iframe CDP E2E): AUX_PANE cross-site iframe loads cleanly without getWorkspaceUris hang and rejects untrusted parent postMessage', async (t) => {
+  const browserBin = findChromiumBinary();
+  if (!browserBin || typeof WebSocket !== 'function') {
+    t.skip('Headless Chromium/Edge binary or global WebSocket is unavailable on this host');
+    return;
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-ui-iframe-cdp-'));
+  const profileDir = path.join(tmpDir, 'browser-profile');
+  fs.mkdirSync(profileDir, { recursive: true });
+  const token = 'cross-origin-iframe-token';
+
+  const cfgDir = path.join(tmpDir, '.gemini', 'config');
+  fs.mkdirSync(cfgDir, { recursive: true });
+  const configPath = path.join(cfgDir, 'mcp_config.json');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({ mcpServers: { iframeSrv: { url: 'https://iframe.example.com/mcp' } } }, null, 2) + '\n',
+    'utf8'
+  );
+
+  const hostHome = process.env.USERPROFILE || process.env.HOME || os.homedir();
+  const sdkLoader = path.join(hostHome, '.gemini', 'antigravity', 'lib', 'node_modules', 'sidecar_sdk', 'register_loader.js');
+  const useRealSidecarSdk = fs.existsSync(sdkLoader);
+
+  let sidecarServer = null;
+  let sidecarChild = null;
+  let sidecarPort = 0;
+
+  if (useRealSidecarSdk) {
+    sidecarPort = await getFreeTcpPort();
+    sidecarChild = spawn(
+      process.execPath,
+      ['--import', pathToFileURL(sdkLoader).href, path.resolve(UI_DIR, '../main.mjs')],
+      {
+        cwd: path.resolve(UI_DIR, '..'),
+        env: {
+          ...process.env,
+          AGY_MCP_HOME_OVERRIDE: tmpDir,
+          ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:1',
+          ANTIGRAVITY_CSRF_TOKEN: 'dummy-csrf',
+          ANTIGRAVITY_SIDECAR_WEB_PORT: String(sidecarPort),
+          ANTIGRAVITY_SIDECAR_UI_TOKEN: token,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }
+    );
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Real sidecar boot timeout in 020C')), 6000);
+      let out = '';
+      sidecarChild.stdout.on('data', (d) => {
+        out += String(d);
+        if (out.includes('listening on 127.0.0.1:')) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+      sidecarChild.on('exit', (code) => {
+        clearTimeout(timer);
+        reject(new Error(`Real sidecar exited early (${code}) in 020C`));
+      });
+    });
+  } else {
+    class Resp {
+      constructor(body, opts = {}) {
+        this.body = body;
+        this.status = opts.status ?? 200;
+        this.contentType = opts.contentType ?? 'application/json; charset=utf-8';
+        this.headers = opts.headers ?? {};
+      }
+    }
+    const routes = new Map();
+    const fakeApp = {
+      page(p, fn) { routes.set(`GET ${p}`, fn); },
+      api(p, fn, m = 'POST') { routes.set(`${m.toUpperCase()} ${p}`, fn); },
+    };
+    const store = createFsConfigStore({
+      globalConfigPath: configPath,
+      pluginRoots: [path.join(cfgDir, 'plugins')],
+      backupDir: path.join(cfgDir, '.mcp-manager-backups'),
+    });
+    const service = new McpManagerService({ configStore: store });
+    registerSidecarRoutes({ app: fakeApp, ResponseClass: Resp, service, uiDir: UI_DIR });
+    // Simulate real sidecar_sdk/preload.js behavior: getWorkspaceUris() never resolves until workspace-change arrives,
+    // and onWorkspaceChange forwards unvalidated postMessage events!
+    fakeApp.api(
+      '/preload.js',
+      () =>
+        new Resp(
+          `(() => {
+            const cbs = [];
+            let resolveInitial = null;
+            const p = new Promise((r) => { resolveInitial = r; });
+            window.addEventListener('message', (e) => {
+              if (e.data && e.data.type === 'workspace-change' && Array.isArray(e.data.payload?.workspaceUris)) {
+                if (resolveInitial) { resolveInitial(e.data.payload.workspaceUris); resolveInitial = null; }
+                for (const cb of cbs) cb(e.data.payload.workspaceUris);
+              }
+            });
+            window.sidecar = {
+              getWorkspaceUris: () => p,
+              onWorkspaceChange: (cb) => { cbs.push(cb); },
+            };
+          })();`,
+          { status: 200, contentType: 'application/javascript; charset=utf-8', headers: { ...SECURITY_HEADERS } }
+        ),
+      'GET'
+    );
+    sidecarServer = http.createServer((req, res) => {
+      const pathname = new URL(req.url, 'http://127.0.0.1').pathname;
+      const handler = routes.get(`${req.method.toUpperCase()} ${pathname}`);
+      if (!handler) {
+        res.writeHead(404, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
+        res.end(JSON.stringify({ ok: false }));
+        return;
+      }
+      const chunks = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', async () => {
+        if (res.headersSent) return;
+        const body = Buffer.concat(chunks).toString('utf8');
+        const data = body ? JSON.parse(body) : {};
+        const out = await handler(data);
+        if (!res.headersSent) {
+          res.writeHead(out.status, { 'Content-Type': out.contentType, ...out.headers });
+          res.end(out.body);
+        }
+      });
+    });
+    attachSidecarSecurityMiddleware(sidecarServer, { token });
+    await new Promise((r) => sidecarServer.listen(0, '127.0.0.1', r));
+    sidecarPort = sidecarServer.address().port;
+  }
+
+  // Strictly cross-origin parent host (`http://localhost:<parentPort>`) embedding `http://127.0.0.1:<sidecarPort>`
+  const parentServer = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(
+      `<!doctype html><html><body><iframe id="aux-pane" src="http://127.0.0.1:${sidecarPort}/?token=${token}"></iframe></body></html>`
+    );
+  });
+  await new Promise((r) => parentServer.listen(0, '127.0.0.1', r));
+  const parentPort = parentServer.address().port;
+
+  const cdpPort = await getFreeTcpPort();
+  const browser = spawn(
+    browserBin,
+    [
+      '--headless=new',
+      '--disable-gpu',
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--no-first-run',
+      '--no-default-browser-check',
+      `--remote-debugging-port=${cdpPort}`,
+      `--user-data-dir=${profileDir}`,
+      'about:blank',
+    ],
+    { stdio: ['ignore', 'ignore', 'ignore'] }
+  );
+
+  let ws = null;
+  try {
+    let wsUrl = null;
+    await waitUntil(async () => {
+      try {
+        const listRes = await fetch(`http://127.0.0.1:${cdpPort}/json/list`);
+        if (listRes.ok) {
+          const targets = await listRes.json();
+          const pageTarget = targets.find((x) => x.type === 'page' && x.webSocketDebuggerUrl);
+          if (pageTarget) {
+            wsUrl = pageTarget.webSocketDebuggerUrl;
+            return true;
+          }
+        }
+      } catch {
+        // Retry until browser binds CDP port
+      }
+      return false;
+    }, 20000, 100);
+    assert.ok(wsUrl, 'Headless browser did not expose CDP WebSocket target');
+
+    ws = new WebSocket(wsUrl);
+    await new Promise((resolve, reject) => {
+      ws.addEventListener('open', resolve, { once: true });
+      ws.addEventListener('error', reject, { once: true });
+    });
+
+    let seq = 0;
+    const pending = new Map();
+    const exceptions = [];
+    const iframeOrigin = `http://127.0.0.1:${sidecarPort}`;
+    let iframeContextId = null;
+    let iframeSessionId = null;
+
+    const cdp = (method, params = {}, sessionId = undefined) =>
+      new Promise((resolve, reject) => {
+        const id = ++seq;
+        pending.set(id, { resolve, reject });
+        const payload = sessionId ? { id, method, params, sessionId } : { id, method, params };
+        ws.send(JSON.stringify(payload));
+      });
+
+    ws.addEventListener('message', (ev) => {
+      const msg = JSON.parse(String(ev.data));
+      if (msg.id && pending.has(msg.id)) {
+        const { resolve, reject } = pending.get(msg.id);
+        pending.delete(msg.id);
+        if (msg.error) reject(new Error(msg.error.message || JSON.stringify(msg.error)));
+        else resolve(msg.result);
+      } else if (msg.method === 'Target.attachedToTarget') {
+        const info = msg.params?.targetInfo;
+        const sid = msg.params?.sessionId;
+        if (sid && info && (info.type === 'iframe' || String(info.url || '').startsWith(iframeOrigin))) {
+          iframeSessionId = sid;
+          void cdp('Runtime.enable', {}, sid).catch(() => {});
+        }
+      } else if (msg.method === 'Runtime.executionContextCreated') {
+        const ctx = msg.params?.context;
+        if (ctx && ctx.origin === iframeOrigin && ctx.auxData?.isDefault) {
+          iframeContextId = ctx.id;
+        }
+      } else if (msg.method === 'Runtime.exceptionThrown') {
+        exceptions.push(msg.params?.exceptionDetails?.text || 'Uncaught exception');
+      }
+    });
+
+    await cdp('Page.enable');
+    await cdp('Runtime.enable');
+    await cdp('Target.setAutoAttach', {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true,
+    });
+
+    await cdp('Page.navigate', { url: `http://localhost:${parentPort}/` });
+
+    const evalIframe = async (expression) => {
+      if (iframeSessionId) {
+        const res = await cdp(
+          'Runtime.evaluate',
+          { expression, awaitPromise: true, returnByValue: true },
+          iframeSessionId
+        );
+        if (res.exceptionDetails) {
+          throw new Error(`Iframe eval exception: ${res.exceptionDetails.text}`);
+        }
+        return res.result?.value;
+      }
+      assert.ok(iframeContextId, 'Cross-origin iframe execution context was not created');
+      const res = await cdp('Runtime.evaluate', {
+        contextId: iframeContextId,
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+      });
+      if (res.exceptionDetails) {
+        throw new Error(`Iframe eval exception: ${res.exceptionDetails.text}`);
+      }
+      return res.result?.value;
+    };
+
+    assert.equal(
+      await waitUntil(() => Boolean(iframeSessionId || iframeContextId), 8000, 40),
+      true,
+      'Cross-origin iframe should load without 403'
+    );
+    assert.equal(
+      await waitUntil(async () => {
+        try {
+          return await evalIframe(`Boolean(document.querySelector('[data-testid="global-server-iframeSrv"]'))`);
+        } catch {
+          return false;
+        }
+      }, 8000, 40),
+      true,
+      'Cross-origin iframe must finish init() without hanging on getWorkspaceUris() and render iframeSrv'
+    );
+    assert.ok((await evalIframe('document.styleSheets.length')) >= 1, 'Cross-origin iframe styles.css must load under strict CSP');
+
+    // Untrusted cross-origin parent (http://localhost:<parentPort>) sending workspace-change MUST be ignored
+    const countBefore = await evalIframe(
+      `performance.getEntriesByType('resource').filter((e) => e.name.includes('/api/snapshot')).length`
+    );
+    assert.ok(countBefore >= 1, 'Expected initial /api/snapshot call in cross-origin iframe');
+    await cdp('Runtime.evaluate', {
+      expression: `document.getElementById('aux-pane').contentWindow.postMessage({ type: 'workspace-change', payload: { workspaceUris: ['file:///evil'] } }, '*')`,
+      returnByValue: true,
+    });
+    await new Promise((r) => setTimeout(r, 150));
+    const countAfter = await evalIframe(
+      `performance.getEntriesByType('resource').filter((e) => e.name.includes('/api/snapshot')).length`
+    );
+    assert.equal(
+      countAfter,
+      countBefore,
+      'Untrusted cross-origin parent postMessage must NOT trigger loadSnapshot via preload.onWorkspaceChange'
+    );
+    assert.equal(exceptions.length, 0, `Unexpected browser exceptions in 020C: ${exceptions.join('; ')}`);
+  } finally {
+    if (ws) {
+      try { ws.close(); } catch {}
+    }
+    const waitChildExit = (proc) =>
+      new Promise((resolve) => {
+        if (!proc || proc.exitCode !== null) return resolve();
+        const t = setTimeout(resolve, 3000);
+        proc.once('exit', () => {
+          clearTimeout(t);
+          resolve();
+        });
+      });
+    try { browser.kill(); } catch {}
+    if (sidecarChild) {
+      try { sidecarChild.kill(); } catch {}
+    }
+    await Promise.all([waitChildExit(browser), waitChildExit(sidecarChild)]);
+    if (sidecarServer) await new Promise((r) => sidecarServer.close(r));
+    await new Promise((r) => parentServer.close(r));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     } catch {

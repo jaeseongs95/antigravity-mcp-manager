@@ -92,7 +92,8 @@ function verifyNoSymlinkInChain(targetPath, { createParent = false, parentLevels
 }
 
 function acquireLock(lockPath) {
-  const payload = JSON.stringify({ pid: process.pid, createdAt: Date.now() });
+  const ownerToken = crypto.randomBytes(16).toString('hex');
+  const payload = JSON.stringify({ pid: process.pid, token: ownerToken, createdAt: Date.now() });
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const fd = fs.openSync(lockPath, 'wx', 0o600);
@@ -101,7 +102,7 @@ function acquireLock(lockPath) {
       } finally {
         fs.closeSync(fd);
       }
-      return true;
+      return ownerToken;
     } catch (err) {
       if (err && err.code === 'EEXIST') {
         let st;
@@ -127,22 +128,29 @@ function acquireLock(lockPath) {
           } catch (renErr) {
             if (renErr && renErr.code === 'ENOENT') continue;
             if (renErr && (renErr.code === 'EACCES' || renErr.code === 'EPERM')) throw renErr;
-            return false;
+            return null;
           }
         }
-        return false;
+        return null;
       }
       throw err;
     }
   }
-  return false;
+  return null;
 }
 
-function releaseLock(lockPath) {
+function releaseLock(lockPath, ownerToken) {
+  if (!ownerToken) return;
   try {
-    fs.unlinkSync(lockPath);
+    const st = fs.lstatSync(lockPath);
+    if (st.isSymbolicLink()) return;
+    const raw = fs.readFileSync(lockPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.token === ownerToken) {
+      fs.unlinkSync(lockPath);
+    }
   } catch {
-    // Ignore if already removed
+    // Ignore if already removed, reclaimed by another owner, or unreadable
   }
 }
 
@@ -262,9 +270,9 @@ export function createFsConfigStore({
       };
     }
 
-    let locked = false;
+    let lockToken = null;
     try {
-      locked = acquireLock(lockPath);
+      lockToken = acquireLock(lockPath);
     } catch (err) {
       return {
         ok: false,
@@ -272,7 +280,7 @@ export function createFsConfigStore({
         error: err?.message || String(err),
       };
     }
-    if (!locked) {
+    if (!lockToken) {
       return {
         ok: false,
         code: ERROR_CODES.LOCK_BUSY,
@@ -321,7 +329,7 @@ export function createFsConfigStore({
         error: err?.message || String(err),
       };
     } finally {
-      releaseLock(lockPath);
+      releaseLock(lockPath, lockToken);
     }
   }
 
@@ -454,13 +462,13 @@ export function createFsConfigStore({
       return { ok: false, code: err?.code || ERROR_CODES.WRITE_JAIL_VIOLATION, error: err?.message || String(err) };
     }
 
-    let locked = false;
+    let lockToken = null;
     try {
-      locked = acquireLock(lockPath);
+      lockToken = acquireLock(lockPath);
     } catch (err) {
       return { ok: false, code: ERROR_CODES.IO_ERROR, error: err?.message || String(err) };
     }
-    if (!locked) {
+    if (!lockToken) {
       return { ok: false, code: ERROR_CODES.LOCK_BUSY, error: 'Lock busy while restoring backup.' };
     }
     try {
@@ -482,7 +490,7 @@ export function createFsConfigStore({
     } catch (err) {
       return { ok: false, code: err?.code || ERROR_CODES.IO_ERROR, error: err?.message || String(err) };
     } finally {
-      releaseLock(lockPath);
+      releaseLock(lockPath, lockToken);
     }
   }
 

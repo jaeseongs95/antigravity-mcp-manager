@@ -26,6 +26,8 @@
   let pastePreview = null;
   let pasteInputDraft = '';
   let rawDraft = '';
+  let rawDraftDirty = false;
+  let snapshotRequestSeq = 0;
 
   const mainRegion = document.getElementById('main-region');
   const bannerRegion = document.getElementById('banner-region');
@@ -47,11 +49,12 @@
 
   function el(tag, props, ...children) {
     const node = document.createElement(tag);
+    let deferredValue;
     if (props) {
       for (const [k, v] of Object.entries(props)) {
         if (v === undefined || v === null || v === false) continue;
         if (k === 'className') node.className = String(v);
-        else if (k === 'value') node.value = String(v);
+        else if (k === 'value') deferredValue = String(v);
         else if (k === 'checked') node.checked = Boolean(v);
         else if (k === 'disabled') node.disabled = Boolean(v);
         else if (k === 'dataset' && typeof v === 'object') {
@@ -76,6 +79,9 @@
       } else {
         node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
       }
+    }
+    if (deferredValue !== undefined) {
+      node.value = deferredValue;
     }
     return node;
   }
@@ -113,6 +119,7 @@
     pasteInputDraft = '';
     if (!keepRawIfMalformed || !snapshot?.globalConfig?.malformed) {
       rawDraft = '';
+      rawDraftDirty = false;
     }
   }
 
@@ -127,9 +134,15 @@
   }
 
   function handleConflictBanner() {
-    setBanner('warn', 'mcp_config.json changed on disk (409 Conflict). Reload before retrying.', [
-      { label: 'Reload Latest', onClick: () => { clearBanner(); void loadSnapshot(true); } },
-    ]);
+    pendingStdioConfirm = null;
+    bannerState = {
+      kind: 'warn',
+      message: 'mcp_config.json changed on disk (409 Conflict). Reload before retrying.',
+      actions: [
+        { label: 'Reload Latest', onClick: () => { clearBanner(); void loadSnapshot(true); } },
+      ],
+    };
+    renderAll();
   }
 
   function openEditorForServer(serverEntry = null) {
@@ -195,17 +208,20 @@
   }
 
   async function loadSnapshot(includeRawText = activeTab === 'raw') {
+    const seq = ++snapshotRequestSeq;
     const { data } = await apiPost('/api/snapshot', {
       workspaceUris,
       includeRawText,
     });
+    if (seq !== snapshotRequestSeq) return;
     if (!data || !data.ok) {
       setBanner('error', (data?.errors || ['Failed to load MCP configuration']).join(' '));
       return;
     }
     snapshot = data;
-    if (typeof data.globalConfig?.rawText === 'string') {
+    if (typeof data.globalConfig?.rawText === 'string' && (includeRawText || (!rawDraftDirty && !rawDraft))) {
       rawDraft = data.globalConfig.rawText;
+      if (includeRawText) rawDraftDirty = false;
     }
     if (data.globalConfig?.malformed) {
       activeTab = 'raw';
@@ -781,7 +797,7 @@
       className: 'mono',
       value: rawDraft,
       dataset: { testid: 'raw-json-textarea' },
-      onInput: (e) => { rawDraft = e.target.value; },
+      onInput: (e) => { rawDraft = e.target.value; rawDraftDirty = true; },
     });
     return [
       el(
@@ -835,7 +851,7 @@
   function isTrustedParentOrigin(origin) {
     if (!origin || origin === 'null') return false;
     if (origin === window.location.origin) return true;
-    return /^(?:vscode-webview|antigravity|app):/i.test(origin);
+    return /^(?:vscode-webview|vscode-file|antigravity|app):/i.test(origin);
   }
 
   window.addEventListener('message', (event) => {
@@ -843,7 +859,7 @@
     if (!isTrustedParentOrigin(event.origin)) return;
     if (event.data?.type === 'workspace-change' && Array.isArray(event.data.payload?.workspaceUris)) {
       workspaceUris = [...event.data.payload.workspaceUris];
-      // Preserve in-progress Raw JSON draft when workspace changes (NB3)
+      // Preserve in-progress Raw JSON draft when workspace changes
       void loadSnapshot(false);
     }
   });
@@ -851,24 +867,18 @@
   window.addEventListener('beforeunload', () => scrubSensitiveState({ keepRawIfMalformed: false }));
 
   async function init() {
+    // Race preload getWorkspaceUris() against a short timeout: real sidecar_sdk/preload.js
+    // never resolves getWorkspaceUris() until the host sends a workspace-change postMessage.
+    // Subsequent workspace-change events are handled exclusively by the strict message listener above.
     if (window.sidecar && typeof window.sidecar.getWorkspaceUris === 'function') {
       try {
-        const initialUris = await window.sidecar.getWorkspaceUris();
+        const initialUris = await Promise.race([
+          window.sidecar.getWorkspaceUris(),
+          new Promise((resolve) => setTimeout(() => resolve(null), 100)),
+        ]);
         if (Array.isArray(initialUris)) workspaceUris = [...initialUris];
       } catch {
         // Ignore if preload does not provide workspace list yet
-      }
-    }
-    if (window.parent && window.parent !== window && window.sidecar && typeof window.sidecar.onWorkspaceChange === 'function') {
-      try {
-        window.sidecar.onWorkspaceChange((nextUris) => {
-          if (Array.isArray(nextUris)) {
-            workspaceUris = [...nextUris];
-            void loadSnapshot(false);
-          }
-        });
-      } catch {
-        // Ignore if preload listener registration fails
       }
     }
     await loadSnapshot(false);
