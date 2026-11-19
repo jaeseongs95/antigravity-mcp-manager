@@ -481,6 +481,12 @@ test('NMCP-TC-019 & NMCP-TC-020 / NMCP-TC-020B (Real Headless Chromium/Edge CDP 
       true,
       'Confirming Raw JSON Stdio should write browserCmd to disk'
     );
+    // Wait for post-save loadSnapshot(true) to finish rendering before mutating disk for 409 Conflict check
+    assert.equal(
+      await waitUntil(() => evalJs(`!document.querySelector('[data-testid="stdio-confirm-panel"]')`)),
+      true,
+      'UI must finish post-save loadSnapshot before external disk mutation'
+    );
 
     // 7. External disk change triggers 409 Conflict banner in real Chromium
     fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { ext: { url: 'https://ext.example/mcp' } } }) + '\n', 'utf8');
