@@ -17,11 +17,27 @@
 
   const NAV_ATTR = 'data-agy-mcp-manager-nav';
   const FRAME_ATTR = 'data-agy-mcp-manager-frame';
+  const CUSTOMIZATIONS_BTN_ATTR = 'data-agy-mcp-customizations-btn';
+  const CUSTOMIZATIONS_OVERLAY_ATTR = 'data-agy-mcp-customizations-overlay';
+  const CUSTOMIZATIONS_BACK_ATTR = 'data-agy-mcp-customizations-back';
+  const CUSTOMIZATIONS_CLOSE_ATTR = 'data-agy-mcp-customizations-close';
   const PREV_DISPLAY_ATTR = 'agyMcpPrevDisplay';
   const SUPPRESSED_BG_ATTR = 'agyMcpSuppressedBg';
   const SUPPRESSED_COLOR_ATTR = 'agyMcpSuppressedColor';
   const LANG_STORAGE_KEY = 'agy-mcp-manager-lang';
   const BROWSER_LABELS = ['browser', '브라우저'];
+  const CUSTOMIZATIONS_PAGE_MARKERS = [
+    'customizations',
+    'skills & rules',
+    'custom agents',
+    '사용자 정의',
+    '맞춤 설정',
+    '커스터마이징',
+    '스킬 및 규칙',
+    '사용자 지정 에이전트',
+    '커스텀 에이전트',
+  ];
+  const MCP_SERVERS_SECTION_LABELS = ['mcp servers', 'mcp 서버'];
   const REQUIRED_SIBLING_LABELS = [
     'general',
     'application',
@@ -416,11 +432,264 @@
     }
   }
 
-  if (window.__AGY_MCP_MANAGER_INJECTOR_ACTIVE__) {
+  function isCustomizationsMarker(txt) {
+    return CUSTOMIZATIONS_PAGE_MARKERS.some(
+      (marker) => txt === marker || (txt.startsWith(marker) && /^[\s(]*\d*[\s)]*$/.test(txt.slice(marker.length)))
+    );
+  }
+
+  function isMcpServersLabel(txt) {
+    return MCP_SERVERS_SECTION_LABELS.some(
+      (label) => txt === label || (txt.startsWith(label) && /^[\s(]*\d+[\s)]*$/.test(txt.slice(label.length)))
+    );
+  }
+
+  function isCustomizationsPageVisible() {
+    const candidates = document.querySelectorAll('h1, h2, h3, h4, div, span, button');
+    for (const el of candidates) {
+      if (el.children.length > 2) continue;
+      if (el.closest?.(`[${CUSTOMIZATIONS_OVERLAY_ATTR}="true"]`)) continue;
+      if (isCustomizationsMarker(normalizedText(el))) {
+        const rect = el.getBoundingClientRect?.();
+        if (!rect || (rect.width > 0 && rect.height > 0)) return true;
+      }
+    }
+    return false;
+  }
+
+  function findCustomizationsMcpHeader() {
+    if (!isCustomizationsPageVisible()) return null;
+    const candidates = document.querySelectorAll('h1, h2, h3, h4, span, div, button, p');
+    for (const el of candidates) {
+      if (el.children.length > 2) continue;
+      if (el.closest?.(`[${CUSTOMIZATIONS_OVERLAY_ATTR}="true"]`)) continue;
+      if (el.hasAttribute(CUSTOMIZATIONS_BTN_ATTR)) continue;
+      if (!isMcpServersLabel(normalizedText(el))) continue;
+
+      let row = el.parentElement;
+      for (let depth = 0; depth < 4 && row && row !== document.body; depth += 1) {
+        const buttons = Array.from(row.querySelectorAll('button')).filter(
+          (b) => !b.hasAttribute(CUSTOMIZATIONS_BTN_ATTR) && !b.contains(el)
+        );
+        if (buttons.length >= 1) {
+          const actionContainer = buttons[0].parentElement || row;
+          return { row, actionContainer, firstActionButton: buttons[0] };
+        }
+        row = row.parentElement;
+      }
+
+      const fallbackRow = el.parentElement;
+      if (fallbackRow && fallbackRow !== document.body) {
+        return { row: fallbackRow, actionContainer: fallbackRow, firstActionButton: null };
+      }
+    }
+    return null;
+  }
+
+  function getCustomizationsButtonLabel() {
+    return readSavedLang() === 'ko' ? 'MCP 매니저' : 'MCP Manager';
+  }
+
+  function getCustomizationsBackLabel() {
+    return readSavedLang() === 'ko' ? '← Customizations로 돌아가기' : '← Back to Customizations';
+  }
+
+  function syncCustomizationsLabels() {
+    const btn = document.querySelector(`[${CUSTOMIZATIONS_BTN_ATTR}="true"]`);
+    if (btn) btn.textContent = getCustomizationsButtonLabel();
+    const backBtn = document.querySelector(`[${CUSTOMIZATIONS_BACK_ATTR}="true"]`);
+    if (backBtn) backBtn.textContent = getCustomizationsBackLabel();
+  }
+
+  let lastCustomizationsTrigger = null;
+
+  function closeCustomizationsOverlay() {
+    const overlay = document.querySelector(`[${CUSTOMIZATIONS_OVERLAY_ATTR}="true"]`);
+    if (overlay) {
+      overlay.style.display = 'none';
+    }
+    if (lastCustomizationsTrigger && typeof lastCustomizationsTrigger.focus === 'function') {
+      try {
+        lastCustomizationsTrigger.focus();
+      } catch {
+        // Ignore focus errors
+      }
+    }
+  }
+
+  function openCustomizationsOverlay(triggerBtn) {
+    const baseUrl = window.__AGY_MCP_MANAGER_URL__;
+    if (!isSafeLoopbackIframeUrl(baseUrl)) return;
+    lastCustomizationsTrigger = triggerBtn || null;
+
+    const bodyCs = window.getComputedStyle(document.body);
+    const bodyBg = bodyCs?.backgroundColor || '';
+    const hostBg = bodyBg && bodyBg !== 'rgba(0, 0, 0, 0)' && bodyBg !== 'transparent' ? bodyBg : '#0d0e11';
+    const hostFg = bodyCs?.color || '#e5e7eb';
+    const hostFont = bodyCs?.fontFamily || 'sans-serif';
+    const themedUrl = buildThemedIframeUrl(baseUrl, document.body);
+
+    let overlay = document.querySelector(`[${CUSTOMIZATIONS_OVERLAY_ATTR}="true"]`);
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.setAttribute(CUSTOMIZATIONS_OVERLAY_ATTR, 'true');
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-label', 'MCP Manager');
+      overlay.style.position = 'fixed';
+      overlay.style.inset = '0';
+      overlay.style.zIndex = '9999';
+      overlay.style.display = 'flex';
+      overlay.style.flexDirection = 'column';
+      overlay.style.background = hostBg;
+      overlay.style.color = hostFg;
+      overlay.style.fontFamily = hostFont;
+
+      const topBar = document.createElement('div');
+      topBar.style.height = '44px';
+      topBar.style.flex = '0 0 auto';
+      topBar.style.display = 'flex';
+      topBar.style.alignItems = 'center';
+      topBar.style.justifyContent = 'space-between';
+      topBar.style.padding = '0 16px';
+      topBar.style.borderBottom = '1px solid rgba(128, 128, 128, 0.22)';
+
+      const backBtn = document.createElement('button');
+      backBtn.type = 'button';
+      backBtn.setAttribute(CUSTOMIZATIONS_BACK_ATTR, 'true');
+      backBtn.textContent = getCustomizationsBackLabel();
+      backBtn.style.background = 'transparent';
+      backBtn.style.border = '1px solid rgba(128, 128, 128, 0.28)';
+      backBtn.style.borderRadius = '6px';
+      backBtn.style.color = 'inherit';
+      backBtn.style.fontFamily = 'inherit';
+      backBtn.style.fontSize = '12px';
+      backBtn.style.fontWeight = '500';
+      backBtn.style.padding = '4px 10px';
+      backBtn.style.cursor = 'pointer';
+      backBtn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        closeCustomizationsOverlay();
+      });
+
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.setAttribute(CUSTOMIZATIONS_CLOSE_ATTR, 'true');
+      closeBtn.setAttribute('aria-label', 'Close MCP Manager');
+      closeBtn.textContent = '✕';
+      closeBtn.style.background = 'transparent';
+      closeBtn.style.border = '0';
+      closeBtn.style.borderRadius = '6px';
+      closeBtn.style.color = 'inherit';
+      closeBtn.style.fontSize = '15px';
+      closeBtn.style.lineHeight = '1';
+      closeBtn.style.width = '28px';
+      closeBtn.style.height = '28px';
+      closeBtn.style.cursor = 'pointer';
+      closeBtn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        closeCustomizationsOverlay();
+      });
+
+      topBar.appendChild(backBtn);
+      topBar.appendChild(closeBtn);
+
+      const frame = document.createElement('iframe');
+      frame.setAttribute(FRAME_ATTR, 'true');
+      frame.setAttribute('data-agy-mcp-customizations-frame', 'true');
+      frame.setAttribute('title', 'MCP Manager');
+      frame.style.width = '100%';
+      frame.style.height = '100%';
+      frame.style.flex = '1 1 auto';
+      frame.style.minHeight = '0';
+      frame.style.border = '0';
+      frame.style.display = 'block';
+      frame.style.background = 'transparent';
+      frame.src = themedUrl;
+
+      overlay.appendChild(topBar);
+      overlay.appendChild(frame);
+      document.body.appendChild(overlay);
+    } else {
+      overlay.style.background = hostBg;
+      overlay.style.color = hostFg;
+      overlay.style.fontFamily = hostFont;
+      const frame = overlay.querySelector(`[${FRAME_ATTR}="true"]`);
+      if (frame && !sameFrameBaseAndTheme(frame.src, themedUrl)) {
+        frame.src = themedUrl;
+      }
+      syncCustomizationsLabels();
+      overlay.style.display = 'flex';
+    }
+  }
+
+  function ensureCustomizationsButton() {
+    const baseUrl = window.__AGY_MCP_MANAGER_URL__;
+    if (!isSafeLoopbackIframeUrl(baseUrl)) return;
+
+    const found = findCustomizationsMcpHeader();
+    if (!found) return;
+    const { row, actionContainer, firstActionButton } = found;
+
+    if (row.querySelector(`[${CUSTOMIZATIONS_BTN_ATTR}="true"]`)) {
+      return;
+    }
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.setAttribute(CUSTOMIZATIONS_BTN_ATTR, 'true');
+    btn.textContent = getCustomizationsButtonLabel();
+    btn.style.background = 'rgba(128, 128, 128, 0.14)';
+    btn.style.border = '1px solid rgba(128, 128, 128, 0.28)';
+    btn.style.borderRadius = '6px';
+    btn.style.color = 'inherit';
+    btn.style.fontFamily = 'inherit';
+    btn.style.fontSize = '12px';
+    btn.style.fontWeight = '500';
+    btn.style.lineHeight = '1.4';
+    btn.style.padding = '3px 10px';
+    btn.style.marginRight = '6px';
+    btn.style.cursor = 'pointer';
+    btn.style.whiteSpace = 'nowrap';
+    btn.addEventListener('mouseenter', () => {
+      btn.style.background = 'rgba(128, 128, 128, 0.24)';
+    });
+    btn.addEventListener('mouseleave', () => {
+      btn.style.background = 'rgba(128, 128, 128, 0.14)';
+    });
+    btn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      openCustomizationsOverlay(btn);
+    });
+
+    if (firstActionButton && firstActionButton.parentElement === actionContainer) {
+      actionContainer.insertBefore(btn, firstActionButton);
+    } else {
+      actionContainer.appendChild(btn);
+    }
+  }
+
+  function ensureAllMounts() {
     ensureSettingsMenuItem();
+    ensureCustomizationsButton();
+  }
+
+  if (window.__AGY_MCP_MANAGER_INJECTOR_ACTIVE__) {
+    ensureAllMounts();
     return;
   }
   window.__AGY_MCP_MANAGER_INJECTOR_ACTIVE__ = true;
+
+  window.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') {
+      const overlay = document.querySelector(`[${CUSTOMIZATIONS_OVERLAY_ATTR}="true"]`);
+      if (overlay && overlay.style.display !== 'none') {
+        ev.preventDefault();
+        closeCustomizationsOverlay();
+      }
+    }
+  });
 
   window.addEventListener('message', (ev) => {
     const baseUrl = window.__AGY_MCP_MANAGER_URL__;
@@ -431,14 +700,15 @@
     } catch {
       return;
     }
-    const frame = document.querySelector(`[${FRAME_ATTR}="true"]`);
-    if (!frame || ev.source !== frame.contentWindow) return;
+    const frames = Array.from(document.querySelectorAll(`[${FRAME_ATTR}="true"]`));
+    if (!frames.some((frame) => frame.contentWindow === ev.source)) return;
     if (ev.data?.type === 'agy-mcp-lang-change' && (ev.data.lang === 'ko' || ev.data.lang === 'en')) {
       try {
         window.localStorage?.setItem(LANG_STORAGE_KEY, ev.data.lang);
       } catch {
         // Ignore storage errors
       }
+      syncCustomizationsLabels();
     }
   });
 
@@ -448,7 +718,7 @@
     scheduled = true;
     const run = () => {
       scheduled = false;
-      ensureSettingsMenuItem();
+      ensureAllMounts();
     };
     if (typeof window.requestAnimationFrame === 'function') {
       window.requestAnimationFrame(run);
@@ -458,14 +728,14 @@
   };
 
   if (document.body) {
-    ensureSettingsMenuItem();
+    ensureAllMounts();
     const observer = new MutationObserver(scheduleEnsure);
     observer.observe(document.body, { childList: true, subtree: true });
   } else {
     window.addEventListener(
       'DOMContentLoaded',
       () => {
-        ensureSettingsMenuItem();
+        ensureAllMounts();
         const observer = new MutationObserver(scheduleEnsure);
         observer.observe(document.body, { childList: true, subtree: true });
       },
