@@ -104,16 +104,19 @@ test('NMCP-TC-021 (Real Chromium CDP E2E): Settings sidebar injector mounts MCP 
       <html>
         <body style="display:flex;margin:0;height:100vh;background:#111;color:#eee;font-family:sans-serif;">
           <div id="settings-root" style="display:flex;width:100%;height:100%;">
-            <nav id="settings-sidebar" style="width:220px;display:flex;flex-direction:column;gap:4px;padding:12px;">
-              <div>Settings</div>
-              <button type="button" id="nav-general">General</button>
-              <button type="button" id="nav-application">Application</button>
-              <button type="button" id="nav-appearance">Appearance</button>
-              <button type="button" id="nav-shortcuts">Shortcuts</button>
-              <button type="button" id="nav-notifications">Notifications</button>
-              <button type="button" id="nav-models">Models</button>
-              <button type="button" id="nav-browser">Browser</button>
-            </nav>
+            <aside id="settings-sidebar" style="width:220px;display:flex;flex-direction:column;gap:8px;padding:12px;">
+              <div id="left-sidebar-header">Settings</div>
+              <nav id="settings-nav-section" style="display:flex;flex-direction:column;gap:4px;">
+                <button type="button" id="nav-general">General</button>
+                <button type="button" id="nav-application">Application</button>
+                <button type="button" id="nav-appearance">Appearance</button>
+                <button type="button" id="nav-shortcuts">Shortcuts</button>
+                <button type="button" id="nav-notifications">Notifications</button>
+                <button type="button" id="nav-models">Models</button>
+                <button type="button" id="nav-browser">Browser</button>
+              </nav>
+              <div id="left-sidebar-projects">Projects</div>
+            </aside>
             <main id="settings-content" style="flex:1;padding:16px;">
               <div id="native-general-pane">Native General Settings Panel</div>
             </main>
@@ -260,8 +263,17 @@ test('NMCP-TC-021 (Real Chromium CDP E2E): Settings sidebar injector mounts MCP 
       true,
       'Settings MCP Manager iframe must load and render global-server-settingsSrv'
     );
-    const hiddenCheck = await evalMain(`document.getElementById('native-general-pane').style.display`);
-    assert.equal(hiddenCheck, 'none', 'Native Settings pane must be hidden (not destroyed) while MCP Manager is active');
+    const hiddenCheck = await evalMain(`({
+      nativeDisplay: document.getElementById('native-general-pane').style.display,
+      frameParentId: document.querySelector('[data-agy-mcp-manager-frame="true"]')?.parentElement?.id || '',
+      frameLeft: document.querySelector('[data-agy-mcp-manager-frame="true"]')?.getBoundingClientRect().left || 0,
+      frameWidth: document.querySelector('[data-agy-mcp-manager-frame="true"]')?.getBoundingClientRect().width || 0,
+      sidebarRight: document.getElementById('settings-sidebar').getBoundingClientRect().right,
+    })`);
+    assert.equal(hiddenCheck.nativeDisplay, 'none', 'Native Settings pane must be hidden (not destroyed) while MCP Manager is active');
+    assert.equal(hiddenCheck.frameParentId, 'settings-content', 'MCP Manager iframe MUST mount in right-hand settings-content, NEVER inside left sidebar');
+    assert.ok(hiddenCheck.frameLeft >= hiddenCheck.sidebarRight - 24, `Expected iframe to the right of sidebar (${hiddenCheck.frameLeft} >= ${hiddenCheck.sidebarRight - 24})`);
+    assert.ok(hiddenCheck.frameWidth >= 300, `Expected wide right-hand iframe (>=300px, got ${hiddenCheck.frameWidth})`);
 
     // 3. Click General -> hides iframe and restores native pane
     await evalMain(`document.getElementById('nav-general').click()`);

@@ -63,26 +63,37 @@
     return null;
   }
 
-  function findSettingsContentPane(sidebar) {
+  function findSettingsLayout(sidebar) {
+    const sidebarRect = sidebar.getBoundingClientRect?.() || { left: 0, right: 0, width: 0, height: 0 };
     let cursor = sidebar;
-    for (let depth = 0; depth < 4 && cursor && cursor.parentElement && cursor.parentElement !== document.body; depth += 1) {
+    for (let depth = 0; depth < 8 && cursor && cursor.parentElement && cursor.parentElement !== document.documentElement; depth += 1) {
       const parent = cursor.parentElement;
-      const siblings = Array.from(parent.children).filter(
-        (child) => child !== cursor && child.nodeType === 1 && child.tagName !== 'STYLE' && child.tagName !== 'SCRIPT'
-      );
+      const cursorRect = cursor.getBoundingClientRect?.() || sidebarRect;
+      const rightBoundary = Math.max(sidebarRect.right, cursorRect.right);
+      const siblings = Array.from(parent.children).filter((child) => {
+        if (child === cursor || child.nodeType !== 1) return false;
+        if (child.tagName === 'STYLE' || child.tagName === 'SCRIPT') return false;
+        const r = child.getBoundingClientRect?.();
+        if (!r) return false;
+        // Must be positioned horizontally to the RIGHT of the left sidebar (never a vertical sibling inside the sidebar!)
+        return r.width >= 280 && r.height >= 200 && r.left >= rightBoundary - 24;
+      });
       if (siblings.length > 0) {
-        // Pick the widest/largest non-sidebar sibling as the right-hand Settings content pane
         let best = siblings[0];
+        let bestArea = 0;
         for (const sib of siblings) {
-          if ((sib.getBoundingClientRect?.().width || 0) > (best.getBoundingClientRect?.().width || 0)) {
+          const r = sib.getBoundingClientRect();
+          const area = r.width * r.height;
+          if (area > bestArea) {
+            bestArea = area;
             best = sib;
           }
         }
-        return best;
+        return { outerSidebar: cursor, contentPane: best };
       }
       cursor = parent;
     }
-    return null;
+    return { outerSidebar: sidebar, contentPane: null };
   }
 
   function restoreNativePane(contentPane, navItem) {
@@ -132,7 +143,7 @@
       frame.setAttribute('title', 'MCP Manager');
       frame.style.width = '100%';
       frame.style.height = '100%';
-      frame.style.minHeight = '640px';
+      frame.style.minHeight = 'calc(100vh - 64px)';
       frame.style.border = '0';
       frame.style.display = 'block';
       frame.style.background = 'transparent';
@@ -151,12 +162,12 @@
     const found = findSettingsSidebarAndAnchor();
     if (!found) return;
     const { sidebar, listParent, browserItem } = found;
+    const { outerSidebar, contentPane: initialContentPane } = findSettingsLayout(sidebar);
 
     // Update iframe URL if already mounted
     const existingNav = sidebar.querySelector(`[${NAV_ATTR}="true"]`);
     if (existingNav) {
-      const contentPane = findSettingsContentPane(sidebar);
-      const existingFrame = contentPane?.querySelector(`[${FRAME_ATTR}="true"]`);
+      const existingFrame = initialContentPane?.querySelector(`[${FRAME_ATTR}="true"]`);
       if (existingFrame && existingFrame.src !== iframeUrl) {
         existingFrame.src = iframeUrl;
       }
@@ -172,6 +183,7 @@
     navItem.textContent = 'MCP Manager';
     navItem.style.cursor = 'pointer';
     navItem.style.textAlign = 'left';
+    navItem.style.outline = 'none';
     if (navItem.tagName === 'BUTTON' && !navItem.className) {
       navItem.style.width = '100%';
       navItem.style.padding = '8px 12px';
@@ -185,20 +197,21 @@
     navItem.addEventListener('click', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
-      const contentPane = findSettingsContentPane(sidebar);
+      const { contentPane } = findSettingsLayout(sidebar);
       showMcpManagerPane(contentPane, navItem);
     });
 
-    if (!sidebar.dataset.agyMcpClickBound) {
-      sidebar.dataset.agyMcpClickBound = 'true';
-      sidebar.addEventListener(
+    const clickHost = outerSidebar || sidebar;
+    if (!clickHost.dataset.agyMcpClickBound) {
+      clickHost.dataset.agyMcpClickBound = 'true';
+      clickHost.addEventListener(
         'click',
         (ev) => {
           const target = ev.target;
           if (!target || target.closest?.(`[${NAV_ATTR}="true"]`)) return;
-          const activeNav = sidebar.querySelector(`[${NAV_ATTR}="true"]`);
+          const activeNav = clickHost.querySelector(`[${NAV_ATTR}="true"]`);
           if (activeNav && activeNav.dataset.agyMcpActive === 'true') {
-            const contentPane = findSettingsContentPane(sidebar);
+            const { contentPane } = findSettingsLayout(sidebar);
             restoreNativePane(contentPane, activeNav);
           }
         },
