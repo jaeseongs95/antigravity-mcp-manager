@@ -14,11 +14,26 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '..');
+const CORE_SRC_DIR = path.join(ROOT_DIR, 'src', 'core');
 const RENDERER_SRC_DIR = path.join(ROOT_DIR, 'src', 'adapters', 'antigravity', 'renderer');
 export const RENDERER_OUTPUT_PATH = path.join(ROOT_DIR, 'src', 'adapters', 'antigravity', 'addon-renderer.js');
 
+export const CORE_MODULE_ORDER = Object.freeze([
+  'model.mjs',
+  'sha256.mjs',
+  'ports.mjs',
+  'secret-redactor.mjs',
+  'collision-detector.mjs',
+  'validator.mjs',
+  'document-engine.mjs',
+  'input-parser.mjs',
+  'manager-service.mjs',
+]);
+
 export const MODULE_ORDER = Object.freeze([
+  'host-config-store.mjs',
   'host-runtime.mjs',
+  'native-mcp-panel.mjs',
   'addon-styles.mjs',
   'settings-sidebar-mount.mjs',
   'customizations-mount.mjs',
@@ -29,20 +44,26 @@ function stripModuleSyntax(sourceText) {
   const normalized = sourceText.replace(/\r\n/g, '\n');
   // Remove single-line and multi-line relative ESM imports between our internal modules
   const withoutImports = normalized.replace(/^\s*import\s+[\s\S]*?\s+from\s+['"][^'"]+['"];?\s*\n?/gm, '');
-  // Convert `export const|function` to local declarations inside the IIFE
-  return withoutImports.replace(/^\s*export\s+(?=(?:const|let|var|function|class)\b)/gm, '').trim();
+  // Remove bare re-export blocks such as `export { isLegacySseUrl };`
+  const withoutReExports = withoutImports.replace(/^\s*export\s*\{[^}]*\};?\s*\n?/gm, '');
+  // Convert `export const|let|var|function|async function|class` to local declarations inside the IIFE
+  return withoutReExports.replace(/^\s*export\s+(?=(?:const|let|var|async\s+function|function|class)\b)/gm, '').trim();
 }
 
 export function assembleRendererSource() {
-  const sections = MODULE_ORDER.map((fileName) => {
-    const fullPath = path.join(RENDERER_SRC_DIR, fileName);
+  const formatSection = (label, fullPath) => {
     const raw = fs.readFileSync(fullPath, 'utf8');
     const body = stripModuleSyntax(raw);
-    return `  // --- module: ${fileName} ---\n${body
+    return `  // --- module: ${label} ---\n${body
       .split('\n')
       .map((line) => (line.length > 0 ? `  ${line}` : ''))
       .join('\n')}`;
-  });
+  };
+
+  const sections = [
+    ...CORE_MODULE_ORDER.map((fileName) => formatSection(`core/${fileName}`, path.join(CORE_SRC_DIR, fileName))),
+    ...MODULE_ORDER.map((fileName) => formatSection(fileName, path.join(RENDERER_SRC_DIR, fileName))),
+  ];
 
   return [
     '/**',

@@ -17,7 +17,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '../..');
-const APP_JS_PATH = path.join(ROOT_DIR, 'sidecars', 'mcp_manager', 'ui', 'app.js');
+const APP_JS_PATH = path.join(ROOT_DIR, 'src', 'ui', 'app.js');
 const RENDERER_PATH = path.join(ROOT_DIR, 'src', 'adapters', 'antigravity', 'addon-renderer.js');
 const MANIFEST_PATH = path.join(ROOT_DIR, 'addon-manifest.json');
 

@@ -12,6 +12,9 @@
  *   `<style>` DOM injection.
  */
 
+import { McpManagerService } from '../../../core/manager-service.mjs';
+import { createHostBridgeConfigStore, resolveHostConfigBridge } from './host-config-store.mjs';
+
 export const SLOT_IDS = Object.freeze({
   SETTINGS_PANE: 'antigravity-mcp-manager.pane',
   SETTINGS_NAV: 'antigravity-mcp-manager.settings-nav',
@@ -23,38 +26,67 @@ export const FRAME_ATTR = 'data-agy-mcp-manager-frame';
 export const LAUNCHER_ATTR = 'data-agy-mcp-sidecar-launcher';
 export const LEGACY_LANG_STORAGE_KEY = 'agy-mcp-manager-lang';
 
+const KO_HOST_UI_MARKERS = Object.freeze(
+  new Set([
+    'mcp 서버',
+    '설정',
+    '일반',
+    '브라우저',
+    '애플리케이션',
+    '단축키',
+    '알림',
+    '모델',
+    '사용자 정의',
+    '맞춤 설정',
+    '커스터마이징',
+  ])
+);
+const EN_HOST_UI_MARKERS = Object.freeze(
+  new Set([
+    'mcp servers',
+    'settings',
+    'general',
+    'browser',
+    'application',
+    'shortcuts',
+    'notifications',
+    'models',
+    'customizations',
+  ])
+);
+
 const LAUNCHER_COPY = Object.freeze({
   en: Object.freeze({
     title: 'MCP Manager',
     badge: 'AddonManifest.v2 · Restricted',
-    status: 'Native Sidecar (AUX_PANE) Active',
-    lead: 'Running in Antigravity Native Addon Host v2+ restricted mode with Shadow DOM isolation and zero elevated main-process hooks.',
-    stepsHeading: 'How to manage MCP servers',
+    status: 'Awaiting Host Config Bridge',
+    lead: 'Running in Antigravity Native Addon Host v2+ Shadow DOM isolation (AUX_PANE sidecar removed). Direct editing inside Settings & Customizations popup activates automatically once the host exposes Named-Scope Config Bridge or loopback URL.',
+    stepsHeading: 'How this panel connects',
     steps: Object.freeze([
-      'Open the MCP Manager panel from Antigravity Native Sidecar (Aux Pane) to inspect and edit your servers.',
-      'All edits write atomically to ~/.gemini/config/mcp_config.json with CAS conflict guards and secret redaction.',
-      'This embedded view upgrades automatically to a live panel if your host exposes a loopback SidecarBridge URL.',
+      'All MCP edits target ~/.gemini/config/mcp_config.json atomically with CAS conflict guards and secret redaction.',
+      'Upgrade antigravity-native-addon-host to a version supporting Named-Scope Config Bridge (Option A) for direct in-Settings & popup management.',
+      'This view switches automatically to the live MCP Manager UI as soon as the host bridge or loopback URL is provided.',
     ]),
     configLabel: 'Config File',
     configPath: '~/.gemini/config/mcp_config.json',
     surfaceSettings: 'Settings Integration',
-    surfaceCustomizations: 'Customizations Overlay',
+    surfaceCustomizations: 'Customizations Popup',
   }),
   ko: Object.freeze({
     title: 'MCP 매니저',
     badge: 'AddonManifest.v2 · Restricted',
-    status: '네이티브 Sidecar (AUX_PANE) 활성',
-    lead: 'Antigravity Native Addon Host v2+ restricted 모드(Shadow DOM 격리, 메인 프로세스 훅 미사용)로 안전하게 실행 중입니다.',
-    stepsHeading: 'MCP 서버 관리 방법',
+    status: '호스트 설정 브리지 대기 중',
+    lead: 'Antigravity Native Addon Host v2+ Shadow DOM 격리 모드로 실행 중입니다(AUX_PANE 사이드카 제거 완료). 호스트가 Named-Scope Config Bridge 또는 loopback URL을 제공하면 설정 화면과 Customizations 팝업에서 즉시 실시간 편집이 활성화됩니다.',
+    stepsHeading: '연동 안내',
     steps: Object.freeze([
-      'Antigravity 공식 네이티브 Sidecar (Aux Pane)에서 MCP Manager 패널을 열어 서버를 조회·편집하세요.',
-      '모든 변경은 CAS 충돌 방지 및 시크릿 마스킹과 함께 ~/.gemini/config/mcp_config.json에 원자적으로 저장됩니다.',
-      '향후 호스트가 loopback SidecarBridge URL을 제공하면 이 임베디드 화면이 자동으로 실시간 패널로 전환됩니다.',
+      '모든 MCP 설정 변경은 CAS 충돌 방지 및 시크릿 마스킹과 함께 ~/.gemini/config/mcp_config.json에 원자적으로 저장됩니다.',
+      '설정 화면과 팝업에서 바로 편집하려면 Named-Scope Config Bridge(안 A)를 지원하는 antigravity-native-addon-host 버전을 적용하세요.',
+      '호스트 브리지 또는 loopback URL이 연결되면 이 화면이 자동으로 실제 MCP 매니저 UI로 전환됩니다.',
     ]),
     configLabel: '설정 파일',
     configPath: '~/.gemini/config/mcp_config.json',
     surfaceSettings: 'Settings 통합',
-    surfaceCustomizations: 'Customizations 오버레이',
+    surfaceCustomizations: 'Customizations 팝업',
   }),
 });
 
@@ -70,6 +102,36 @@ export function isSafeLoopbackIframeUrl(rawUrl) {
 
 export function normalizedText(el) {
   return String(el?.textContent || '').trim().toLowerCase();
+}
+
+export function detectHostLang(doc = document) {
+  try {
+    if (doc && typeof doc.querySelectorAll === 'function') {
+      const nodes = doc.querySelectorAll('h1, h2, h3, h4, button, span, div, a, li');
+      let hasEnMarker = false;
+      for (const el of nodes) {
+        if (!el || (el.children && el.children.length > 2)) continue;
+        if (
+          typeof el.closest === 'function' &&
+          (el.closest('[data-addon-host-owner="antigravity-mcp-manager"]') ||
+            el.closest('[data-agy-mcp-manager-nav="true"]'))
+        ) {
+          continue;
+        }
+        const txt = normalizedText(el);
+        if (!txt || txt.length > 32) continue;
+        const baseTxt = txt.replace(/[\s(]*\d+[\s)]*$/, '').trim();
+        if (KO_HOST_UI_MARKERS.has(baseTxt)) return 'ko';
+        if (EN_HOST_UI_MARKERS.has(baseTxt)) hasEnMarker = true;
+      }
+      if (hasEnMarker) return 'en';
+    }
+    const docLang = String(doc?.documentElement?.lang || '').trim().toLowerCase();
+    if (docLang === 'ko' || docLang.startsWith('ko-')) return 'ko';
+  } catch {
+    // Fall back safely to English if host DOM is unavailable
+  }
+  return 'en';
 }
 
 export function hasVisibleBg(el, win = window) {
@@ -227,7 +289,7 @@ export function createSidecarLauncherView({ runtime, surface = 'settings', onLan
   container.appendChild(card);
 
   function syncLang() {
-    const lang = runtime.readSavedLang() === 'ko' ? 'ko' : 'en';
+    const lang = (typeof runtime.resolveEffectiveLang === 'function' ? runtime.resolveEffectiveLang() : runtime.readSavedLang()) === 'ko' ? 'ko' : 'en';
     const copy = LAUNCHER_COPY[lang];
     container.setAttribute('data-agy-mcp-lang', lang);
     titleEl.textContent = copy.title;
@@ -294,6 +356,23 @@ export function createHostRuntime({ addonHost, win = window, doc = document }) {
     }
   }
 
+  function resolveEffectiveLang() {
+    const saved = readSavedLang();
+    if (saved === 'ko' || saved === 'en') return saved;
+    return detectHostLang(doc);
+  }
+
+  function hasConfigBridge() {
+    return Boolean(resolveHostConfigBridge(host));
+  }
+
+  function createConfigService() {
+    const bridge = resolveHostConfigBridge(host);
+    if (!bridge) return null;
+    const configStore = createHostBridgeConfigStore(bridge);
+    return new McpManagerService({ configStore });
+  }
+
   function getServerUrl() {
     const raw = win.__AGY_MCP_MANAGER_URL__;
     return isSafeLoopbackIframeUrl(raw) ? raw : '';
@@ -320,9 +399,9 @@ export function createHostRuntime({ addonHost, win = window, doc = document }) {
     try {
       const url = new URL(baseUrl);
       url.searchParams.set('hostMode', 'settings');
-      const savedLang = readSavedLang();
-      if (savedLang) {
-        url.searchParams.set('lang', savedLang);
+      const effectiveLang = resolveEffectiveLang();
+      if (effectiveLang) {
+        url.searchParams.set('lang', effectiveLang);
       }
       const bodyCs = doc.body ? win.getComputedStyle(doc.body) : null;
       if (bodyCs?.fontFamily) {
@@ -398,6 +477,9 @@ export function createHostRuntime({ addonHost, win = window, doc = document }) {
     langStorageKey,
     readSavedLang,
     writeSavedLang,
+    resolveEffectiveLang,
+    hasConfigBridge,
+    createConfigService,
     getServerUrl,
     bindServerUrlListener,
     buildThemedIframeUrl,

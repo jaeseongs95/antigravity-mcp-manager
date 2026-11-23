@@ -54,18 +54,23 @@ test('NMCP-TC-027 (Real Chromium CDP E2E): Customizations MCP Servers header mou
             <section>
               <h2 id="agents-title">Custom Agents <span>0</span></h2>
             </section>
-            <section id="mcp-section">
+            <section id="mcp-section" style="max-width:720px;">
               <div id="mcp-header-row" style="display:flex;align-items:center;justify-content:space-between;">
-                <button type="button" id="mcp-collapse-btn" style="background:transparent;border:0;color:inherit;display:flex;gap:8px;align-items:center;">
-                  <span id="mcp-section-title">MCP Servers</span>
-                  <span>3</span>
-                </button>
+                <div id="mcp-left-wrapper" style="display:flex;flex-direction:column;align-items:flex-start;">
+                  <button type="button" id="mcp-collapse-btn" style="background:transparent;border:0;color:inherit;display:inline-flex;gap:8px;align-items:center;padding:4px 0;">
+                    <span id="mcp-section-title">MCP Servers</span>
+                    <span>3</span>
+                    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"></svg>
+                  </button>
+                </div>
                 <div id="mcp-header-actions" style="display:flex;align-items:center;gap:6px;">
-                  <button type="button" id="btn-raw-config" aria-label="Open mcp_config.json">[]</button>
-                  <button type="button" id="btn-add-mcp" aria-label="Add MCP server">+</button>
+                  <button type="button" id="btn-raw-config" aria-label="Open mcp_config.json" style="width:24px;height:24px;">[]</button>
+                  <button type="button" id="btn-add-mcp" aria-label="Add MCP server" style="width:24px;height:24px;">+</button>
                 </div>
               </div>
-              <div id="native-mcp-list">ledger · prod_server_mcp · test_server_mcp</div>
+              <div id="native-mcp-list" style="margin-top:12px;">
+                <div>ledger <button type="button" class="signout-btn">Sign out</button></div>
+              </div>
             </section>
           </main>
           <script>${hostHarness}</script>
@@ -111,12 +116,21 @@ test('NMCP-TC-027 (Real Chromium CDP E2E): Customizations MCP Servers header mou
     );
     const btnPlacement = await evalMain(`(() => {
       const actions = document.getElementById('mcp-header-actions');
-      const slot = actions?.firstElementChild;
+      const slot = document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.customizations-btn"]');
       const sr = slot?.shadowRoot;
       const btn = sr?.querySelector('[data-agy-mcp-customizations-btn="true"]');
+      const titleBtn = document.getElementById('mcp-collapse-btn');
+      const rawBtn = document.getElementById('btn-raw-config');
       const rect = btn?.getBoundingClientRect();
+      const titleRect = titleBtn?.getBoundingClientRect();
+      const rawRect = rawBtn?.getBoundingClientRect();
+      const btnCy = rect ? (rect.top + rect.bottom) / 2 : 0;
+      const titleCy = titleRect ? (titleRect.top + titleRect.bottom) / 2 : 0;
+      const rawCy = rawRect ? (rawRect.top + rawRect.bottom) / 2 : 0;
       return {
         slotCount: document.querySelectorAll('[data-addon-host-slot="antigravity-mcp-manager.customizations-btn"]').length,
+        parentId: slot?.parentElement?.id || null,
+        isFirstInActions: actions?.firstElementChild === slot,
         slotOwner: slot?.getAttribute('data-addon-host-owner'),
         slotId: slot?.getAttribute('data-addon-host-slot'),
         slotTranslate: slot?.getAttribute('translate'),
@@ -128,9 +142,15 @@ test('NMCP-TC-027 (Real Chromium CDP E2E): Customizations MCP Servers header mou
         text: btn?.textContent?.trim(),
         width: rect?.width || 0,
         height: rect?.height || 0,
+        sameRowAsActions: Boolean(rect && rawRect && Math.abs(btnCy - rawCy) <= 4),
+        sameRowAsTitle: Boolean(rect && titleRect && Math.abs(btnCy - titleCy) <= 4),
+        rightOfTitle: Boolean(rect && titleRect && rect.left > titleRect.right),
+        leftOfRawConfig: Boolean(rect && rawRect && rect.right <= rawRect.left),
       };
     })()`);
     assert.equal(btnPlacement.slotCount, 1);
+    assert.equal(btnPlacement.parentId, 'mcp-header-actions');
+    assert.equal(btnPlacement.isFirstInActions, true);
     assert.equal(btnPlacement.slotOwner, 'antigravity-mcp-manager');
     assert.equal(btnPlacement.slotId, 'antigravity-mcp-manager.customizations-btn');
     assert.equal(btnPlacement.slotTranslate, 'no');
@@ -141,6 +161,10 @@ test('NMCP-TC-027 (Real Chromium CDP E2E): Customizations MCP Servers header mou
     assert.equal(btnPlacement.nextId, 'btn-raw-config');
     assert.equal(btnPlacement.text, 'MCP Manager');
     assert.ok(btnPlacement.width > 40 && btnPlacement.height > 16);
+    assert.equal(btnPlacement.sameRowAsActions, true, 'MCP Manager button must align on the same horizontal row as [] and +');
+    assert.equal(btnPlacement.sameRowAsTitle, true, 'MCP Manager button must align on the same horizontal row as MCP Servers heading');
+    assert.equal(btnPlacement.rightOfTitle, true, 'MCP Manager button must sit to the right of MCP Servers heading (never stacked above on left)');
+    assert.equal(btnPlacement.leftOfRawConfig, true, 'MCP Manager button must sit immediately before [] action button');
 
     // 2. Click button -> opens host openModal <dialog> with ShadowRoot + PortalArbiter without destroying native DOM
     await evalMain(`document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.customizations-btn"]').shadowRoot.querySelector('[data-agy-mcp-customizations-btn="true"]').click()`);
@@ -160,6 +184,10 @@ test('NMCP-TC-027 (Real Chromium CDP E2E): Customizations MCP Servers header mou
       const dlg = document.querySelector('dialog[data-addon-host-modal-dialog="1"][data-addon-host-slot="antigravity-mcp-manager.customizations-overlay"]');
       const shadowHost = dlg?.querySelector('.addon-host-modal-shadow-host');
       const sr = shadowHost?.shadowRoot;
+      const rect = dlg?.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const centerX = rect ? (rect.left + rect.right) / 2 : 0;
       return {
         exists: Boolean(dlg),
         isOpen: Boolean(dlg?.open),
@@ -167,12 +195,17 @@ test('NMCP-TC-027 (Real Chromium CDP E2E): Customizations MCP Servers header mou
         translate: dlg?.getAttribute('translate'),
         role: dlg?.getAttribute('role'),
         marginTop: dlg?.style.marginTop || '',
+        borderRadius: dlg?.style.borderRadius || '',
         zIndex: Number(dlg?.style.zIndex || 0),
         portalActive: window.__TEST_ADDON_HOST_DIAG__.getPortalActive(),
         hasShadow: Boolean(sr),
         hasShadowStyle: Boolean(sr?.querySelector('style[data-addon-host-owner="antigravity-mcp-manager"]')),
         nativeListIntact: Boolean(document.getElementById('native-mcp-list')),
-        backText: sr?.querySelector('[data-agy-mcp-customizations-back="true"]')?.textContent?.trim(),
+        popupTitle: sr?.querySelector('[data-agy-mcp-customizations-title="true"]')?.textContent?.trim(),
+        isNotFullscreenWidth: Boolean(rect && rect.width > 0 && rect.width <= vw - 40),
+        isNotFullscreenHeight: Boolean(rect && rect.height > 0 && rect.height <= vh - 60),
+        isHorizontallyCentered: Boolean(rect && Math.abs(centerX - vw / 2) <= 4),
+        belowTitlebar: Boolean(rect && rect.top >= 36),
       };
     })()`);
     assert.equal(overlayState.exists, true);
@@ -181,14 +214,19 @@ test('NMCP-TC-027 (Real Chromium CDP E2E): Customizations MCP Servers header mou
     assert.equal(overlayState.translate, 'no');
     assert.equal(overlayState.role, 'dialog');
     assert.equal(overlayState.marginTop.includes('36px'), true, 'openModal marginTop titlebar safe inset must be preserved');
+    assert.equal(overlayState.borderRadius, '14px', 'Popup modal must have rounded window corners');
     assert.ok(overlayState.zIndex >= 2147483001, 'openModal host zIndex must be preserved');
     assert.equal(overlayState.portalActive, true);
     assert.equal(overlayState.hasShadow, true);
     assert.equal(overlayState.hasShadowStyle, true);
     assert.equal(overlayState.nativeListIntact, true);
-    assert.equal(overlayState.backText, '← Back to Customizations');
+    assert.equal(overlayState.popupTitle, 'MCP Manager');
+    assert.equal(overlayState.isNotFullscreenWidth, true, 'Popup modal width must be narrower than fullscreen viewport');
+    assert.equal(overlayState.isNotFullscreenHeight, true, 'Popup modal height must be shorter than fullscreen viewport');
+    assert.equal(overlayState.isHorizontallyCentered, true, 'Popup modal must be horizontally centered');
+    assert.equal(overlayState.belowTitlebar, true, 'Popup modal must respect titlebar safe top inset');
 
-    // 3. Switch language to Korean inside overlay -> Shadow DOM button & Back button + namespaced localStorage update live
+    // 3. Switch language to Korean inside popup -> Shadow DOM button & popup title + namespaced localStorage update live
     await evalIframe(`document.querySelector('[data-testid="btn-lang-ko"]').click()`);
     assert.equal(
       await waitUntil(() => evalMain(`window.localStorage.getItem('antigravity-mcp-manager:lang') === 'ko'`), 3000, 30),
@@ -199,20 +237,33 @@ test('NMCP-TC-027 (Real Chromium CDP E2E): Customizations MCP Servers header mou
       const modalSr = document.querySelector('dialog[data-addon-host-modal-dialog="1"] .addon-host-modal-shadow-host').shadowRoot;
       return {
         btnText: btnSr.querySelector('[data-agy-mcp-customizations-btn="true"]')?.textContent?.trim(),
-        backText: modalSr.querySelector('[data-agy-mcp-customizations-back="true"]')?.textContent?.trim(),
+        popupTitle: modalSr.querySelector('[data-agy-mcp-customizations-title="true"]')?.textContent?.trim(),
       };
     })()`);
     assert.equal(koLabels.btnText, 'MCP 매니저');
-    assert.equal(koLabels.backText, '← Customizations로 돌아가기');
+    assert.equal(koLabels.popupTitle, 'MCP 매니저');
 
-    // 4. Close via Back button -> <dialog> closes & PortalArbiter deactivates
-    await evalMain(`document.querySelector('dialog[data-addon-host-modal-dialog="1"] .addon-host-modal-shadow-host').shadowRoot.querySelector('[data-agy-mcp-customizations-back="true"]').click()`);
-    const closedAfterBack = await evalMain(`({
+    // 4. Close via ✕ button -> <dialog> closes & PortalArbiter deactivates
+    await evalMain(`document.querySelector('dialog[data-addon-host-modal-dialog="1"] .addon-host-modal-shadow-host').shadowRoot.querySelector('[data-agy-mcp-customizations-close="true"]').click()`);
+    const closedAfterCloseBtn = await evalMain(`({
       modalCount: document.querySelectorAll('dialog[data-addon-host-modal-dialog="1"]').length,
       portalActive: window.__TEST_ADDON_HOST_DIAG__.getPortalActive(),
     })`);
-    assert.equal(closedAfterBack.modalCount, 0);
-    assert.equal(closedAfterBack.portalActive, false);
+    assert.equal(closedAfterCloseBtn.modalCount, 0);
+    assert.equal(closedAfterCloseBtn.portalActive, false);
+
+    // 4b. Reopen and close via clicking dimmed backdrop outside dialog bounds
+    await evalMain(`document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.customizations-btn"]').shadowRoot.querySelector('[data-agy-mcp-customizations-btn="true"]').click()`);
+    assert.equal(
+      await evalMain(`Boolean(document.querySelector('dialog[data-addon-host-modal-dialog="1"]')?.open)`),
+      true
+    );
+    await evalMain(`(() => {
+      const dlg = document.querySelector('dialog[data-addon-host-modal-dialog="1"]');
+      dlg.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: 4, clientY: 4 }));
+    })()`);
+    assert.equal(await evalMain(`document.querySelectorAll('dialog[data-addon-host-modal-dialog="1"]').length`), 0);
+    assert.equal(await evalMain(`window.__TEST_ADDON_HOST_DIAG__.getPortalActive()`), false);
 
     // 5. Reopen and close via capture-phase Escape key
     await evalMain(`document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.customizations-btn"]').shadowRoot.querySelector('[data-agy-mcp-customizations-btn="true"]').click()`);

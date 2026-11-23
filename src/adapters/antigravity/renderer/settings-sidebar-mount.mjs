@@ -21,6 +21,7 @@ import {
   replaceLeafText,
   sameFrameBaseAndTheme,
 } from './host-runtime.mjs';
+import { createNativeMcpPanel } from './native-mcp-panel.mjs';
 
 const NAV_ATTR = 'data-agy-mcp-manager-nav';
 const PREV_DISPLAY_ATTR = 'agyMcpPrevDisplay';
@@ -60,6 +61,7 @@ export function createSettingsSidebarMount({ runtime, onLangChange = () => {}, w
   let paneRootEl = null;
   let frameEl = null;
   let launcherView = null;
+  let nativePanelView = null;
   let isPaneActive = false;
 
   function findSettingsSidebarAndAnchor() {
@@ -269,6 +271,29 @@ export function createSettingsSidebarMount({ runtime, onLangChange = () => {}, w
       slotHost.style.height = '100%';
     }
 
+    if (typeof runtime.hasConfigBridge === 'function' && runtime.hasConfigBridge()) {
+      if (frameEl && frameEl.parentNode) frameEl.parentNode.removeChild(frameEl);
+      frameEl = null;
+      if (launcherView && launcherView.element.parentNode) launcherView.element.parentNode.removeChild(launcherView.element);
+      launcherView = null;
+
+      if (!nativePanelView || nativePanelView.element.parentNode !== slotRoot) {
+        if (nativePanelView) nativePanelView.dispose();
+        while (slotRoot.firstChild) slotRoot.removeChild(slotRoot.firstChild);
+        const service = runtime.createConfigService();
+        nativePanelView = createNativeMcpPanel({ runtime, service, surface: 'settings', onLangChange, doc });
+        slotRoot.appendChild(nativePanelView.element);
+      } else {
+        nativePanelView.syncLang();
+      }
+      return;
+    }
+
+    if (nativePanelView) {
+      nativePanelView.dispose();
+      nativePanelView = null;
+    }
+
     const baseUrl = runtime.getServerUrl();
     if (baseUrl) {
       if (launcherView && launcherView.element.parentNode) {
@@ -415,6 +440,9 @@ export function createSettingsSidebarMount({ runtime, onLangChange = () => {}, w
   }
 
   function syncLabels() {
+    if (nativePanelView) {
+      nativePanelView.syncLang();
+    }
     if (launcherView) {
       launcherView.syncLang();
     }
@@ -437,6 +465,10 @@ export function createSettingsSidebarMount({ runtime, onLangChange = () => {}, w
     navItemEl = null;
     paneHostEl = null;
     paneRootEl = null;
+    if (nativePanelView) {
+      nativePanelView.dispose();
+      nativePanelView = null;
+    }
     frameEl = null;
     launcherView = null;
     isPaneActive = false;

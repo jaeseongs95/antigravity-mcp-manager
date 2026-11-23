@@ -18,11 +18,12 @@ import {
   normalizedText,
   sameFrameBaseAndTheme,
 } from './host-runtime.mjs';
+import { createNativeMcpPanel } from './native-mcp-panel.mjs';
 
 const CUSTOMIZATIONS_BTN_ATTR = 'data-agy-mcp-customizations-btn';
 const CUSTOMIZATIONS_OVERLAY_ATTR = 'data-agy-mcp-customizations-overlay';
 const CUSTOMIZATIONS_TOPBAR_ATTR = 'data-agy-mcp-customizations-topbar';
-const CUSTOMIZATIONS_BACK_ATTR = 'data-agy-mcp-customizations-back';
+const CUSTOMIZATIONS_TITLE_ATTR = 'data-agy-mcp-customizations-title';
 const CUSTOMIZATIONS_CLOSE_ATTR = 'data-agy-mcp-customizations-close';
 const CUSTOMIZATIONS_CONTENT_ATTR = 'data-agy-mcp-customizations-content';
 
@@ -57,17 +58,25 @@ export function createCustomizationsMount({ runtime, onLangChange = () => {}, wi
   let btnRootEl = null;
   let btnEl = null;
   let activeModalHandle = null;
-  let modalBackBtnEl = null;
+  let modalTitleEl = null;
+  let modalCloseBtnEl = null;
   let modalContentEl = null;
   let modalFrameEl = null;
   let modalLauncherView = null;
+  let modalNativePanel = null;
 
-  function getButtonLabel() {
-    return runtime.readSavedLang() === 'ko' ? 'MCP 매니저' : 'MCP Manager';
+  function resolveLang() {
+    return (typeof runtime.resolveEffectiveLang === 'function' ? runtime.resolveEffectiveLang() : runtime.readSavedLang()) === 'ko'
+      ? 'ko'
+      : 'en';
   }
 
-  function getBackLabel() {
-    return runtime.readSavedLang() === 'ko' ? '← Customizations로 돌아가기' : '← Back to Customizations';
+  function getButtonLabel() {
+    return resolveLang() === 'ko' ? 'MCP 매니저' : 'MCP Manager';
+  }
+
+  function getCloseAriaLabel() {
+    return resolveLang() === 'ko' ? 'MCP 매니저 닫기' : 'Close MCP Manager';
   }
 
   function isInsideOwnSlot(el) {
@@ -92,6 +101,15 @@ export function createCustomizationsMount({ runtime, onLangChange = () => {}, wi
     return false;
   }
 
+  function hasMatchingMcpLabelDescendant(el) {
+    const descendants = el.querySelectorAll('h1, h2, h3, h4, span, div, button, p');
+    for (const child of descendants) {
+      if (child === el || isInsideOwnSlot(child) || child.hasAttribute(CUSTOMIZATIONS_BTN_ATTR)) continue;
+      if (isMcpServersLabel(normalizedText(child))) return true;
+    }
+    return false;
+  }
+
   function findCustomizationsMcpHeader() {
     if (!isCustomizationsPageVisible()) return null;
     const candidates = doc.querySelectorAll('h1, h2, h3, h4, span, div, button, p');
@@ -100,39 +118,82 @@ export function createCustomizationsMount({ runtime, onLangChange = () => {}, wi
       if (isInsideOwnSlot(el)) continue;
       if (el.hasAttribute(CUSTOMIZATIONS_BTN_ATTR)) continue;
       if (!isMcpServersLabel(normalizedText(el))) continue;
+      // Pick the innermost label node; never match an outer wrapper that wraps the collapse <button>
+      if (hasMatchingMcpLabelDescendant(el)) continue;
+      if (el.tagName !== 'BUTTON' && el.querySelector('button')) continue;
 
-      let row = el.parentElement;
-      for (let depth = 0; depth < 4 && row && row !== doc.body; depth += 1) {
-        const buttons = Array.from(row.querySelectorAll('button')).filter(
-          (b) => !b.hasAttribute(CUSTOMIZATIONS_BTN_ATTR) && !isInsideOwnSlot(b) && !b.contains(el)
-        );
-        if (buttons.length >= 1) {
-          const actionContainer = buttons[0].parentElement || row;
-          return { row, actionContainer, firstActionButton: buttons[0] };
+      const leftAnchor = el.closest?.('button') || el;
+      const anchorRect = leftAnchor.getBoundingClientRect?.() || null;
+      const hasAnchorBox = Boolean(anchorRect && anchorRect.width > 0 && anchorRect.height > 0);
+      const anchorCenterY = hasAnchorBox ? (anchorRect.top + anchorRect.bottom) / 2 : 0;
+
+      let row = leftAnchor.parentElement;
+      for (let depth = 0; depth < 5 && row && row !== doc.body; depth += 1) {
+        const rightButtons = Array.from(row.querySelectorAll('button')).filter((b) => {
+          if (b === leftAnchor || b.hasAttribute(CUSTOMIZATIONS_BTN_ATTR) || isInsideOwnSlot(b)) return false;
+          if (b.contains(leftAnchor) || leftAnchor.contains(b)) return false;
+          if (isMcpServersLabel(normalizedText(b))) return false;
+          if (hasAnchorBox) {
+            const bRect = b.getBoundingClientRect?.();
+            if (!bRect || bRect.width <= 0 || bRect.height <= 0) return false;
+            const bCenterY = (bRect.top + bRect.bottom) / 2;
+            const maxRowDelta = Math.max(anchorRect.height, bRect.height, 28);
+            if (Math.abs(bCenterY - anchorCenterY) > maxRowDelta) return false;
+            if (bRect.left < anchorRect.right - 2) return false;
+          }
+          return true;
+        });
+
+        if (rightButtons.length >= 1) {
+          rightButtons.sort((a, b) => {
+            const ar = a.getBoundingClientRect?.();
+            const br = b.getBoundingClientRect?.();
+            return (ar?.left || 0) - (br?.left || 0);
+          });
+          // Anchor into the rightmost action group (e.g. [] and + icon cluster) so a separate chevron button is never chosen
+          const rightmostBtn = rightButtons[rightButtons.length - 1];
+          const actionContainer = rightmostBtn.parentElement || row;
+          const firstActionButton =
+            rightButtons.find((b) => b.parentElement === actionContainer) || rightmostBtn;
+          return {
+            row,
+            actionContainer,
+            firstActionButton,
+            alignRightInRow: actionContainer === row,
+          };
         }
         row = row.parentElement;
       }
 
-      const fallbackRow = el.parentElement;
+      const fallbackRow = leftAnchor.parentElement;
       if (fallbackRow && fallbackRow !== doc.body) {
-        return { row: fallbackRow, actionContainer: fallbackRow, firstActionButton: null };
+        return { row: fallbackRow, actionContainer: fallbackRow, firstActionButton: null, alignRightInRow: true };
       }
     }
     return null;
   }
 
   function syncLabels() {
-    if (btnEl) btnEl.textContent = getButtonLabel();
-    if (modalBackBtnEl) modalBackBtnEl.textContent = getBackLabel();
+    const label = getButtonLabel();
+    if (btnEl) btnEl.textContent = label;
+    if (modalTitleEl) modalTitleEl.textContent = label;
+    if (modalCloseBtnEl) modalCloseBtnEl.setAttribute('aria-label', getCloseAriaLabel());
+    if (activeModalHandle?.element) activeModalHandle.element.setAttribute('aria-label', label);
+    if (modalNativePanel) modalNativePanel.syncLang();
     if (modalLauncherView) modalLauncherView.syncLang();
   }
 
   function clearModalRefs() {
+    if (modalNativePanel) {
+      modalNativePanel.dispose();
+    }
     activeModalHandle = null;
-    modalBackBtnEl = null;
+    modalTitleEl = null;
+    modalCloseBtnEl = null;
     modalContentEl = null;
     modalFrameEl = null;
     modalLauncherView = null;
+    modalNativePanel = null;
   }
 
   function handleModalClosed() {
@@ -159,6 +220,32 @@ export function createCustomizationsMount({ runtime, onLangChange = () => {}, wi
 
   function renderModalContent() {
     if (!modalContentEl) return;
+
+    if (typeof runtime.hasConfigBridge === 'function' && runtime.hasConfigBridge()) {
+      if (modalFrameEl && modalFrameEl.parentNode) modalFrameEl.parentNode.removeChild(modalFrameEl);
+      modalFrameEl = null;
+      if (modalLauncherView && modalLauncherView.element.parentNode) {
+        modalLauncherView.element.parentNode.removeChild(modalLauncherView.element);
+      }
+      modalLauncherView = null;
+
+      if (!modalNativePanel || modalNativePanel.element.parentNode !== modalContentEl) {
+        if (modalNativePanel) modalNativePanel.dispose();
+        while (modalContentEl.firstChild) modalContentEl.removeChild(modalContentEl.firstChild);
+        const service = runtime.createConfigService();
+        modalNativePanel = createNativeMcpPanel({ runtime, service, surface: 'customizations', onLangChange, doc });
+        modalContentEl.appendChild(modalNativePanel.element);
+      } else {
+        modalNativePanel.syncLang();
+      }
+      return;
+    }
+
+    if (modalNativePanel) {
+      modalNativePanel.dispose();
+      modalNativePanel = null;
+    }
+
     const baseUrl = runtime.getServerUrl();
     if (baseUrl) {
       if (modalLauncherView && modalLauncherView.element.parentNode) {
@@ -221,23 +308,40 @@ export function createCustomizationsMount({ runtime, onLangChange = () => {}, wi
     const dlg = modalHandle.element;
     if (dlg) {
       dlg.setAttribute(CUSTOMIZATIONS_OVERLAY_ATTR, 'true');
-      dlg.setAttribute('aria-label', 'MCP Manager');
-      // Preserve host-managed `marginTop` (titlebar safe inset) and `zIndex`!
+      dlg.setAttribute('aria-label', getButtonLabel());
+      // Centered popup modal window: preserve host-managed titlebar safe inset (`top`/`marginTop`), `margin: auto`, and `zIndex`
       if (dlg.style) {
-        dlg.style.width = '100vw';
-        dlg.style.maxWidth = '100vw';
-        dlg.style.height = 'calc(100vh - max(env(titlebar-area-height, 36px), 36px))';
-        dlg.style.maxHeight = 'calc(100vh - max(env(titlebar-area-height, 36px), 36px))';
-        dlg.style.marginLeft = '0';
-        dlg.style.marginRight = '0';
-        dlg.style.marginBottom = '0';
+        dlg.style.width = 'min(820px, calc(100vw - 48px))';
+        dlg.style.maxWidth = 'calc(100vw - 48px)';
+        dlg.style.height = 'min(660px, calc(100vh - 88px))';
+        dlg.style.maxHeight = 'calc(100vh - 88px)';
+        if (dlg.style.margin !== 'auto') {
+          dlg.style.marginLeft = 'auto';
+          dlg.style.marginRight = 'auto';
+        }
         dlg.style.padding = '0';
-        dlg.style.border = '0';
+        dlg.style.border = '1px solid rgba(128, 128, 128, 0.28)';
+        dlg.style.borderRadius = '14px';
+        dlg.style.boxShadow = '0 24px 64px rgba(0, 0, 0, 0.52), 0 0 0 100vmax rgba(0, 0, 0, 0.45)';
         dlg.style.background = hostBg;
         dlg.style.color = hostFg;
         dlg.style.fontFamily = hostFont;
         dlg.style.overflow = 'hidden';
       }
+      // Dismiss popup cleanly when clicking the dimmed backdrop outside the dialog bounds
+      dlg.addEventListener('click', (ev) => {
+        if (ev.target !== dlg) return;
+        const rect = dlg.getBoundingClientRect?.();
+        if (!rect || rect.width <= 0 || rect.height <= 0) return;
+        const outside =
+          ev.clientX < rect.left ||
+          ev.clientX > rect.right ||
+          ev.clientY < rect.top ||
+          ev.clientY > rect.bottom;
+        if (outside) {
+          closeOverlay();
+        }
+      });
     }
 
     const shadowHost = runtime.getSlotHostElement(modalHandle.bodyEl);
@@ -254,26 +358,21 @@ export function createCustomizationsMount({ runtime, onLangChange = () => {}, wi
     const topBar = doc.createElement('div');
     topBar.setAttribute(CUSTOMIZATIONS_TOPBAR_ATTR, 'true');
 
-    const backBtn = doc.createElement('button');
-    backBtn.type = 'button';
-    backBtn.setAttribute(CUSTOMIZATIONS_BACK_ATTR, 'true');
-    backBtn.textContent = getBackLabel();
-    backBtn.addEventListener('click', (ev) => {
-      ev.preventDefault();
-      closeOverlay();
-    });
+    const titleEl = doc.createElement('h2');
+    titleEl.setAttribute(CUSTOMIZATIONS_TITLE_ATTR, 'true');
+    titleEl.textContent = getButtonLabel();
 
     const closeBtn = doc.createElement('button');
     closeBtn.type = 'button';
     closeBtn.setAttribute(CUSTOMIZATIONS_CLOSE_ATTR, 'true');
-    closeBtn.setAttribute('aria-label', 'Close MCP Manager');
+    closeBtn.setAttribute('aria-label', getCloseAriaLabel());
     closeBtn.textContent = '✕';
     closeBtn.addEventListener('click', (ev) => {
       ev.preventDefault();
       closeOverlay();
     });
 
-    topBar.appendChild(backBtn);
+    topBar.appendChild(titleEl);
     topBar.appendChild(closeBtn);
 
     const content = doc.createElement('div');
@@ -282,7 +381,8 @@ export function createCustomizationsMount({ runtime, onLangChange = () => {}, wi
     bodyRoot.appendChild(topBar);
     bodyRoot.appendChild(content);
 
-    modalBackBtnEl = backBtn;
+    modalTitleEl = titleEl;
+    modalCloseBtnEl = closeBtn;
     modalContentEl = content;
     renderModalContent();
     syncLabels();
@@ -291,9 +391,12 @@ export function createCustomizationsMount({ runtime, onLangChange = () => {}, wi
   function ensureMount() {
     const found = findCustomizationsMcpHeader();
     if (!found) return;
-    const { row, actionContainer, firstActionButton } = found;
+    const { actionContainer, firstActionButton, alignRightInRow } = found;
 
-    if (btnHostEl && btnHostEl.isConnected && row.contains(btnHostEl)) {
+    if (btnHostEl && btnHostEl.isConnected && btnHostEl.parentElement === actionContainer) {
+      if (firstActionButton && firstActionButton.parentElement === actionContainer && btnHostEl.nextElementSibling !== firstActionButton) {
+        actionContainer.insertBefore(btnHostEl, firstActionButton);
+      }
       if (activeModalHandle && activeModalHandle.element && activeModalHandle.element.isConnected) {
         renderModalContent();
       }
@@ -306,6 +409,8 @@ export function createCustomizationsMount({ runtime, onLangChange = () => {}, wi
     if (btnHost && btnHost.style) {
       btnHost.style.display = 'inline-flex';
       btnHost.style.alignItems = 'center';
+      btnHost.style.flexShrink = '0';
+      btnHost.style.marginLeft = alignRightInRow ? 'auto' : '';
     }
     while (btnRoot.firstChild) btnRoot.removeChild(btnRoot.firstChild);
 

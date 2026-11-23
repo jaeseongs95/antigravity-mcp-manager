@@ -50,6 +50,7 @@ test('NMCP-TC-022 (Contract & SOLID Parity): addon-manifest.json satisfies Addon
   assert.equal(manifest.entry.mainHookScript, undefined, 'restricted AddonManifest.v2 plugin must not declare mainHookScript');
   assert.equal(fs.existsSync(path.join(ROOT_DIR, manifest.entry.rendererScript)), true);
   assert.equal(fs.existsSync(LEGACY_ELECTRON_HOOK_PATH), false, 'Legacy v1 scripts/electron-hook.cjs must be removed');
+  assert.equal(fs.existsSync(path.join(ROOT_DIR, 'sidecars')), false, 'AUX_PANE sidecars/ directory must be removed');
 
   // Entry path must remain strictly relative and confined inside plugin root
   assert.equal(path.isAbsolute(manifest.entry.rendererScript), false);
@@ -322,7 +323,7 @@ test('NMCP-TC-028 (Option A Restricted Mode & Late SidecarBridge Upgrade CDP E2E
     assert.equal(enLauncher.hasShadow, true);
     assert.equal(enLauncher.hasLauncher, true);
     assert.equal(enLauncher.title, 'MCP Manager');
-    assert.equal(enLauncher.status, 'Native Sidecar (AUX_PANE) Active');
+    assert.equal(enLauncher.status, 'Awaiting Host Config Bridge');
     assert.equal(enLauncher.hasShadowStyle, true);
     assert.equal(enLauncher.hasHeadPaneStyle, false, 'Targeted ShadowRoot style must clean up document.head fallback');
 
@@ -342,7 +343,7 @@ test('NMCP-TC-028 (Option A Restricted Mode & Late SidecarBridge Upgrade CDP E2E
       };
     })()`);
     assert.equal(koSync.paneTitle, 'MCP 매니저');
-    assert.equal(koSync.paneStatus, '네이티브 Sidecar (AUX_PANE) 활성');
+    assert.equal(koSync.paneStatus, '호스트 설정 브리지 대기 중');
     assert.equal(koSync.btnText, 'MCP 매니저');
     assert.equal(koSync.savedLang, 'ko');
 
