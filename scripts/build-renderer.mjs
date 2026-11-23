@@ -3,9 +3,9 @@
  * Zero-Dependency Deterministic Renderer Assembler (`scripts/build-renderer.mjs`).
  *
  * Assembles the modular SOLID renderer sources (`src/adapters/antigravity/renderer/*.mjs`)
- * into the single browser-executable `AddonManifest.v1` entry script
+ * into the single browser-executable `AddonManifest.v2` entry script
  * (`src/adapters/antigravity/addon-renderer.js`) executed by `antigravity-native-addon-host`
- * inside `(function(addonHost){ ... })(__addonHandle)` in Isolated World `999`.
+ * (`v2.0.0+`) inside `(function(addonHost){ ... })(__addonHandle)` in Isolated World `998`.
  */
 
 import fs from 'node:fs';
@@ -46,17 +46,18 @@ export function assembleRendererSource() {
 
   return [
     '/**',
-    ' * AUTO-GENERATED AddonManifest.v1 Renderer Entry (`src/adapters/antigravity/addon-renderer.js`).',
+    ' * AUTO-GENERATED AddonManifest.v2 Renderer Entry (`src/adapters/antigravity/addon-renderer.js`).',
     ' * Source of truth: `src/adapters/antigravity/renderer/*.mjs` (run `npm run build:renderer`).',
     ' *',
-    ' * Executed by `antigravity-native-addon-host` as `(function(addonHost){ ... })(__addonHandle)`.',
-    ' * ZERO unsafe DOM sinks, ZERO direct `app.asar` hooks, 100% owner-scoped `addonHost` APIs.',
+    ' * Executed by `antigravity-native-addon-host` v2.0.0+ in Isolated World `998` as',
+    ' * `(function(addonHost){ ... })(__addonHandle)` under `trustLevel: "restricted"`.',
+    ' * ZERO unsafe DOM sinks, ZERO direct `app.asar` hooks, 100% owner/Shadow DOM scoped APIs.',
     ' */',
     '',
     '(function (addonHost) {',
     "  'use strict';",
     '',
-    '  if (!addonHost || typeof addonHost.mountSlot !== "function") {',
+    '  if (!addonHost || typeof addonHost.mountSlot !== "function" || typeof addonHost.openModal !== "function") {',
     '    return;',
     '  }',
     '',
@@ -64,11 +65,15 @@ export function assembleRendererSource() {
     '',
     '  // --- composition root ---',
     '  const runtime = createHostRuntime({ addonHost, win: window, doc: document });',
-    '  const coordinator = createMountCoordinator({',
+    '  let coordinator = null;',
+    '  const onLangChange = () => {',
+    '    if (coordinator) coordinator.syncAllLabels();',
+    '  };',
+    '  coordinator = createMountCoordinator({',
     '    runtime,',
     '    adapters: [',
-    '      createSettingsSidebarMount({ runtime, win: window, doc: document }),',
-    '      createCustomizationsMount({ runtime, win: window, doc: document }),',
+    '      createSettingsSidebarMount({ runtime, onLangChange, win: window, doc: document }),',
+    '      createCustomizationsMount({ runtime, onLangChange, win: window, doc: document }),',
     '    ],',
     '    win: window,',
     '    doc: document,',

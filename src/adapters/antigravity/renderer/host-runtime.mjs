@@ -2,9 +2,11 @@
  * Host Capability Runtime Adapter (`src/adapters/antigravity/renderer/host-runtime.mjs`).
  *
  * SOLID Boundaries:
- * - SRP: Owns `addonHost` capability handle delegation, loopback URL validation,
- *   namespaced language storage (with 1-time migration from legacy v2.1 key),
- *   theme URL building, and origin/source-validated iframe `postMessage` checks.
+ * - SRP: Owns `AddonManifest.v2` `addonHost` capability handle delegation (Shadow DOM
+ *   Option B2 `mountSlot({ container })`, `openModal`, slot-scoped `injectStyle`,
+ *   `addManagedListener`), loopback URL validation, namespaced language storage (with
+ *   1-time migration from legacy v2.1 key), theme URL building, origin/source-validated
+ *   iframe `postMessage` checks, and the zero-`innerHTML` EN/KO Native Sidecar launcher view.
  * - DIP: Renderer mount adapters depend on this narrow capability port rather than
  *   raw global `window.__ADDON_HOST_API__`, un-namespaced `localStorage`, or direct
  *   `<style>` DOM injection.
@@ -18,7 +20,43 @@ export const SLOT_IDS = Object.freeze({
 });
 
 export const FRAME_ATTR = 'data-agy-mcp-manager-frame';
+export const LAUNCHER_ATTR = 'data-agy-mcp-sidecar-launcher';
 export const LEGACY_LANG_STORAGE_KEY = 'agy-mcp-manager-lang';
+
+const LAUNCHER_COPY = Object.freeze({
+  en: Object.freeze({
+    title: 'MCP Manager',
+    badge: 'AddonManifest.v2 · Restricted',
+    status: 'Native Sidecar (AUX_PANE) Active',
+    lead: 'Running in Antigravity Native Addon Host v2+ restricted mode with Shadow DOM isolation and zero elevated main-process hooks.',
+    stepsHeading: 'How to manage MCP servers',
+    steps: Object.freeze([
+      'Open the MCP Manager panel from Antigravity Native Sidecar (Aux Pane) to inspect and edit your servers.',
+      'All edits write atomically to ~/.gemini/config/mcp_config.json with CAS conflict guards and secret redaction.',
+      'This embedded view upgrades automatically to a live panel if your host exposes a loopback SidecarBridge URL.',
+    ]),
+    configLabel: 'Config File',
+    configPath: '~/.gemini/config/mcp_config.json',
+    surfaceSettings: 'Settings Integration',
+    surfaceCustomizations: 'Customizations Overlay',
+  }),
+  ko: Object.freeze({
+    title: 'MCP 매니저',
+    badge: 'AddonManifest.v2 · Restricted',
+    status: '네이티브 Sidecar (AUX_PANE) 활성',
+    lead: 'Antigravity Native Addon Host v2+ restricted 모드(Shadow DOM 격리, 메인 프로세스 훅 미사용)로 안전하게 실행 중입니다.',
+    stepsHeading: 'MCP 서버 관리 방법',
+    steps: Object.freeze([
+      'Antigravity 공식 네이티브 Sidecar (Aux Pane)에서 MCP Manager 패널을 열어 서버를 조회·편집하세요.',
+      '모든 변경은 CAS 충돌 방지 및 시크릿 마스킹과 함께 ~/.gemini/config/mcp_config.json에 원자적으로 저장됩니다.',
+      '향후 호스트가 loopback SidecarBridge URL을 제공하면 이 임베디드 화면이 자동으로 실시간 패널로 전환됩니다.',
+    ]),
+    configLabel: '설정 파일',
+    configPath: '~/.gemini/config/mcp_config.json',
+    surfaceSettings: 'Settings 통합',
+    surfaceCustomizations: 'Customizations 오버레이',
+  }),
+});
 
 export function isSafeLoopbackIframeUrl(rawUrl) {
   if (typeof rawUrl !== 'string' || !rawUrl.trim()) return false;
@@ -71,11 +109,17 @@ export function sameFrameBaseAndTheme(currentSrc, nextSrc) {
   }
 }
 
+export function getSlotHostElement(rootEl) {
+  if (!rootEl) return null;
+  const root = typeof rootEl.getRootNode === 'function' ? rootEl.getRootNode() : null;
+  return root && root.host ? root.host : rootEl;
+}
+
 export function assertAddonHostHandle(addonHost) {
   if (!addonHost || typeof addonHost !== 'object') {
     throw new Error('ERR_MISSING_ADDON_HOST_HANDLE');
   }
-  for (const method of ['mountSlot', 'unmountSlot', 'injectStyle', 'removeStyle', 'onDispose']) {
+  for (const method of ['mountSlot', 'unmountSlot', 'injectStyle', 'removeStyle', 'openModal', 'onDispose']) {
     if (typeof addonHost[method] !== 'function') {
       throw new Error(`ERR_INVALID_ADDON_HOST_HANDLE:${method}`);
     }
@@ -83,9 +127,137 @@ export function assertAddonHostHandle(addonHost) {
   return addonHost;
 }
 
+export function createSidecarLauncherView({ runtime, surface = 'settings', onLangChange = () => {}, doc = document }) {
+  const container = doc.createElement('section');
+  container.setAttribute(LAUNCHER_ATTR, 'true');
+  container.setAttribute('data-agy-mcp-surface', surface);
+
+  const card = doc.createElement('div');
+  card.setAttribute('data-agy-mcp-launcher-card', 'true');
+
+  const header = doc.createElement('header');
+  header.setAttribute('data-agy-mcp-launcher-header', 'true');
+
+  const titleWrap = doc.createElement('div');
+  titleWrap.setAttribute('data-agy-mcp-launcher-title-wrap', 'true');
+
+  const titleEl = doc.createElement('h2');
+  titleEl.setAttribute('data-agy-mcp-launcher-title', 'true');
+
+  const badgeEl = doc.createElement('span');
+  badgeEl.setAttribute('data-agy-mcp-launcher-badge', 'true');
+
+  titleWrap.appendChild(titleEl);
+  titleWrap.appendChild(badgeEl);
+
+  const langGroup = doc.createElement('div');
+  langGroup.setAttribute('data-agy-mcp-lang-switch', 'true');
+  langGroup.setAttribute('role', 'group');
+  langGroup.setAttribute('aria-label', 'Language');
+
+  const enBtn = doc.createElement('button');
+  enBtn.type = 'button';
+  enBtn.setAttribute('data-agy-mcp-lang-btn', 'en');
+  enBtn.textContent = 'EN';
+
+  const koBtn = doc.createElement('button');
+  koBtn.type = 'button';
+  koBtn.setAttribute('data-agy-mcp-lang-btn', 'ko');
+  koBtn.textContent = '한국어';
+
+  const handleLangClick = (lang) => (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    runtime.writeSavedLang(lang);
+    syncLang();
+    onLangChange(lang);
+  };
+  enBtn.addEventListener('click', handleLangClick('en'));
+  koBtn.addEventListener('click', handleLangClick('ko'));
+
+  langGroup.appendChild(enBtn);
+  langGroup.appendChild(koBtn);
+
+  header.appendChild(titleWrap);
+  header.appendChild(langGroup);
+
+  const metaRow = doc.createElement('div');
+  metaRow.setAttribute('data-agy-mcp-launcher-meta', 'true');
+
+  const statusPill = doc.createElement('span');
+  statusPill.setAttribute('data-agy-mcp-launcher-status', 'true');
+
+  const surfaceTag = doc.createElement('span');
+  surfaceTag.setAttribute('data-agy-mcp-launcher-surface', 'true');
+
+  metaRow.appendChild(statusPill);
+  metaRow.appendChild(surfaceTag);
+
+  const leadEl = doc.createElement('p');
+  leadEl.setAttribute('data-agy-mcp-launcher-lead', 'true');
+
+  const stepsTitle = doc.createElement('h3');
+  stepsTitle.setAttribute('data-agy-mcp-launcher-steps-title', 'true');
+
+  const stepsList = doc.createElement('ol');
+  stepsList.setAttribute('data-agy-mcp-launcher-steps', 'true');
+  const stepItems = [doc.createElement('li'), doc.createElement('li'), doc.createElement('li')];
+  for (const li of stepItems) {
+    stepsList.appendChild(li);
+  }
+
+  const footer = doc.createElement('div');
+  footer.setAttribute('data-agy-mcp-launcher-footer', 'true');
+
+  const configLabelEl = doc.createElement('span');
+  configLabelEl.setAttribute('data-agy-mcp-launcher-config-label', 'true');
+
+  const configPathEl = doc.createElement('code');
+  configPathEl.setAttribute('data-agy-mcp-launcher-config-path', 'true');
+
+  footer.appendChild(configLabelEl);
+  footer.appendChild(configPathEl);
+
+  card.appendChild(header);
+  card.appendChild(metaRow);
+  card.appendChild(leadEl);
+  card.appendChild(stepsTitle);
+  card.appendChild(stepsList);
+  card.appendChild(footer);
+  container.appendChild(card);
+
+  function syncLang() {
+    const lang = runtime.readSavedLang() === 'ko' ? 'ko' : 'en';
+    const copy = LAUNCHER_COPY[lang];
+    container.setAttribute('data-agy-mcp-lang', lang);
+    titleEl.textContent = copy.title;
+    badgeEl.textContent = copy.badge;
+    statusPill.textContent = copy.status;
+    surfaceTag.textContent = surface === 'customizations' ? copy.surfaceCustomizations : copy.surfaceSettings;
+    leadEl.textContent = copy.lead;
+    stepsTitle.textContent = copy.stepsHeading;
+    for (let i = 0; i < stepItems.length; i += 1) {
+      stepItems[i].textContent = copy.steps[i] || '';
+    }
+    configLabelEl.textContent = copy.configLabel;
+    configPathEl.textContent = copy.configPath;
+    enBtn.setAttribute('aria-pressed', lang === 'en' ? 'true' : 'false');
+    koBtn.setAttribute('aria-pressed', lang === 'ko' ? 'true' : 'false');
+  }
+
+  syncLang();
+
+  return Object.freeze({
+    element: container,
+    syncLang,
+  });
+}
+
 export function createHostRuntime({ addonHost, win = window, doc = document }) {
   const host = assertAddonHostHandle(addonHost);
   const pluginId = String(host.pluginId || 'antigravity-mcp-manager');
+  const trustLevel = String(host.trustLevel || 'restricted');
+  const schemaVersion = Number(host.schemaVersion || 2);
   const storageNamespace = String(host.storageNamespace || pluginId);
   const ipcChannelPrefix = host.ipcChannelPrefix ? String(host.ipcChannelPrefix) : 'mcp-manager:';
   const langStorageKey = `${storageNamespace}:lang`;
@@ -184,8 +356,43 @@ export function createHostRuntime({ addonHost, win = window, doc = document }) {
     return frames.some((frame) => frame && frame.contentWindow === ev.source);
   }
 
+  function mountSlot(slotId, containerOrOpts) {
+    const opts =
+      containerOrOpts && typeof containerOrOpts === 'object' && containerOrOpts.nodeType === 1
+        ? { container: containerOrOpts }
+        : containerOrOpts || {};
+    return host.mountSlot(slotId, opts);
+  }
+
+  function injectStyle(styleId, cssText, opts) {
+    return opts ? host.injectStyle(styleId, cssText, opts) : host.injectStyle(styleId, cssText);
+  }
+
+  function addManagedListener(target, type, listener, opts) {
+    if (!target || typeof target.addEventListener !== 'function') return () => {};
+    if (typeof host.addManagedListener === 'function') {
+      const detach = host.addManagedListener(target, type, listener, opts);
+      return typeof detach === 'function' ? detach : () => {};
+    }
+    target.addEventListener(type, listener, opts);
+    let active = true;
+    const detach = () => {
+      if (!active) return;
+      active = false;
+      try {
+        target.removeEventListener(type, listener, opts);
+      } catch {
+        // Ignore teardown errors
+      }
+    };
+    host.onDispose(detach);
+    return detach;
+  }
+
   return Object.freeze({
     pluginId,
+    trustLevel,
+    schemaVersion,
     storageNamespace,
     ipcChannelPrefix,
     langStorageKey,
@@ -195,10 +402,13 @@ export function createHostRuntime({ addonHost, win = window, doc = document }) {
     bindServerUrlListener,
     buildThemedIframeUrl,
     isTrustedIframeMessage,
-    mountSlot: (slotId, parentEl) => host.mountSlot(slotId, parentEl),
+    getSlotHostElement,
+    mountSlot,
     unmountSlot: (slotId) => host.unmountSlot(slotId),
-    injectStyle: (styleId, cssText) => host.injectStyle(styleId, cssText),
+    openModal: (slotId, opts) => host.openModal(slotId, opts || {}),
+    injectStyle,
     removeStyle: (styleId) => host.removeStyle(styleId),
+    addManagedListener,
     onDispose: (fn) => host.onDispose(fn),
   });
 }

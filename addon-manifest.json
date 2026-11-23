@@ -1,44 +1,47 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "pluginId": "antigravity-mcp-manager",
   "displayName": "Antigravity MCP Manager",
   "version": "3.0.0",
+  "trustLevel": "restricted",
   "compatibility": {
     "hostProfile": "antigravity-desktop",
-    "minHostVersion": "1.0.0"
+    "minHostVersion": "2.0.0"
   },
   "capabilities": [
-    "mainHook",
     "renderer"
   ],
   "entry": {
-    "rendererScript": "src/adapters/antigravity/addon-renderer.js",
-    "mainHookScript": "scripts/electron-hook.cjs"
+    "rendererScript": "src/adapters/antigravity/addon-renderer.js"
   },
   "uiSlots": [
     {
       "slot": "settings-pane",
       "slotId": "antigravity-mcp-manager.pane",
       "exclusive": false,
-      "scope": "addon-owned-slot"
+      "scope": "addon-owned-slot",
+      "shadow": true
     },
     {
       "slot": "sidebar",
       "slotId": "antigravity-mcp-manager.settings-nav",
       "exclusive": false,
-      "scope": "addon-owned-slot"
+      "scope": "addon-owned-slot",
+      "shadow": false
     },
     {
       "slot": "custom",
       "slotId": "antigravity-mcp-manager.customizations-btn",
       "exclusive": false,
-      "scope": "addon-owned-slot"
+      "scope": "addon-owned-slot",
+      "shadow": true
     },
     {
       "slot": "overlay",
       "slotId": "antigravity-mcp-manager.customizations-overlay",
       "exclusive": false,
-      "scope": "addon-owned-slot"
+      "scope": "addon-owned-slot",
+      "shadow": true
     }
   ],
   "isolation": {

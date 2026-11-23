@@ -20,7 +20,7 @@ const RENDERER_PATH = path.join(ROOT_DIR, 'src', 'adapters', 'antigravity', 'add
 const MANIFEST_PATH = path.join(ROOT_DIR, 'addon-manifest.json');
 const DESKTOP_SERVER_PATH = path.join(ROOT_DIR, 'src', 'adapters', 'antigravity', 'desktop-server.mjs');
 
-test('NMCP-TC-021 (Real Chromium CDP E2E): AddonManifest.v1 renderer mounts Settings nav & pane via addonHost capability handle with 0px shift, no-translate isolation, EN/KO sync, and clean dispose()', async (t) => {
+test('NMCP-TC-021 (Real Chromium CDP E2E): AddonManifest.v2 renderer mounts Settings nav (Light DOM) & pane (Shadow DOM Option B2) via addonHost with 0px shift, no-translate isolation, EN/KO sync, and clean dispose()', async (t) => {
   const rendererSrc = fs.readFileSync(RENDERER_PATH, 'utf8');
   const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
   const serverSrc = fs
@@ -95,7 +95,7 @@ test('NMCP-TC-021 (Real Chromium CDP E2E): AddonManifest.v1 renderer mounts Sett
     const { cdp, evalMain, evalIframe, hasIframe } = session;
     await cdp('Page.navigate', { url: `http://localhost:${parentPort}/` });
 
-    // 1. Verify MCP Manager slot is mounted right after Browser with AddonManifest.v1 isolation attrs
+    // 1. Verify MCP Manager nav slot is mounted right after Browser in Light DOM (`shadow: false`) with AddonManifest.v2 attrs
     assert.equal(
       await waitUntil(() => evalMain(`Boolean(document.querySelector('[data-agy-mcp-manager-nav="true"]'))`)),
       true,
@@ -105,24 +105,27 @@ test('NMCP-TC-021 (Real Chromium CDP E2E): AddonManifest.v1 renderer mounts Sett
       const browserBtn = document.getElementById('nav-browser');
       const slot = browserBtn.nextElementSibling;
       const nav = slot?.querySelector('[data-agy-mcp-manager-nav="true"]');
-      const styleEl = document.querySelector('style[data-addon-host-owner="antigravity-mcp-manager"]');
       return {
         slotOwner: slot?.getAttribute('data-addon-host-owner'),
         slotId: slot?.getAttribute('data-addon-host-slot'),
         slotTranslate: slot?.getAttribute('translate'),
+        slotHostNoTranslate: slot?.getAttribute('data-addon-host-no-translate'),
         slotAgyNoTranslate: slot?.getAttribute('data-agy-no-translate'),
+        slotHasShadow: Boolean(slot?.shadowRoot),
+        slotDisplay: slot?.style.display,
         navText: nav?.textContent?.trim(),
         totalCount: document.querySelectorAll('[data-agy-mcp-manager-nav="true"]').length,
-        hasScopedStyle: Boolean(styleEl),
       };
     })()`);
     assert.equal(placement.slotOwner, 'antigravity-mcp-manager');
     assert.equal(placement.slotId, 'antigravity-mcp-manager.settings-nav');
     assert.equal(placement.slotTranslate, 'no');
+    assert.equal(placement.slotHostNoTranslate, 'true');
     assert.equal(placement.slotAgyNoTranslate, 'true');
+    assert.equal(placement.slotHasShadow, false, 'settings-nav must remain Light DOM to inherit native Tailwind classes');
+    assert.equal(placement.slotDisplay, 'contents');
     assert.equal(placement.navText, 'MCP Manager');
     assert.equal(placement.totalCount, 1);
-    assert.equal(placement.hasScopedStyle, true);
 
     // 2. Capture exact navItem & Projects geometry BEFORE click, then click MCP Manager -> assert 0px layout shift
     const beforeClickRect = await evalMain(`(() => {
@@ -149,28 +152,41 @@ test('NMCP-TC-021 (Real Chromium CDP E2E): AddonManifest.v1 renderer mounts Sett
       true,
       'Settings MCP Manager iframe must load and render global-server-settingsSrv'
     );
-    const hiddenCheck = await evalMain(`({
-      nativeDisplay: document.getElementById('native-general-pane').style.display,
-      closeBtnDisplay: document.getElementById('settings-close-btn').style.display,
-      generalBg: window.getComputedStyle(document.getElementById('nav-general')).backgroundColor,
-      mcpFontWeight: window.getComputedStyle(document.querySelector('[data-agy-mcp-manager-nav="true"]')).fontWeight,
-      mcpLeft: document.querySelector('[data-agy-mcp-manager-nav="true"]').getBoundingClientRect().left,
-      browserLeft: document.getElementById('nav-browser').getBoundingClientRect().left,
-      mcpWidth: document.querySelector('[data-agy-mcp-manager-nav="true"]').getBoundingClientRect().width,
-      browserWidth: document.getElementById('nav-browser').getBoundingClientRect().width,
-      frameSrc: document.querySelector('[data-agy-mcp-manager-frame="true"]')?.src || '',
-      paneOwner: document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.pane"]')?.getAttribute('data-addon-host-owner') || '',
-      paneParentId: document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.pane"]')?.parentElement?.id || '',
-      frameLeft: document.querySelector('[data-agy-mcp-manager-frame="true"]')?.getBoundingClientRect().left || 0,
-      frameWidth: document.querySelector('[data-agy-mcp-manager-frame="true"]')?.getBoundingClientRect().width || 0,
-      sidebarRight: document.getElementById('settings-sidebar').getBoundingClientRect().right,
-    })`);
+    const hiddenCheck = await evalMain(`(() => {
+      const paneHost = document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.pane"]');
+      const paneSr = paneHost?.shadowRoot;
+      const frame = paneSr?.querySelector('[data-agy-mcp-manager-frame="true"]');
+      const shadowStyle = paneSr?.querySelector('style[data-addon-host-owner="antigravity-mcp-manager"]');
+      const headPaneStyle = document.head.querySelector('style[data-addon-host-style="antigravity-mcp-manager:mcp-manager-pane"]');
+      return {
+        nativeDisplay: document.getElementById('native-general-pane').style.display,
+        closeBtnDisplay: document.getElementById('settings-close-btn').style.display,
+        generalBg: window.getComputedStyle(document.getElementById('nav-general')).backgroundColor,
+        mcpFontWeight: window.getComputedStyle(document.querySelector('[data-agy-mcp-manager-nav="true"]')).fontWeight,
+        mcpLeft: document.querySelector('[data-agy-mcp-manager-nav="true"]').getBoundingClientRect().left,
+        browserLeft: document.getElementById('nav-browser').getBoundingClientRect().left,
+        mcpWidth: document.querySelector('[data-agy-mcp-manager-nav="true"]').getBoundingClientRect().width,
+        browserWidth: document.getElementById('nav-browser').getBoundingClientRect().width,
+        paneHasShadow: Boolean(paneSr),
+        paneHasShadowStyle: Boolean(shadowStyle),
+        paneHasHeadStyle: Boolean(headPaneStyle),
+        frameSrc: frame?.src || '',
+        paneOwner: paneHost?.getAttribute('data-addon-host-owner') || '',
+        paneParentId: paneHost?.parentElement?.id || '',
+        frameLeft: frame?.getBoundingClientRect().left || 0,
+        frameWidth: frame?.getBoundingClientRect().width || 0,
+        sidebarRight: document.getElementById('settings-sidebar').getBoundingClientRect().right,
+      };
+    })()`);
     assert.equal(hiddenCheck.nativeDisplay, 'none');
     assert.notEqual(hiddenCheck.closeBtnDisplay, 'none');
     assert.equal(hiddenCheck.generalBg, 'rgba(0, 0, 0, 0)');
     assert.equal(hiddenCheck.mcpFontWeight, '400');
     assert.ok(Math.abs(hiddenCheck.mcpLeft - hiddenCheck.browserLeft) <= 1);
     assert.ok(Math.abs(hiddenCheck.mcpWidth - hiddenCheck.browserWidth) <= 1);
+    assert.equal(hiddenCheck.paneHasShadow, true, 'pane slot must mount inside open ShadowRoot (Option B2)');
+    assert.equal(hiddenCheck.paneHasShadowStyle, true, 'pane style must be injected into pane ShadowRoot');
+    assert.equal(hiddenCheck.paneHasHeadStyle, false, 'pane style must not remain in document.head');
     assert.equal(hiddenCheck.frameSrc.includes('hostMode=settings'), true);
     assert.equal(hiddenCheck.frameSrc.includes('hostFont='), true);
     assert.equal(hiddenCheck.paneOwner, 'antigravity-mcp-manager');

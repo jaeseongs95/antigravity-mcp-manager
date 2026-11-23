@@ -3,21 +3,26 @@
  *
  * SOLID Boundaries:
  * - OCP: Coordinates an open list of uniform Mount Adapters (`ensureMount`, `syncLabels`,
- *   `getFrames`, `handleKeydown`, `dispose`) without knowing internal DOM details of each surface.
- * - DIP: Receives `runtime` (wrapping `addonHost`) and `adapters` via dependency injection;
- *   wires a single deterministic `runtime.onDispose(...)` teardown that disconnects observers,
- *   detaches window listeners, disposes adapters, and removes owner-scoped CSS.
+ *   `getFrames`, `handleKeydown`, `dispose`) and slot-scoped CSS descriptors without knowing
+ *   internal DOM details of each surface.
+ * - DIP: Receives `runtime` (wrapping `AddonManifest.v2` `addonHost`) and `adapters` via
+ *   dependency injection; wires a single deterministic `runtime.onDispose(...)` teardown that
+ *   disconnects observers, detaches managed listeners, disposes adapters, and removes every
+ *   slot-scoped style.
  */
 
-import { ADDON_STYLE_ID, buildAddonCss } from './addon-styles.mjs';
+import { buildSlotStyleDescriptors } from './addon-styles.mjs';
 
 export function createMountCoordinator({ runtime, adapters, win = window, doc = document }) {
+  const styleDescriptors = buildSlotStyleDescriptors();
   let started = false;
   let disposed = false;
   let scheduled = false;
   let observer = null;
   let unbindUrlListener = null;
-  let domReadyHandler = null;
+  let detachKeydown = null;
+  let detachMessage = null;
+  let detachDomReady = null;
 
   function ensureAllMounts() {
     if (disposed) return;
@@ -89,12 +94,18 @@ export function createMountCoordinator({ runtime, adapters, win = window, doc = 
       observer.disconnect();
       observer = null;
     }
-    if (domReadyHandler) {
-      win.removeEventListener('DOMContentLoaded', domReadyHandler);
-      domReadyHandler = null;
+    if (detachDomReady) {
+      detachDomReady();
+      detachDomReady = null;
     }
-    win.removeEventListener('keydown', onKeydown);
-    win.removeEventListener('message', onMessage);
+    if (detachKeydown) {
+      detachKeydown();
+      detachKeydown = null;
+    }
+    if (detachMessage) {
+      detachMessage();
+      detachMessage = null;
+    }
     if (unbindUrlListener) {
       unbindUrlListener();
       unbindUrlListener = null;
@@ -107,10 +118,12 @@ export function createMountCoordinator({ runtime, adapters, win = window, doc = 
         // Isolate per-adapter teardown errors
       }
     }
-    try {
-      runtime.removeStyle(ADDON_STYLE_ID);
-    } catch {
-      // Ignore if host already removed style
+    for (const desc of styleDescriptors) {
+      try {
+        runtime.removeStyle(desc.styleId);
+      } catch {
+        // Ignore if host already removed style
+      }
     }
   }
 
@@ -118,11 +131,13 @@ export function createMountCoordinator({ runtime, adapters, win = window, doc = 
     if (started || disposed) return;
     started = true;
 
-    runtime.injectStyle(ADDON_STYLE_ID, buildAddonCss());
+    for (const desc of styleDescriptors) {
+      runtime.injectStyle(desc.styleId, desc.cssText, { slotId: desc.slotId });
+    }
     runtime.onDispose(dispose);
 
-    win.addEventListener('keydown', onKeydown);
-    win.addEventListener('message', onMessage);
+    detachKeydown = runtime.addManagedListener(win, 'keydown', onKeydown);
+    detachMessage = runtime.addManagedListener(win, 'message', onMessage);
     unbindUrlListener = runtime.bindServerUrlListener((nextUrl) => {
       if (nextUrl) {
         scheduleEnsure();
@@ -132,11 +147,15 @@ export function createMountCoordinator({ runtime, adapters, win = window, doc = 
     if (doc.body) {
       attachObserver();
     } else {
-      domReadyHandler = () => {
-        domReadyHandler = null;
-        attachObserver();
-      };
-      win.addEventListener('DOMContentLoaded', domReadyHandler, { once: true });
+      detachDomReady = runtime.addManagedListener(
+        win,
+        'DOMContentLoaded',
+        () => {
+          detachDomReady = null;
+          attachObserver();
+        },
+        { once: true }
+      );
     }
   }
 

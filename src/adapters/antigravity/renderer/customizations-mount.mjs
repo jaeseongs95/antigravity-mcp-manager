@@ -3,19 +3,28 @@
  *
  * SOLID Boundaries:
  * - SRP: Detects Antigravity's Customizations (`MCP Servers` / `MCP 서버`) header,
- *   mounts the trigger button (`custom` slot) immediately before right-hand action icons
- *   and opens/closes the full-pane `role="dialog"` overlay (`overlay` slot) with live
- *   EN/KO label sync, Back/Close/Escape handling, and focus restoration.
+ *   mounts the trigger button (`custom` slot, Shadow DOM Option B2) immediately before
+ *   right-hand action icons, and opens/closes the full-pane modal overlay via
+ *   `AddonManifest.v2` `runtime.openModal(slotId, { shadow: true, onClose })` (preserving
+ *   host `marginTop`/`zIndex` & `PortalArbiter` LIFO `Escape` / focus restoration), rendering
+ *   either the live loopback `<iframe>` or the EN/KO Native Sidecar launcher panel.
  * - LSP / ISP: Implements the exact same Mount Adapter contract as `settings-sidebar-mount.mjs`.
  */
 
-import { FRAME_ATTR, SLOT_IDS, normalizedText, sameFrameBaseAndTheme } from './host-runtime.mjs';
+import {
+  FRAME_ATTR,
+  SLOT_IDS,
+  createSidecarLauncherView,
+  normalizedText,
+  sameFrameBaseAndTheme,
+} from './host-runtime.mjs';
 
 const CUSTOMIZATIONS_BTN_ATTR = 'data-agy-mcp-customizations-btn';
 const CUSTOMIZATIONS_OVERLAY_ATTR = 'data-agy-mcp-customizations-overlay';
 const CUSTOMIZATIONS_TOPBAR_ATTR = 'data-agy-mcp-customizations-topbar';
 const CUSTOMIZATIONS_BACK_ATTR = 'data-agy-mcp-customizations-back';
 const CUSTOMIZATIONS_CLOSE_ATTR = 'data-agy-mcp-customizations-close';
+const CUSTOMIZATIONS_CONTENT_ATTR = 'data-agy-mcp-customizations-content';
 
 const CUSTOMIZATIONS_PAGE_MARKERS = [
   'customizations',
@@ -42,8 +51,16 @@ function isMcpServersLabel(txt) {
   );
 }
 
-export function createCustomizationsMount({ runtime, win = window, doc = document }) {
+export function createCustomizationsMount({ runtime, onLangChange = () => {}, win = window, doc = document }) {
   let lastTriggerBtn = null;
+  let btnHostEl = null;
+  let btnRootEl = null;
+  let btnEl = null;
+  let activeModalHandle = null;
+  let modalBackBtnEl = null;
+  let modalContentEl = null;
+  let modalFrameEl = null;
+  let modalLauncherView = null;
 
   function getButtonLabel() {
     return runtime.readSavedLang() === 'ko' ? 'MCP 매니저' : 'MCP Manager';
@@ -53,11 +70,20 @@ export function createCustomizationsMount({ runtime, win = window, doc = documen
     return runtime.readSavedLang() === 'ko' ? '← Customizations로 돌아가기' : '← Back to Customizations';
   }
 
+  function isInsideOwnSlot(el) {
+    if (!el || typeof el.closest !== 'function') return false;
+    return Boolean(
+      el.closest(`[${CUSTOMIZATIONS_OVERLAY_ATTR}="true"]`) ||
+        el.closest('[data-addon-host-modal-dialog="1"]') ||
+        el.closest(`[data-addon-host-slot="${SLOT_IDS.CUSTOMIZATIONS_BTN}"]`)
+    );
+  }
+
   function isCustomizationsPageVisible() {
     const candidates = doc.querySelectorAll('h1, h2, h3, h4, div, span, button');
     for (const el of candidates) {
       if (el.children.length > 2) continue;
-      if (el.closest?.(`[${CUSTOMIZATIONS_OVERLAY_ATTR}="true"]`)) continue;
+      if (isInsideOwnSlot(el)) continue;
       if (isCustomizationsMarker(normalizedText(el))) {
         const rect = el.getBoundingClientRect?.();
         if (!rect || (rect.width > 0 && rect.height > 0)) return true;
@@ -71,14 +97,14 @@ export function createCustomizationsMount({ runtime, win = window, doc = documen
     const candidates = doc.querySelectorAll('h1, h2, h3, h4, span, div, button, p');
     for (const el of candidates) {
       if (el.children.length > 2) continue;
-      if (el.closest?.(`[${CUSTOMIZATIONS_OVERLAY_ATTR}="true"]`)) continue;
+      if (isInsideOwnSlot(el)) continue;
       if (el.hasAttribute(CUSTOMIZATIONS_BTN_ATTR)) continue;
       if (!isMcpServersLabel(normalizedText(el))) continue;
 
       let row = el.parentElement;
       for (let depth = 0; depth < 4 && row && row !== doc.body; depth += 1) {
         const buttons = Array.from(row.querySelectorAll('button')).filter(
-          (b) => !b.hasAttribute(CUSTOMIZATIONS_BTN_ATTR) && !b.contains(el)
+          (b) => !b.hasAttribute(CUSTOMIZATIONS_BTN_ATTR) && !isInsideOwnSlot(b) && !b.contains(el)
         );
         if (buttons.length >= 1) {
           const actionContainer = buttons[0].parentElement || row;
@@ -96,19 +122,22 @@ export function createCustomizationsMount({ runtime, win = window, doc = documen
   }
 
   function syncLabels() {
-    const btn = doc.querySelector(`[${CUSTOMIZATIONS_BTN_ATTR}="true"]`);
-    if (btn) btn.textContent = getButtonLabel();
-    const backBtn = doc.querySelector(`[${CUSTOMIZATIONS_BACK_ATTR}="true"]`);
-    if (backBtn) backBtn.textContent = getBackLabel();
+    if (btnEl) btnEl.textContent = getButtonLabel();
+    if (modalBackBtnEl) modalBackBtnEl.textContent = getBackLabel();
+    if (modalLauncherView) modalLauncherView.syncLang();
   }
 
-  function closeOverlay() {
-    const overlay = doc.querySelector(`[data-addon-host-slot="${SLOT_IDS.CUSTOMIZATIONS_OVERLAY}"]`);
-    if (overlay) {
-      overlay.setAttribute('data-agy-mcp-hidden', 'true');
-      overlay.style.display = 'none';
-    }
-    if (lastTriggerBtn && typeof lastTriggerBtn.focus === 'function') {
+  function clearModalRefs() {
+    activeModalHandle = null;
+    modalBackBtnEl = null;
+    modalContentEl = null;
+    modalFrameEl = null;
+    modalLauncherView = null;
+  }
+
+  function handleModalClosed() {
+    clearModalRefs();
+    if (lastTriggerBtn && lastTriggerBtn.isConnected && typeof lastTriggerBtn.focus === 'function') {
       try {
         lastTriggerBtn.focus();
       } catch {
@@ -117,87 +146,168 @@ export function createCustomizationsMount({ runtime, win = window, doc = documen
     }
   }
 
-  function openOverlay(triggerBtn) {
+  function closeOverlay() {
+    const handle = activeModalHandle;
+    if (!handle) return;
+    clearModalRefs();
+    try {
+      handle.close();
+    } catch {
+      // Ignore if host already closed modal
+    }
+  }
+
+  function renderModalContent() {
+    if (!modalContentEl) return;
     const baseUrl = runtime.getServerUrl();
-    if (!baseUrl || !doc.body) return;
-    lastTriggerBtn = triggerBtn || null;
+    if (baseUrl) {
+      if (modalLauncherView && modalLauncherView.element.parentNode) {
+        modalLauncherView.element.parentNode.removeChild(modalLauncherView.element);
+      }
+      modalLauncherView = null;
+
+      const themedUrl = runtime.buildThemedIframeUrl(baseUrl, doc.body);
+      if (!modalFrameEl || modalFrameEl.parentNode !== modalContentEl) {
+        while (modalContentEl.firstChild) modalContentEl.removeChild(modalContentEl.firstChild);
+        modalFrameEl = doc.createElement('iframe');
+        modalFrameEl.setAttribute(FRAME_ATTR, 'true');
+        modalFrameEl.setAttribute('data-agy-mcp-customizations-frame', 'true');
+        modalFrameEl.setAttribute('title', 'MCP Manager');
+        modalFrameEl.src = themedUrl;
+        modalContentEl.appendChild(modalFrameEl);
+      } else if (!sameFrameBaseAndTheme(modalFrameEl.src, themedUrl)) {
+        modalFrameEl.src = themedUrl;
+      }
+      return;
+    }
+
+    if (modalFrameEl && modalFrameEl.parentNode) {
+      modalFrameEl.parentNode.removeChild(modalFrameEl);
+    }
+    modalFrameEl = null;
+
+    if (!modalLauncherView || modalLauncherView.element.parentNode !== modalContentEl) {
+      while (modalContentEl.firstChild) modalContentEl.removeChild(modalContentEl.firstChild);
+      modalLauncherView = createSidecarLauncherView({ runtime, surface: 'customizations', onLangChange, doc });
+      modalContentEl.appendChild(modalLauncherView.element);
+    } else {
+      modalLauncherView.syncLang();
+    }
+  }
+
+  function openOverlay(triggerBtn) {
+    if (!doc.body) return;
+    lastTriggerBtn = triggerBtn || btnEl || null;
+
+    if (activeModalHandle && activeModalHandle.element && activeModalHandle.element.isConnected) {
+      renderModalContent();
+      syncLabels();
+      return;
+    }
 
     const bodyCs = win.getComputedStyle(doc.body);
     const bodyBg = bodyCs?.backgroundColor || '';
     const hostBg = bodyBg && bodyBg !== 'rgba(0, 0, 0, 0)' && bodyBg !== 'transparent' ? bodyBg : '#0d0e11';
     const hostFg = bodyCs?.color || '#e5e7eb';
     const hostFont = bodyCs?.fontFamily || 'sans-serif';
-    const themedUrl = runtime.buildThemedIframeUrl(baseUrl, doc.body);
 
-    const overlay = runtime.mountSlot(SLOT_IDS.CUSTOMIZATIONS_OVERLAY, doc.body);
-    overlay.setAttribute(CUSTOMIZATIONS_OVERLAY_ATTR, 'true');
-    overlay.setAttribute('role', 'dialog');
-    overlay.setAttribute('aria-modal', 'true');
-    overlay.setAttribute('aria-label', 'MCP Manager');
-    overlay.style.background = hostBg;
-    overlay.style.color = hostFg;
-    overlay.style.fontFamily = hostFont;
+    const modalHandle = runtime.openModal(SLOT_IDS.CUSTOMIZATIONS_OVERLAY, {
+      shadow: true,
+      onClose: handleModalClosed,
+    });
+    if (!modalHandle || !modalHandle.bodyEl) return;
 
-    let frame = overlay.querySelector(`[${FRAME_ATTR}="true"]`);
-    if (!frame) {
-      while (overlay.firstChild) overlay.removeChild(overlay.firstChild);
-
-      const topBar = doc.createElement('div');
-      topBar.setAttribute(CUSTOMIZATIONS_TOPBAR_ATTR, 'true');
-
-      const backBtn = doc.createElement('button');
-      backBtn.type = 'button';
-      backBtn.setAttribute(CUSTOMIZATIONS_BACK_ATTR, 'true');
-      backBtn.textContent = getBackLabel();
-      backBtn.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        closeOverlay();
-      });
-
-      const closeBtn = doc.createElement('button');
-      closeBtn.type = 'button';
-      closeBtn.setAttribute(CUSTOMIZATIONS_CLOSE_ATTR, 'true');
-      closeBtn.setAttribute('aria-label', 'Close MCP Manager');
-      closeBtn.textContent = '✕';
-      closeBtn.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        closeOverlay();
-      });
-
-      topBar.appendChild(backBtn);
-      topBar.appendChild(closeBtn);
-
-      frame = doc.createElement('iframe');
-      frame.setAttribute(FRAME_ATTR, 'true');
-      frame.setAttribute('data-agy-mcp-customizations-frame', 'true');
-      frame.setAttribute('title', 'MCP Manager');
-      frame.src = themedUrl;
-
-      overlay.appendChild(topBar);
-      overlay.appendChild(frame);
-    } else if (!sameFrameBaseAndTheme(frame.src, themedUrl)) {
-      frame.src = themedUrl;
+    activeModalHandle = modalHandle;
+    const dlg = modalHandle.element;
+    if (dlg) {
+      dlg.setAttribute(CUSTOMIZATIONS_OVERLAY_ATTR, 'true');
+      dlg.setAttribute('aria-label', 'MCP Manager');
+      // Preserve host-managed `marginTop` (titlebar safe inset) and `zIndex`!
+      if (dlg.style) {
+        dlg.style.width = '100vw';
+        dlg.style.maxWidth = '100vw';
+        dlg.style.height = 'calc(100vh - max(env(titlebar-area-height, 36px), 36px))';
+        dlg.style.maxHeight = 'calc(100vh - max(env(titlebar-area-height, 36px), 36px))';
+        dlg.style.marginLeft = '0';
+        dlg.style.marginRight = '0';
+        dlg.style.marginBottom = '0';
+        dlg.style.padding = '0';
+        dlg.style.border = '0';
+        dlg.style.background = hostBg;
+        dlg.style.color = hostFg;
+        dlg.style.fontFamily = hostFont;
+        dlg.style.overflow = 'hidden';
+      }
     }
 
+    const shadowHost = runtime.getSlotHostElement(modalHandle.bodyEl);
+    if (shadowHost && shadowHost !== dlg && shadowHost.style) {
+      shadowHost.style.width = '100%';
+      shadowHost.style.height = '100%';
+      shadowHost.style.display = 'flex';
+      shadowHost.style.flexDirection = 'column';
+    }
+
+    const bodyRoot = modalHandle.bodyEl;
+    while (bodyRoot.firstChild) bodyRoot.removeChild(bodyRoot.firstChild);
+
+    const topBar = doc.createElement('div');
+    topBar.setAttribute(CUSTOMIZATIONS_TOPBAR_ATTR, 'true');
+
+    const backBtn = doc.createElement('button');
+    backBtn.type = 'button';
+    backBtn.setAttribute(CUSTOMIZATIONS_BACK_ATTR, 'true');
+    backBtn.textContent = getBackLabel();
+    backBtn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      closeOverlay();
+    });
+
+    const closeBtn = doc.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.setAttribute(CUSTOMIZATIONS_CLOSE_ATTR, 'true');
+    closeBtn.setAttribute('aria-label', 'Close MCP Manager');
+    closeBtn.textContent = '✕';
+    closeBtn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      closeOverlay();
+    });
+
+    topBar.appendChild(backBtn);
+    topBar.appendChild(closeBtn);
+
+    const content = doc.createElement('div');
+    content.setAttribute(CUSTOMIZATIONS_CONTENT_ATTR, 'true');
+
+    bodyRoot.appendChild(topBar);
+    bodyRoot.appendChild(content);
+
+    modalBackBtnEl = backBtn;
+    modalContentEl = content;
+    renderModalContent();
     syncLabels();
-    overlay.removeAttribute('data-agy-mcp-hidden');
-    overlay.style.display = 'flex';
   }
 
   function ensureMount() {
-    const baseUrl = runtime.getServerUrl();
-    if (!baseUrl) return;
-
     const found = findCustomizationsMcpHeader();
     if (!found) return;
     const { row, actionContainer, firstActionButton } = found;
 
-    if (row.querySelector(`[${CUSTOMIZATIONS_BTN_ATTR}="true"]`)) {
+    if (btnHostEl && btnHostEl.isConnected && row.contains(btnHostEl)) {
+      if (activeModalHandle && activeModalHandle.element && activeModalHandle.element.isConnected) {
+        renderModalContent();
+      }
       return;
     }
 
-    const btnSlot = runtime.mountSlot(SLOT_IDS.CUSTOMIZATIONS_BTN, actionContainer);
-    while (btnSlot.firstChild) btnSlot.removeChild(btnSlot.firstChild);
+    const btnRoot = runtime.mountSlot(SLOT_IDS.CUSTOMIZATIONS_BTN, { container: actionContainer });
+    if (!btnRoot) return;
+    const btnHost = runtime.getSlotHostElement(btnRoot);
+    if (btnHost && btnHost.style) {
+      btnHost.style.display = 'inline-flex';
+      btnHost.style.alignItems = 'center';
+    }
+    while (btnRoot.firstChild) btnRoot.removeChild(btnRoot.firstChild);
 
     const btn = doc.createElement('button');
     btn.type = 'button';
@@ -209,35 +319,35 @@ export function createCustomizationsMount({ runtime, win = window, doc = documen
       openOverlay(btn);
     });
 
-    btnSlot.appendChild(btn);
+    btnRoot.appendChild(btn);
+    btnHostEl = btnHost;
+    btnRootEl = btnRoot;
+    btnEl = btn;
 
-    if (firstActionButton && firstActionButton.parentElement === actionContainer && firstActionButton !== btnSlot) {
-      actionContainer.insertBefore(btnSlot, firstActionButton);
+    if (firstActionButton && firstActionButton.parentElement === actionContainer && firstActionButton !== btnHost) {
+      actionContainer.insertBefore(btnHost, firstActionButton);
     }
   }
 
   function handleKeydown(ev) {
-    if (ev.key !== 'Escape') return;
-    const overlay = doc.querySelector(`[data-addon-host-slot="${SLOT_IDS.CUSTOMIZATIONS_OVERLAY}"]`);
-    if (overlay && overlay.style.display !== 'none' && overlay.getAttribute('data-agy-mcp-hidden') !== 'true') {
+    // Host ModalPortal handles capture-phase Escape LIFO; keep fallback only if not already handled
+    if (ev.key !== 'Escape' || ev.defaultPrevented || ev.isComposing || ev.keyCode === 229) return;
+    if (activeModalHandle && activeModalHandle.element && activeModalHandle.element.isConnected) {
       ev.preventDefault();
       closeOverlay();
     }
   }
 
   function getFrames() {
-    const overlay = doc.querySelector(`[data-addon-host-slot="${SLOT_IDS.CUSTOMIZATIONS_OVERLAY}"]`);
-    const frame = overlay?.querySelector(`[${FRAME_ATTR}="true"]`);
-    return frame ? [frame] : [];
+    return modalFrameEl && modalFrameEl.isConnected ? [modalFrameEl] : [];
   }
 
   function dispose() {
     lastTriggerBtn = null;
-    try {
-      runtime.unmountSlot(SLOT_IDS.CUSTOMIZATIONS_OVERLAY);
-    } catch {
-      // Ignore if host already unmounted
-    }
+    closeOverlay();
+    btnHostEl = null;
+    btnRootEl = null;
+    btnEl = null;
     try {
       runtime.unmountSlot(SLOT_IDS.CUSTOMIZATIONS_BTN);
     } catch {

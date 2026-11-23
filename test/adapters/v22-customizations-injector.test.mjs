@@ -19,7 +19,7 @@ const ROOT_DIR = path.resolve(__dirname, '../..');
 const RENDERER_PATH = path.join(ROOT_DIR, 'src', 'adapters', 'antigravity', 'addon-renderer.js');
 const MANIFEST_PATH = path.join(ROOT_DIR, 'addon-manifest.json');
 
-test('NMCP-TC-027 (Real Chromium CDP E2E): Customizations MCP Servers header mounts button & full-pane overlay via addonHost slots, syncs EN/KO, closes via Back/Esc, supports Korean page, and cleans up on dispose()', async (t) => {
+test('NMCP-TC-027 (Real Chromium CDP E2E): Customizations MCP Servers header mounts Shadow DOM button & openModal <dialog> overlay with PortalArbiter, preserves marginTop/zIndex, syncs EN/KO, closes via Back/Esc, supports Korean page, and cleans up on dispose()', async (t) => {
   const browserBin = findChromiumBinary();
   if (!browserBin || typeof WebSocket !== 'function') {
     t.skip('Headless Chromium/Edge binary or global WebSocket is unavailable on this host');
@@ -73,7 +73,7 @@ test('NMCP-TC-027 (Real Chromium CDP E2E): Customizations MCP Servers header mou
             (function(addonHost) {
               ${rendererSrc}
             })(window.__TEST_ADDON_HOST__);
-            // Simulate late Isolated World 999 URL delivery after renderer boot
+            // Simulate late SidecarBridge URL delivery in Isolated World 998 after renderer boot
             setTimeout(() => {
               const u = ${JSON.stringify(desktopSrv.url)};
               window.__AGY_MCP_MANAGER_URL__ = u;
@@ -98,36 +98,52 @@ test('NMCP-TC-027 (Real Chromium CDP E2E): Customizations MCP Servers header mou
     const { cdp, evalMain, evalIframe, hasIframe } = session;
     await cdp('Page.navigate', { url: `http://localhost:${parentPort}/` });
 
-    // 1. Button slot inserted once right before native [] and + buttons with AddonManifest.v1 attrs
+    // 1. Button slot mounted inside Shadow DOM right before native [] and + buttons with AddonManifest.v2 attrs
     assert.equal(
-      await waitUntil(() => evalMain(`Boolean(document.querySelector('[data-agy-mcp-customizations-btn="true"]'))`)),
+      await waitUntil(() =>
+        evalMain(`(() => {
+          const slot = document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.customizations-btn"]');
+          return Boolean(slot && slot.shadowRoot && slot.shadowRoot.querySelector('[data-agy-mcp-customizations-btn="true"]') && window.__AGY_MCP_MANAGER_URL__);
+        })()`)
+      ),
       true,
-      'MCP Manager button must be mounted in Customizations MCP Servers header after late URL push'
+      'MCP Manager button must be mounted inside Shadow DOM in Customizations MCP Servers header'
     );
     const btnPlacement = await evalMain(`(() => {
       const actions = document.getElementById('mcp-header-actions');
       const slot = actions?.firstElementChild;
-      const btn = slot?.querySelector('[data-agy-mcp-customizations-btn="true"]');
+      const sr = slot?.shadowRoot;
+      const btn = sr?.querySelector('[data-agy-mcp-customizations-btn="true"]');
+      const rect = btn?.getBoundingClientRect();
       return {
-        count: document.querySelectorAll('[data-agy-mcp-customizations-btn="true"]').length,
+        slotCount: document.querySelectorAll('[data-addon-host-slot="antigravity-mcp-manager.customizations-btn"]').length,
         slotOwner: slot?.getAttribute('data-addon-host-owner'),
         slotId: slot?.getAttribute('data-addon-host-slot'),
         slotTranslate: slot?.getAttribute('translate'),
+        slotHostNoTranslate: slot?.getAttribute('data-addon-host-no-translate'),
         slotAgyNoTranslate: slot?.getAttribute('data-agy-no-translate'),
+        hasShadow: Boolean(sr),
+        hasShadowStyle: Boolean(sr?.querySelector('style[data-addon-host-owner="antigravity-mcp-manager"]')),
         nextId: slot?.nextElementSibling?.id,
         text: btn?.textContent?.trim(),
+        width: rect?.width || 0,
+        height: rect?.height || 0,
       };
     })()`);
-    assert.equal(btnPlacement.count, 1);
+    assert.equal(btnPlacement.slotCount, 1);
     assert.equal(btnPlacement.slotOwner, 'antigravity-mcp-manager');
     assert.equal(btnPlacement.slotId, 'antigravity-mcp-manager.customizations-btn');
     assert.equal(btnPlacement.slotTranslate, 'no');
+    assert.equal(btnPlacement.slotHostNoTranslate, 'true');
     assert.equal(btnPlacement.slotAgyNoTranslate, 'true');
+    assert.equal(btnPlacement.hasShadow, true);
+    assert.equal(btnPlacement.hasShadowStyle, true);
     assert.equal(btnPlacement.nextId, 'btn-raw-config');
     assert.equal(btnPlacement.text, 'MCP Manager');
+    assert.ok(btnPlacement.width > 40 && btnPlacement.height > 16);
 
-    // 2. Click button -> opens full-pane overlay slot without destroying native Customizations DOM
-    await evalMain(`document.querySelector('[data-agy-mcp-customizations-btn="true"]').click()`);
+    // 2. Click button -> opens host openModal <dialog> with ShadowRoot + PortalArbiter without destroying native DOM
+    await evalMain(`document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.customizations-btn"]').shadowRoot.querySelector('[data-agy-mcp-customizations-btn="true"]').click()`);
     assert.equal(await waitUntil(hasIframe, 8000, 40), true);
     assert.equal(
       await waitUntil(async () => {
@@ -141,56 +157,74 @@ test('NMCP-TC-027 (Real Chromium CDP E2E): Customizations MCP Servers header mou
       'Customizations overlay iframe must load and render global-server-custSrv'
     );
     const overlayState = await evalMain(`(() => {
-      const ov = document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.customizations-overlay"]');
+      const dlg = document.querySelector('dialog[data-addon-host-modal-dialog="1"][data-addon-host-slot="antigravity-mcp-manager.customizations-overlay"]');
+      const shadowHost = dlg?.querySelector('.addon-host-modal-shadow-host');
+      const sr = shadowHost?.shadowRoot;
       return {
-        owner: ov?.getAttribute('data-addon-host-owner'),
-        translate: ov?.getAttribute('translate'),
-        role: ov?.getAttribute('role'),
-        display: ov?.style.display,
+        exists: Boolean(dlg),
+        isOpen: Boolean(dlg?.open),
+        owner: dlg?.getAttribute('data-addon-host-owner'),
+        translate: dlg?.getAttribute('translate'),
+        role: dlg?.getAttribute('role'),
+        marginTop: dlg?.style.marginTop || '',
+        zIndex: Number(dlg?.style.zIndex || 0),
+        portalActive: window.__TEST_ADDON_HOST_DIAG__.getPortalActive(),
+        hasShadow: Boolean(sr),
+        hasShadowStyle: Boolean(sr?.querySelector('style[data-addon-host-owner="antigravity-mcp-manager"]')),
         nativeListIntact: Boolean(document.getElementById('native-mcp-list')),
-        backText: document.querySelector('[data-agy-mcp-customizations-back="true"]')?.textContent?.trim(),
+        backText: sr?.querySelector('[data-agy-mcp-customizations-back="true"]')?.textContent?.trim(),
       };
     })()`);
+    assert.equal(overlayState.exists, true);
+    assert.equal(overlayState.isOpen, true);
     assert.equal(overlayState.owner, 'antigravity-mcp-manager');
     assert.equal(overlayState.translate, 'no');
     assert.equal(overlayState.role, 'dialog');
-    assert.equal(overlayState.display, 'flex');
+    assert.equal(overlayState.marginTop.includes('36px'), true, 'openModal marginTop titlebar safe inset must be preserved');
+    assert.ok(overlayState.zIndex >= 2147483001, 'openModal host zIndex must be preserved');
+    assert.equal(overlayState.portalActive, true);
+    assert.equal(overlayState.hasShadow, true);
+    assert.equal(overlayState.hasShadowStyle, true);
     assert.equal(overlayState.nativeListIntact, true);
     assert.equal(overlayState.backText, '← Back to Customizations');
 
-    // 3. Switch language to Korean inside overlay -> host labels & namespaced localStorage update live
+    // 3. Switch language to Korean inside overlay -> Shadow DOM button & Back button + namespaced localStorage update live
     await evalIframe(`document.querySelector('[data-testid="btn-lang-ko"]').click()`);
     assert.equal(
       await waitUntil(() => evalMain(`window.localStorage.getItem('antigravity-mcp-manager:lang') === 'ko'`), 3000, 30),
       true
     );
-    const koLabels = await evalMain(`({
-      btnText: document.querySelector('[data-agy-mcp-customizations-btn="true"]')?.textContent?.trim(),
-      backText: document.querySelector('[data-agy-mcp-customizations-back="true"]')?.textContent?.trim(),
-    })`);
+    const koLabels = await evalMain(`(() => {
+      const btnSr = document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.customizations-btn"]').shadowRoot;
+      const modalSr = document.querySelector('dialog[data-addon-host-modal-dialog="1"] .addon-host-modal-shadow-host').shadowRoot;
+      return {
+        btnText: btnSr.querySelector('[data-agy-mcp-customizations-btn="true"]')?.textContent?.trim(),
+        backText: modalSr.querySelector('[data-agy-mcp-customizations-back="true"]')?.textContent?.trim(),
+      };
+    })()`);
     assert.equal(koLabels.btnText, 'MCP 매니저');
     assert.equal(koLabels.backText, '← Customizations로 돌아가기');
 
-    // 4. Close via Back button -> overlay hides cleanly
-    await evalMain(`document.querySelector('[data-agy-mcp-customizations-back="true"]').click()`);
-    assert.equal(
-      await evalMain(`document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.customizations-overlay"]')?.style.display`),
-      'none'
-    );
+    // 4. Close via Back button -> <dialog> closes & PortalArbiter deactivates
+    await evalMain(`document.querySelector('dialog[data-addon-host-modal-dialog="1"] .addon-host-modal-shadow-host').shadowRoot.querySelector('[data-agy-mcp-customizations-back="true"]').click()`);
+    const closedAfterBack = await evalMain(`({
+      modalCount: document.querySelectorAll('dialog[data-addon-host-modal-dialog="1"]').length,
+      portalActive: window.__TEST_ADDON_HOST_DIAG__.getPortalActive(),
+    })`);
+    assert.equal(closedAfterBack.modalCount, 0);
+    assert.equal(closedAfterBack.portalActive, false);
 
-    // 5. Reopen and close via Escape key
-    await evalMain(`document.querySelector('[data-agy-mcp-customizations-btn="true"]').click()`);
+    // 5. Reopen and close via capture-phase Escape key
+    await evalMain(`document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.customizations-btn"]').shadowRoot.querySelector('[data-agy-mcp-customizations-btn="true"]').click()`);
     assert.equal(
-      await evalMain(`document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.customizations-overlay"]')?.style.display`),
-      'flex'
+      await evalMain(`Boolean(document.querySelector('dialog[data-addon-host-modal-dialog="1"]')?.open)`),
+      true
     );
-    await evalMain(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
-    assert.equal(
-      await evalMain(`document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.customizations-overlay"]')?.style.display`),
-      'none'
-    );
+    await evalMain(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))`);
+    assert.equal(await evalMain(`document.querySelectorAll('dialog[data-addon-host-modal-dialog="1"]').length`), 0);
+    assert.equal(await evalMain(`window.__TEST_ADDON_HOST_DIAG__.getPortalActive()`), false);
 
-    // 6. Korean-localized Customizations page still mounts button cleanly
+    // 6. Korean-localized Customizations page still mounts Shadow DOM button cleanly
     await evalMain(`(() => {
       document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.customizations-btn"]')?.remove();
       document.getElementById('page-title').textContent = '사용자 정의';
@@ -198,17 +232,27 @@ test('NMCP-TC-027 (Real Chromium CDP E2E): Customizations MCP Servers header mou
       document.getElementById('mcp-section-title').textContent = 'MCP 서버';
     })()`);
     assert.equal(
-      await waitUntil(() => evalMain(`Boolean(document.querySelector('[data-agy-mcp-customizations-btn="true"]'))`), 4000, 30),
+      await waitUntil(
+        () =>
+          evalMain(`(() => {
+            const slot = document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.customizations-btn"]');
+            return Boolean(slot && slot.shadowRoot && slot.shadowRoot.querySelector('[data-agy-mcp-customizations-btn="true"]'));
+          })()`),
+        4000,
+        30
+      ),
       true,
-      'Renderer must also mount button on Korean-localized Customizations screen'
+      'Renderer must also mount Shadow DOM button on Korean-localized Customizations screen'
     );
 
-    // 7. addonHost.dispose() removes both custom & overlay slots and owner style cleanly
+    // 7. addonHost.dispose() removes custom slot, open modal, and all owner styles cleanly
+    await evalMain(`document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.customizations-btn"]').shadowRoot.querySelector('[data-agy-mcp-customizations-btn="true"]').click()`);
     await evalMain(`window.__TEST_ADDON_HOST__.dispose()`);
     assert.equal(
       await evalMain(`document.querySelectorAll('[data-addon-host-owner="antigravity-mcp-manager"]').length`),
       0
     );
+    assert.equal(await evalMain(`window.__TEST_ADDON_HOST_DIAG__.getPortalActive()`), false);
   } finally {
     await session.close();
     await desktopSrv.close();

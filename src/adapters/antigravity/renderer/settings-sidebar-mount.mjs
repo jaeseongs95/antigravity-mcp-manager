@@ -3,9 +3,11 @@
  *
  * SOLID Boundaries:
  * - SRP: Discovers Antigravity's Settings left sidebar (`Browser`/`브라우저`) and right
- *   content pane, mounts the `settings-nav` and `pane` slots via `runtime.mountSlot(...)`,
- *   handles paint-only 0px-shift selection, preserves native top-right close (`✕`),
- *   and restores all native DOM state on sibling click or `dispose()`.
+ *   content pane, mounts `settings-nav` (`shadow: false`) and `pane` (`shadow: true`) via
+ *   `AddonManifest.v2` `runtime.mountSlot(slotId, { container })`, handles paint-only
+ *   0px-shift selection, preserves native top-right close (`✕`), renders either a live
+ *   loopback `<iframe>` (when a host/test SidecarBridge URL is present) or the EN/KO Native
+ *   Sidecar launcher panel, and restores all native DOM state on sibling click or `dispose()`.
  * - LSP / ISP: Implements the standard Mount Adapter contract (`id`, `ensureMount`,
  *   `syncLabels`, `getFrames`, `handleKeydown`, `dispose`) using only the narrow `runtime` port.
  */
@@ -13,6 +15,7 @@
 import {
   FRAME_ATTR,
   SLOT_IDS,
+  createSidecarLauncherView,
   hasVisibleBg,
   normalizedText,
   replaceLeafText,
@@ -46,11 +49,18 @@ const REQUIRED_SIBLING_LABELS = [
   '브라우저',
 ];
 
-export function createSettingsSidebarMount({ runtime, win = window, doc = document }) {
+export function createSettingsSidebarMount({ runtime, onLangChange = () => {}, win = window, doc = document }) {
   let boundClickHost = null;
   let boundClickHandler = null;
   let activeSidebar = null;
   let activeContentPane = null;
+  let navHostEl = null;
+  let navItemEl = null;
+  let paneHostEl = null;
+  let paneRootEl = null;
+  let frameEl = null;
+  let launcherView = null;
+  let isPaneActive = false;
 
   function findSettingsSidebarAndAnchor() {
     const candidates = doc.querySelectorAll('button, a, [role="tab"], [role="menuitem"], [role="button"], li, div');
@@ -161,7 +171,7 @@ export function createSettingsSidebarMount({ runtime, win = window, doc = docume
   }
 
   // Paint-only active suppression: NEVER mutates className, padding, margin, height, or font-weight (0px shift)
-  function suppressNativeActiveItems(listParent, navSlot, inactiveColor) {
+  function suppressNativeActiveItems(listParent, navHost, inactiveColor) {
     let detectedActiveBg = 'rgba(255, 255, 255, 0.08)';
     let detectedActiveColor = '#ffffff';
     const dimNode = (el) => {
@@ -177,7 +187,7 @@ export function createSettingsSidebarMount({ runtime, win = window, doc = docume
 
     if (listParent) {
       for (const sib of Array.from(listParent.children)) {
-        if (sib.nodeType !== 1 || sib === navSlot || sib.getAttribute('data-addon-host-slot') === SLOT_IDS.SETTINGS_NAV) continue;
+        if (sib.nodeType !== 1 || sib === navHost || sib.getAttribute('data-addon-host-slot') === SLOT_IDS.SETTINGS_NAV) continue;
         const cs = win.getComputedStyle(sib);
         if (hasVisibleBg(sib, win)) {
           detectedActiveBg = cs.backgroundColor;
@@ -215,6 +225,7 @@ export function createSettingsSidebarMount({ runtime, win = window, doc = docume
   }
 
   function restoreNativePane(outerSidebar, contentPane, navItem) {
+    isPaneActive = false;
     restoreNativeActiveItems(outerSidebar);
     if (navItem) {
       navItem.setAttribute('aria-selected', 'false');
@@ -226,14 +237,13 @@ export function createSettingsSidebarMount({ runtime, win = window, doc = docume
         inner.style.removeProperty('color');
       }
     }
-    if (!contentPane) return;
-    const paneSlot = contentPane.querySelector(`[data-addon-host-slot="${SLOT_IDS.SETTINGS_PANE}"]`);
-    if (paneSlot) {
-      paneSlot.setAttribute('data-agy-mcp-hidden', 'true');
-      paneSlot.style.display = 'none';
+    if (paneHostEl) {
+      paneHostEl.setAttribute('data-agy-mcp-hidden', 'true');
+      paneHostEl.style.display = 'none';
     }
+    if (!contentPane) return;
     for (const child of Array.from(contentPane.children)) {
-      if (child.getAttribute('data-addon-host-slot') === SLOT_IDS.SETTINGS_PANE) continue;
+      if (child === paneHostEl || child.getAttribute('data-addon-host-slot') === SLOT_IDS.SETTINGS_PANE) continue;
       if (child.dataset && Object.prototype.hasOwnProperty.call(child.dataset, PREV_DISPLAY_ATTR)) {
         child.style.display = child.dataset[PREV_DISPLAY_ATTR];
         delete child.dataset[PREV_DISPLAY_ATTR];
@@ -241,15 +251,68 @@ export function createSettingsSidebarMount({ runtime, win = window, doc = docume
     }
   }
 
-  function showMcpManagerPane(outerSidebar, listParent, contentPane, navSlot, navItem) {
+  function renderPaneContent(contentPane) {
+    if (!contentPane) return;
+    const slotRoot = runtime.mountSlot(SLOT_IDS.SETTINGS_PANE, { container: contentPane });
+    if (!slotRoot) return;
+    const slotHost = runtime.getSlotHostElement(slotRoot);
+    paneRootEl = slotRoot;
+    paneHostEl = slotHost;
+
+    if (slotHost && slotHost.style) {
+      slotHost.removeAttribute('data-agy-mcp-hidden');
+      slotHost.style.display = 'flex';
+      slotHost.style.flexDirection = 'column';
+      slotHost.style.flex = '1 1 auto';
+      slotHost.style.minHeight = '0';
+      slotHost.style.width = '100%';
+      slotHost.style.height = '100%';
+    }
+
     const baseUrl = runtime.getServerUrl();
-    if (!baseUrl || !contentPane) return;
+    if (baseUrl) {
+      if (launcherView && launcherView.element.parentNode) {
+        launcherView.element.parentNode.removeChild(launcherView.element);
+      }
+      launcherView = null;
+
+      const themedUrl = runtime.buildThemedIframeUrl(baseUrl, contentPane);
+      if (!frameEl || frameEl.parentNode !== slotRoot) {
+        while (slotRoot.firstChild) slotRoot.removeChild(slotRoot.firstChild);
+        frameEl = doc.createElement('iframe');
+        frameEl.setAttribute(FRAME_ATTR, 'true');
+        frameEl.setAttribute('title', 'MCP Manager');
+        frameEl.src = themedUrl;
+        slotRoot.appendChild(frameEl);
+      } else if (!sameFrameBaseAndTheme(frameEl.src, themedUrl)) {
+        frameEl.src = themedUrl;
+      }
+      return;
+    }
+
+    if (frameEl && frameEl.parentNode) {
+      frameEl.parentNode.removeChild(frameEl);
+    }
+    frameEl = null;
+
+    if (!launcherView || launcherView.element.parentNode !== slotRoot) {
+      while (slotRoot.firstChild) slotRoot.removeChild(slotRoot.firstChild);
+      launcherView = createSidecarLauncherView({ runtime, surface: 'settings', onLangChange, doc });
+      slotRoot.appendChild(launcherView.element);
+    } else {
+      launcherView.syncLang();
+    }
+  }
+
+  function showMcpManagerPane(outerSidebar, listParent, contentPane, navHost, navItem) {
+    if (!contentPane) return;
 
     activeSidebar = outerSidebar;
     activeContentPane = contentPane;
+    isPaneActive = true;
 
     const inactiveColor = navItem?.dataset?.agyMcpInactiveColor || '';
-    const { activeBg, activeColor } = suppressNativeActiveItems(listParent, navSlot, inactiveColor);
+    const { activeBg, activeColor } = suppressNativeActiveItems(listParent, navHost, inactiveColor);
 
     if (navItem) {
       navItem.setAttribute('aria-selected', 'true');
@@ -265,7 +328,7 @@ export function createSettingsSidebarMount({ runtime, win = window, doc = docume
 
     const contentPaneRect = contentPane.getBoundingClientRect?.();
     for (const child of Array.from(contentPane.children)) {
-      if (child.getAttribute('data-addon-host-slot') === SLOT_IDS.SETTINGS_PANE) continue;
+      if (child === paneHostEl || child.getAttribute('data-addon-host-slot') === SLOT_IDS.SETTINGS_PANE) continue;
       if (isSettingsCloseControl(child, contentPaneRect)) {
         child.style.zIndex = '20';
         continue;
@@ -276,43 +339,36 @@ export function createSettingsSidebarMount({ runtime, win = window, doc = docume
       child.style.display = 'none';
     }
 
-    const themedUrl = runtime.buildThemedIframeUrl(baseUrl, contentPane);
-    const paneSlot = runtime.mountSlot(SLOT_IDS.SETTINGS_PANE, contentPane);
-    paneSlot.removeAttribute('data-agy-mcp-hidden');
-    paneSlot.style.display = 'block';
-
-    let frame = paneSlot.querySelector(`[${FRAME_ATTR}="true"]`);
-    if (!frame) {
-      frame = doc.createElement('iframe');
-      frame.setAttribute(FRAME_ATTR, 'true');
-      frame.setAttribute('title', 'MCP Manager');
-      frame.src = themedUrl;
-      paneSlot.appendChild(frame);
-    } else if (!sameFrameBaseAndTheme(frame.src, themedUrl)) {
-      frame.src = themedUrl;
-    }
+    renderPaneContent(contentPane);
   }
 
   function ensureMount() {
-    const baseUrl = runtime.getServerUrl();
-    if (!baseUrl) return;
-
     const found = findSettingsSidebarAndAnchor();
     if (!found) return;
     const { sidebar, listParent, browserItem, inactiveTemplate } = found;
     const { outerSidebar, contentPane: initialContentPane } = findSettingsLayout(sidebar);
 
-    const existingNav = sidebar.querySelector(`[${NAV_ATTR}="true"]`);
-    if (existingNav) {
-      const existingFrame = initialContentPane?.querySelector(`[${FRAME_ATTR}="true"]`);
-      const nextUrl = runtime.buildThemedIframeUrl(baseUrl, initialContentPane);
-      if (existingFrame && !sameFrameBaseAndTheme(existingFrame.src, nextUrl)) {
-        existingFrame.src = nextUrl;
+    if (navItemEl && navItemEl.isConnected && sidebar.contains(navItemEl)) {
+      if (isPaneActive && initialContentPane) {
+        renderPaneContent(initialContentPane);
+      } else if (frameEl && frameEl.isConnected) {
+        const baseUrl = runtime.getServerUrl();
+        if (baseUrl) {
+          const nextUrl = runtime.buildThemedIframeUrl(baseUrl, initialContentPane);
+          if (!sameFrameBaseAndTheme(frameEl.src, nextUrl)) {
+            frameEl.src = nextUrl;
+          }
+        }
       }
       return;
     }
 
-    const navSlot = runtime.mountSlot(SLOT_IDS.SETTINGS_NAV, listParent);
+    const navSlot = runtime.mountSlot(SLOT_IDS.SETTINGS_NAV, { container: listParent });
+    if (!navSlot) return;
+    const navHost = runtime.getSlotHostElement(navSlot);
+    if (navHost && navHost.style) {
+      navHost.style.display = 'contents';
+    }
     while (navSlot.firstChild) navSlot.removeChild(navSlot.firstChild);
 
     // Clone an INACTIVE native sibling node and keep its className immutable (0px shift, native focus ring intact)
@@ -328,14 +384,16 @@ export function createSettingsSidebarMount({ runtime, win = window, doc = docume
       ev.preventDefault();
       ev.stopPropagation();
       const layout = findSettingsLayout(sidebar);
-      showMcpManagerPane(layout.outerSidebar, listParent, layout.contentPane, navSlot, navItem);
+      showMcpManagerPane(layout.outerSidebar, listParent, layout.contentPane, navHost, navItem);
     });
 
     navSlot.appendChild(navItem);
+    navHostEl = navHost;
+    navItemEl = navItem;
 
     // Position inside the same listParent right after browserItem (parentNode unchanged -> host idempotent & auto-disposed)
-    if (browserItem.nextSibling && browserItem.nextSibling !== navSlot) {
-      listParent.insertBefore(navSlot, browserItem.nextSibling);
+    if (browserItem.nextSibling && browserItem.nextSibling !== navHost) {
+      listParent.insertBefore(navHost, browserItem.nextSibling);
     }
 
     const clickHost = outerSidebar || sidebar;
@@ -347,25 +405,27 @@ export function createSettingsSidebarMount({ runtime, win = window, doc = docume
       boundClickHandler = (ev) => {
         const target = ev.target;
         if (!target || target.closest?.(`[${NAV_ATTR}="true"]`)) return;
-        const activeNav = clickHost.querySelector(`[${NAV_ATTR}="true"]`);
-        if (activeNav && activeNav.dataset.agyMcpActive === 'true') {
+        if (navItemEl && navItemEl.isConnected && navItemEl.dataset.agyMcpActive === 'true') {
           const layout = findSettingsLayout(sidebar);
-          restoreNativePane(layout.outerSidebar, layout.contentPane, activeNav);
+          restoreNativePane(layout.outerSidebar, layout.contentPane, navItemEl);
         }
       };
       clickHost.addEventListener('click', boundClickHandler, true);
     }
   }
 
+  function syncLabels() {
+    if (launcherView) {
+      launcherView.syncLang();
+    }
+  }
+
   function getFrames() {
-    const paneSlot = doc.querySelector(`[data-addon-host-slot="${SLOT_IDS.SETTINGS_PANE}"]`);
-    const frame = paneSlot?.querySelector(`[${FRAME_ATTR}="true"]`);
-    return frame ? [frame] : [];
+    return frameEl && frameEl.isConnected ? [frameEl] : [];
   }
 
   function dispose() {
-    const navItem = doc.querySelector(`[${NAV_ATTR}="true"]`);
-    restoreNativePane(activeSidebar || boundClickHost, activeContentPane, navItem);
+    restoreNativePane(activeSidebar || boundClickHost, activeContentPane, navItemEl);
     if (boundClickHost && boundClickHandler) {
       boundClickHost.removeEventListener('click', boundClickHandler, true);
     }
@@ -373,6 +433,13 @@ export function createSettingsSidebarMount({ runtime, win = window, doc = docume
     boundClickHandler = null;
     activeSidebar = null;
     activeContentPane = null;
+    navHostEl = null;
+    navItemEl = null;
+    paneHostEl = null;
+    paneRootEl = null;
+    frameEl = null;
+    launcherView = null;
+    isPaneActive = false;
     try {
       runtime.unmountSlot(SLOT_IDS.SETTINGS_PANE);
     } catch {
@@ -388,7 +455,7 @@ export function createSettingsSidebarMount({ runtime, win = window, doc = docume
   return Object.freeze({
     id: 'settings-sidebar',
     ensureMount,
-    syncLabels: () => {},
+    syncLabels,
     getFrames,
     handleKeydown: () => {},
     dispose,
