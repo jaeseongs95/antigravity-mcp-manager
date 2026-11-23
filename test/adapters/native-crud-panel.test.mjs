@@ -27,7 +27,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '../..');
 const MANIFEST_PATH = path.join(ROOT_DIR, 'addon-manifest.json');
 
-test('NMCP-TC-031 (Unit): detectHostLang auto-detects Korean vs English host DOM with explicit saved override, and HostBridgeConfigStore matches locked addon-host v2.3.0 Option A Config Bridge contract (missing/ok/corrupt, plugin-files, legacy, CAS/lock/jail error mapping)', async () => {
+test('NMCP-TC-031 (Unit): detectHostLang auto-detects Korean vs English host DOM with explicit saved override, and HostBridgeConfigStore + McpManagerService match real addon-host v2.3.0 config-bridge.js contract (status:ok -> rawText:null + data + on-disk CRLF sha256 CAS, plugin-files, legacy, corrupt recovery, error mapping)', async () => {
   // 1. Scope ID constants match locked v2.3.0 contract
   assert.equal(HOST_CONFIG_SCOPES.GLOBAL_MCP, 'antigravity:mcp-config');
   assert.equal(HOST_CONFIG_SCOPES.PLUGIN_MCP, 'antigravity:plugin-mcp-configs');
@@ -89,12 +89,14 @@ test('NMCP-TC-031 (Unit): detectHostLang auto-detects Korean vs English host DOM
     null
   );
 
-  // 4. Locked v2.3.0 addonHost contract integration with McpManagerService
+  // 4. Real addon-host v2.3.0 config-bridge.js contract:
+  //    status === 'ok' ALWAYS returns rawText: null, data: parsedObj, sha256: sha256(actualDiskBytes)
+  //    status === 'corrupt' returns rawText: rawDiskText, data: null, sha256: sha256(actualDiskBytes)
   let globalMode = 'missing'; // 'missing' | 'ok' | 'corrupt'
   let storedRaw = '';
   let storedSha = null;
   let forceWriteReason = null;
-  const legacyRaw = JSON.stringify({ mcpServers: { oldSrv: { url: 'https://legacy.example/mcp' } } }, null, 2) + '\n';
+  const legacyRaw = '{\r\n    "mcpServers": {\r\n        "oldSrv": { "url": "https://legacy.example/mcp" }\r\n    }\r\n}';
   const bridgeCalls = [];
 
   const mockAddonHostV23 = Object.freeze({
@@ -142,7 +144,7 @@ test('NMCP-TC-031 (Unit): detectHostLang auto-detects Korean vs English host DOM
           kind: 'file',
           status: 'ok',
           data: JSON.parse(storedRaw),
-          rawText: storedRaw,
+          rawText: null, // Real config-bridge.js:229 always sends rawText: null for status === 'ok'
           sha256: storedSha,
           reason: null,
           updatedAt: new Date().toISOString(),
@@ -159,7 +161,7 @@ test('NMCP-TC-031 (Unit): detectHostLang auto-detects Korean vs English host DOM
               pluginId: 'sennard',
               status: 'ok',
               data: { mcpServers: { sennard: { url: 'https://sennard.example/mcp' } } },
-              rawText: JSON.stringify({ mcpServers: { sennard: { url: 'https://sennard.example/mcp' } } }),
+              rawText: null, // Real config-bridge.js always sends rawText: null for status === 'ok'
               sha256: 'abc',
               reason: null,
             }),
@@ -184,7 +186,7 @@ test('NMCP-TC-031 (Unit): detectHostLang auto-detects Korean vs English host DOM
           kind: 'file',
           status: 'ok',
           data: JSON.parse(legacyRaw),
-          rawText: legacyRaw,
+          rawText: null, // Real config-bridge.js always sends rawText: null for status === 'ok'
           sha256: await sha256Hex(legacyRaw),
           reason: null,
           updatedAt: new Date().toISOString(),
@@ -226,7 +228,7 @@ test('NMCP-TC-031 (Unit): detectHostLang auto-detects Korean vs English host DOM
   const store = createHostBridgeConfigStore(mockAddonHostV23);
   const service = new McpManagerService({ configStore: store });
 
-  // 4a. Initial missing file + plugin-files + legacy read
+  // 4a. Initial missing file + plugin-files (rawText:null) + legacy (rawText:null)
   const initSnap = await service.getSnapshot({ includeRawText: true });
   assert.equal(initSnap.ok, true);
   assert.equal(initSnap.globalConfig.exists, false);
@@ -246,13 +248,63 @@ test('NMCP-TC-031 (Unit): detectHostLang auto-detects Korean vs English host DOM
   assert.equal(createRes.ok, true);
   assert.equal(createRes.sha256, storedSha);
 
-  // 4c. CAS conflict propagation from ERR_CONFIG_CAS_CONFLICT
+  // 4c. On-disk CRLF + 4-space indentation + no trailing newline (sha256 differs from canonical JSON.stringify!)
+  //     Must parse cleanly (malformed === false), preserve exact on-disk sha256, and pass CAS on upsert/toggle/delete/rawSave!
+  const crlfNonCanonical =
+    '{\r\n    "mcpServers": {\r\n        "alpha": {\r\n            "url": "https://alpha.example/mcp"\r\n        }\r\n    }\r\n}';
+  const crlfSha = await sha256Hex(crlfNonCanonical);
+  const canonicalSha = await sha256Hex(JSON.stringify(JSON.parse(crlfNonCanonical), null, 2) + '\n');
+  assert.notEqual(crlfSha, canonicalSha, 'Test fixture must have distinct on-disk vs canonical SHA-256');
+  storedRaw = crlfNonCanonical;
+  storedSha = crlfSha;
+  globalMode = 'ok';
+
+  const crlfSnap = await service.getSnapshot({ includeRawText: true });
+  assert.equal(crlfSnap.globalConfig.malformed, false, 'status:ok with rawText:null must NOT be treated as malformed JSON');
+  assert.equal(crlfSnap.globalConfig.servers.length, 1);
+  assert.equal(crlfSnap.globalConfig.sha256, crlfSha, 'Snapshot sha256 must preserve authoritative on-disk sha256');
+
+  const crlfUpsert = await service.upsertServer({
+    name: 'beta',
+    spec: { url: 'https://beta.example/mcp' },
+    expectedSha256: crlfSnap.globalConfig.sha256,
+  });
+  assert.equal(crlfUpsert.ok, true, 'Upsert against CRLF on-disk file must pass CAS without ERR_CONFIG_CAS_CONFLICT');
+  assert.equal(crlfUpsert.sha256, storedSha);
+
+  // Re-inject CRLF formatting and verify toggleServerDisabled, deleteServer, and saveRawJson also preserve on-disk sha256
+  storedRaw = crlfNonCanonical;
+  storedSha = crlfSha;
+  const crlfToggle = await service.toggleServerDisabled({
+    name: 'alpha',
+    disabled: true,
+    expectedSha256: crlfSha,
+  });
+  assert.equal(crlfToggle.ok, true, 'toggleServerDisabled against CRLF on-disk file must pass CAS');
+
+  storedRaw = crlfNonCanonical;
+  storedSha = crlfSha;
+  const crlfDelete = await service.deleteServer({
+    name: 'alpha',
+    expectedSha256: crlfSha,
+  });
+  assert.equal(crlfDelete.ok, true, 'deleteServer against CRLF on-disk file must pass CAS');
+
+  storedRaw = crlfNonCanonical;
+  storedSha = crlfSha;
+  const crlfRawSave = await service.saveRawJson({
+    rawText: JSON.stringify({ mcpServers: { gamma: { url: 'https://gamma.example/mcp' } } }, null, 2) + '\n',
+    expectedSha256: crlfSha,
+  });
+  assert.equal(crlfRawSave.ok, true, 'saveRawJson against CRLF on-disk file must pass CAS');
+
+  // 4d. CAS conflict propagation from ERR_CONFIG_CAS_CONFLICT
   const directConflict = await store.writeGlobalConfig({ rawText: '{}', expectedSha256: 'stale-sha' });
   assert.equal(directConflict.ok, false);
   assert.equal(directConflict.code, ERROR_CODES.CONFLICT);
   assert.equal(directConflict.actualSha256, storedSha);
 
-  // 4d. Lock busy & symlink jail error code mapping
+  // 4e. Lock busy & symlink jail error code mapping
   forceWriteReason = 'ERR_CONFIG_LOCK_BUSY';
   const lockRes = await store.writeGlobalConfig({ rawText: storedRaw, expectedSha256: storedSha });
   assert.equal(lockRes.ok, false);
@@ -263,7 +315,7 @@ test('NMCP-TC-031 (Unit): detectHostLang auto-detects Korean vs English host DOM
   assert.equal(jailRes.ok, false);
   assert.equal(jailRes.code, ERROR_CODES.WRITE_JAIL_VIOLATION);
 
-  // 4e. Corrupt JSON fail-closed detection + Raw JSON CAS repair
+  // 4f. Corrupt JSON fail-closed detection + Raw JSON CAS repair (corrupt carries rawText)
   storedRaw = '{ "mcpServers": broken';
   storedSha = await sha256Hex(storedRaw);
   globalMode = 'corrupt';
@@ -285,7 +337,7 @@ test('NMCP-TC-031 (Unit): detectHostLang auto-detects Korean vs English host DOM
   assert.equal(bridgeCalls.some((c) => c[0] === 'writeConfigScope' && c[1] === HOST_CONFIG_SCOPES.GLOBAL_MCP), true);
 });
 
-test('NMCP-TC-032 (CDP E2E): Native Shadow DOM MCP Manager CRUD panel works end-to-end inside both Settings pane and Customizations centered popup against locked addon-host v2.3.0 Option A Config Bridge contract', async (t) => {
+test('NMCP-TC-032 (CDP E2E): Native Shadow DOM MCP Manager CRUD panel works end-to-end inside both Settings pane and Customizations centered popup against real addon-host v2.3.0 config-bridge.js contract (rawText:null on ok, CRLF on-disk file CAS)', async (t) => {
   const browserBin = findChromiumBinary();
   if (!browserBin || typeof WebSocket !== 'function') {
     t.skip('Headless Chromium/Edge binary or global WebSocket is unavailable on this host');
@@ -300,21 +352,17 @@ test('NMCP-TC-032 (CDP E2E): Native Shadow DOM MCP Manager CRUD panel works end-
   const hostHarness = buildAddonHostHarnessScript(manifest);
   const rendererSrc = fs.readFileSync(RENDERER_OUTPUT_PATH, 'utf8');
 
-  // Attach an in-browser locked v2.3.0 Option A Config Bridge onto window.__TEST_ADDON_HOST_V23__
+  // Mirror real addon-host v2.3.0 config-bridge.js:
+  // - Initial file uses CRLF + 4-space indentation + no trailing newline
+  // - status === 'ok' ALWAYS returns rawText: null + parsed data + actual on-disk sha256
+  // - status === 'corrupt' returns rawText + data: null + actual on-disk sha256
   const bridgeSetupScript = `(function(){
     const enc = new TextEncoder();
     async function sha256(text) {
       const buf = await crypto.subtle.digest('SHA-256', enc.encode(String(text || '')));
       return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
     }
-    let globalRaw = JSON.stringify({
-      mcpServers: {
-        ledger: {
-          url: 'https://ledger.example/mcp',
-          headers: { Authorization: 'Bearer super-secret-token-123' }
-        }
-      }
-    }, null, 2) + '\\n';
+    let globalRaw = '{\\r\\n    "mcpServers": {\\r\\n        "ledger": {\\r\\n            "url": "https://ledger.example/mcp",\\r\\n            "headers": {\\r\\n                "Authorization": "Bearer super-secret-token-123"\\r\\n            }\\r\\n        }\\r\\n    }\\r\\n}';
     const pluginRaw = JSON.stringify({
       mcpServers: {
         sennard: { url: 'https://sennard.example/mcp' }
@@ -335,7 +383,7 @@ test('NMCP-TC-032 (CDP E2E): Native Shadow DOM MCP Manager CRUD panel works end-
           if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
             return Object.freeze({ ok: true, scopeId, kind: 'file', status: 'corrupt', data: null, rawText: globalRaw, sha256: hash, reason: 'ERR_CONFIG_MUST_BE_OBJECT', updatedAt: new Date().toISOString() });
           }
-          return Object.freeze({ ok: true, scopeId, kind: 'file', status: 'ok', data: parsed, rawText: globalRaw, sha256: hash, reason: null, updatedAt: new Date().toISOString() });
+          return Object.freeze({ ok: true, scopeId, kind: 'file', status: 'ok', data: parsed, rawText: null, sha256: hash, reason: null, updatedAt: new Date().toISOString() });
         } catch {
           return Object.freeze({ ok: true, scopeId, kind: 'file', status: 'corrupt', data: null, rawText: globalRaw, sha256: hash, reason: 'ERR_CONFIG_INVALID_JSON', updatedAt: new Date().toISOString() });
         }
@@ -351,7 +399,7 @@ test('NMCP-TC-032 (CDP E2E): Native Shadow DOM MCP Manager CRUD panel works end-
               pluginId: 'sennard',
               status: 'ok',
               data: JSON.parse(pluginRaw),
-              rawText: pluginRaw,
+              rawText: null,
               sha256: await sha256(pluginRaw),
               reason: null
             })
@@ -502,7 +550,7 @@ test('NMCP-TC-032 (CDP E2E): Native Shadow DOM MCP Manager CRUD panel works end-
     assert.equal(initialCheck.title, 'MCP 매니저');
     assert.equal(initialCheck.badge, '호스트 브리지 연결됨');
 
-    // 3. Edit existing server ('ledger') without changing masked secret -> secret preserved intact
+    // 3. Edit existing server ('ledger') on CRLF on-disk file without changing masked secret -> CAS succeeds & secret preserved intact
     await evalMain(`(() => {
       const sr = document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.pane"]').shadowRoot;
       sr.querySelector('[data-testid="btn-edit-ledger"]').click();
@@ -526,7 +574,7 @@ test('NMCP-TC-032 (CDP E2E): Native Shadow DOM MCP Manager CRUD panel works end-
         30
       ),
       true,
-      'Editing HTTP server must update URL while preserving masked Authorization header secret'
+      'Editing HTTP server on CRLF on-disk file must pass CAS and preserve masked Authorization header secret'
     );
 
     // 4. Add a Stdio server -> must require explicit confirmation before saving
@@ -594,7 +642,7 @@ test('NMCP-TC-032 (CDP E2E): Native Shadow DOM MCP Manager CRUD panel works end-
       'Delete button must remove server cleanly'
     );
 
-    // 6. Plugin Clone to Global
+    // 6. Plugin Clone to Global (from plugin-files with rawText: null)
     await evalMain(`document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.pane"]').shadowRoot.querySelector('[data-testid="btn-clone-global-sennard-sennard"]').click()`);
     assert.equal(
       await waitUntil(() => evalMain(`Boolean(JSON.parse(window.__TEST_BRIDGE_CTRL__.getRaw()).mcpServers['sennard-copy'])`), 4000, 30),

@@ -986,6 +986,14 @@
     }
     return out;
   }
+
+  function resolveAuthoritativeSha256(readRes, fallbackSha256) {
+    if (!readRes?.exists) return null;
+    if (typeof readRes.sha256 === 'string' && readRes.sha256.trim()) {
+      return readRes.sha256.trim();
+    }
+    return fallbackSha256 ?? null;
+  }
   class McpManagerService {
     constructor({ configStore, dialect = DEFAULT_GENERIC_DIALECT, runtimeInspector = null }) {
       assertConfigStorePort(configStore);
@@ -1119,7 +1127,7 @@
         globalConfig: {
           exists: globalRead.exists,
           displayPath: globalRead.displayPath,
-          sha256: parsedGlobal.sha256,
+          sha256: resolveAuthoritativeSha256(globalRead, parsedGlobal.sha256),
           malformed: !parsedGlobal.ok,
           parseError: parsedGlobal.parseError,
           servers: globalServers,
@@ -1163,12 +1171,13 @@
         };
       }
 
-      if (parsed.sha256 !== expectedSha256) {
+      const currentSha256 = resolveAuthoritativeSha256(readRes, parsed.sha256);
+      if (currentSha256 !== expectedSha256) {
         return {
           ok: false,
           code: ERROR_CODES.CONFLICT,
           errors: ['Config file changed on disk since last load. Reload and review before saving.'],
-          actualSha256: parsed.sha256,
+          actualSha256: currentSha256,
         };
       }
 
@@ -1208,7 +1217,7 @@
       const nextRaw = applyUpsertToDocument(parsed, { name, originalName, spec: unmaskedSpec }, this.dialect.serversRootKey);
       const writeRes = await this.configStore.writeGlobalConfig({
         rawText: nextRaw,
-        expectedSha256: parsed.sha256,
+        expectedSha256: currentSha256,
       });
       if (!writeRes.ok) {
         return {
@@ -1234,8 +1243,9 @@
       if (!parsed.ok) {
         return { ok: false, code: ERROR_CODES.MALFORMED_JSON, errors: [parsed.parseError?.message || 'Malformed JSON'] };
       }
-      if (parsed.sha256 !== expectedSha256) {
-        return { ok: false, code: ERROR_CODES.CONFLICT, errors: ['Config changed on disk. Reload first.'], actualSha256: parsed.sha256 };
+      const currentSha256 = resolveAuthoritativeSha256(readRes, parsed.sha256);
+      if (currentSha256 !== expectedSha256) {
+        return { ok: false, code: ERROR_CODES.CONFLICT, errors: ['Config changed on disk. Reload first.'], actualSha256: currentSha256 };
       }
 
       const nextRaw = applyToggleDisabledToDocument(parsed, name, Boolean(disabled), this.dialect.serversRootKey);
@@ -1244,7 +1254,7 @@
       }
       const writeRes = await this.configStore.writeGlobalConfig({
         rawText: nextRaw,
-        expectedSha256: parsed.sha256,
+        expectedSha256: currentSha256,
       });
       if (!writeRes.ok) {
         return {
@@ -1266,8 +1276,9 @@
       if (!parsed.ok) {
         return { ok: false, code: ERROR_CODES.MALFORMED_JSON, errors: [parsed.parseError?.message || 'Malformed JSON'] };
       }
-      if (parsed.sha256 !== expectedSha256) {
-        return { ok: false, code: ERROR_CODES.CONFLICT, errors: ['Config changed on disk. Reload first.'], actualSha256: parsed.sha256 };
+      const currentSha256 = resolveAuthoritativeSha256(readRes, parsed.sha256);
+      if (currentSha256 !== expectedSha256) {
+        return { ok: false, code: ERROR_CODES.CONFLICT, errors: ['Config changed on disk. Reload first.'], actualSha256: currentSha256 };
       }
 
       const nextRaw = applyDeleteFromDocument(parsed, name, this.dialect.serversRootKey);
@@ -1276,7 +1287,7 @@
       }
       const writeRes = await this.configStore.writeGlobalConfig({
         rawText: nextRaw,
-        expectedSha256: parsed.sha256,
+        expectedSha256: currentSha256,
       });
       if (!writeRes.ok) {
         return {
@@ -1361,7 +1372,8 @@
       }
 
       const currentRead = await this.configStore.readGlobalConfig();
-      const currentSha256 = currentRead.exists ? await sha256Hex(currentRead.rawText) : null;
+      const fallbackSha256 = currentRead.exists ? await sha256Hex(currentRead.rawText) : null;
+      const currentSha256 = resolveAuthoritativeSha256(currentRead, fallbackSha256);
       if (currentSha256 !== expectedSha256) {
         return {
           ok: false,
@@ -1382,7 +1394,7 @@
       const normalizedRaw = serializeConfigDocument(parsedNext.doc, parsedNext.eol);
       const writeRes = await this.configStore.writeGlobalConfig({
         rawText: normalizedRaw,
-        expectedSha256,
+        expectedSha256: currentSha256,
       });
       if (!writeRes.ok) {
         return {
@@ -1432,6 +1444,14 @@
     [HOST_CONFIG_SCOPES.GLOBAL_MCP]: '~/.gemini/config/mcp_config.json',
     [HOST_CONFIG_SCOPES.LEGACY_MCP]: '~/.gemini/antigravity/mcp_config.json',
   });
+
+  function resolveSnapshotRawText(res) {
+    if (typeof res?.rawText === 'string') return res.rawText;
+    if (res?.status === 'ok' && res.data && typeof res.data === 'object' && !Array.isArray(res.data)) {
+      return `${JSON.stringify(res.data, null, 2)}\n`;
+    }
+    return null;
+  }
 
   function hasDeclaredScope(addonHost, scopeId, requiredAccess = null) {
     if (!Array.isArray(addonHost?.configScopes)) return true;
@@ -1511,12 +1531,16 @@
           displayPath,
         };
       }
-      // Both status === 'ok' and status === 'corrupt' carry rawText + sha256 so
-      // McpManagerService can detect malformed JSON fail-closed and support Raw JSON CAS repair.
+      // Host v2.3.0 config-bridge.js returns `{ status: 'ok', data, rawText: null, sha256 }`
+      // for valid files and `{ status: 'corrupt', data: null, rawText, sha256 }` for malformed JSON.
+      const rawText = resolveSnapshotRawText(res);
+      if (rawText === null) {
+        throw new Error(String(res.reason || 'ERR_CONFIG_EMPTY_PAYLOAD'));
+      }
       return {
         exists: true,
-        rawText: typeof res.rawText === 'string' ? res.rawText : '',
-        sha256: typeof res.sha256 === 'string' ? res.sha256 : null,
+        rawText,
+        sha256: typeof res.sha256 === 'string' && res.sha256.trim() ? res.sha256.trim() : null,
         displayPath,
       };
     }
@@ -1578,7 +1602,9 @@
       const normalized = [];
       for (const item of rawItems) {
         if (!item || typeof item !== 'object') continue;
-        if (item.status !== 'ok' || typeof item.rawText !== 'string') continue;
+        if (item.status !== 'ok') continue;
+        const rawText = resolveSnapshotRawText(item);
+        if (rawText === null) continue;
         const rawId = String(item.pluginId || '').trim();
         if (!rawId) continue;
         const colonIdx = rawId.indexOf(':');
@@ -1591,7 +1617,7 @@
           pluginScope,
           pluginName: pluginDir,
           pluginDir,
-          rawText: item.rawText,
+          rawText,
           displayPath: `~/.gemini/config/plugins/${pluginDir}/mcp_config.json`,
         });
       }
@@ -1607,9 +1633,13 @@
         if (!res || typeof res !== 'object' || res.ok === false || res.status === 'missing' || res.status === 'error') {
           return { exists: false, rawText: '', displayPath: '' };
         }
+        const rawText = resolveSnapshotRawText(res);
+        if (rawText === null) {
+          return { exists: false, rawText: '', displayPath: '' };
+        }
         return {
           exists: true,
-          rawText: typeof res.rawText === 'string' ? res.rawText : '',
+          rawText,
           displayPath: DEFAULT_DISPLAY_PATHS[HOST_CONFIG_SCOPES.LEGACY_MCP],
         };
       } catch {

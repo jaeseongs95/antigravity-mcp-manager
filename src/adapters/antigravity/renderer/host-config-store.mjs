@@ -23,6 +23,14 @@ const DEFAULT_DISPLAY_PATHS = Object.freeze({
   [HOST_CONFIG_SCOPES.LEGACY_MCP]: '~/.gemini/antigravity/mcp_config.json',
 });
 
+function resolveSnapshotRawText(res) {
+  if (typeof res?.rawText === 'string') return res.rawText;
+  if (res?.status === 'ok' && res.data && typeof res.data === 'object' && !Array.isArray(res.data)) {
+    return `${JSON.stringify(res.data, null, 2)}\n`;
+  }
+  return null;
+}
+
 function hasDeclaredScope(addonHost, scopeId, requiredAccess = null) {
   if (!Array.isArray(addonHost?.configScopes)) return true;
   const entry = addonHost.configScopes.find((s) => s && s.scopeId === scopeId);
@@ -103,12 +111,16 @@ export function createHostBridgeConfigStore(addonHost) {
         displayPath,
       };
     }
-    // Both status === 'ok' and status === 'corrupt' carry rawText + sha256 so
-    // McpManagerService can detect malformed JSON fail-closed and support Raw JSON CAS repair.
+    // Host v2.3.0 config-bridge.js returns `{ status: 'ok', data, rawText: null, sha256 }`
+    // for valid files and `{ status: 'corrupt', data: null, rawText, sha256 }` for malformed JSON.
+    const rawText = resolveSnapshotRawText(res);
+    if (rawText === null) {
+      throw new Error(String(res.reason || 'ERR_CONFIG_EMPTY_PAYLOAD'));
+    }
     return {
       exists: true,
-      rawText: typeof res.rawText === 'string' ? res.rawText : '',
-      sha256: typeof res.sha256 === 'string' ? res.sha256 : null,
+      rawText,
+      sha256: typeof res.sha256 === 'string' && res.sha256.trim() ? res.sha256.trim() : null,
       displayPath,
     };
   }
@@ -170,7 +182,9 @@ export function createHostBridgeConfigStore(addonHost) {
     const normalized = [];
     for (const item of rawItems) {
       if (!item || typeof item !== 'object') continue;
-      if (item.status !== 'ok' || typeof item.rawText !== 'string') continue;
+      if (item.status !== 'ok') continue;
+      const rawText = resolveSnapshotRawText(item);
+      if (rawText === null) continue;
       const rawId = String(item.pluginId || '').trim();
       if (!rawId) continue;
       const colonIdx = rawId.indexOf(':');
@@ -183,7 +197,7 @@ export function createHostBridgeConfigStore(addonHost) {
         pluginScope,
         pluginName: pluginDir,
         pluginDir,
-        rawText: item.rawText,
+        rawText,
         displayPath: `~/.gemini/config/plugins/${pluginDir}/mcp_config.json`,
       });
     }
@@ -199,9 +213,13 @@ export function createHostBridgeConfigStore(addonHost) {
       if (!res || typeof res !== 'object' || res.ok === false || res.status === 'missing' || res.status === 'error') {
         return { exists: false, rawText: '', displayPath: '' };
       }
+      const rawText = resolveSnapshotRawText(res);
+      if (rawText === null) {
+        return { exists: false, rawText: '', displayPath: '' };
+      }
       return {
         exists: true,
-        rawText: typeof res.rawText === 'string' ? res.rawText : '',
+        rawText,
         displayPath: DEFAULT_DISPLAY_PATHS[HOST_CONFIG_SCOPES.LEGACY_MCP],
       };
     } catch {

@@ -66,6 +66,14 @@ function restoreMaskedSecrets(existingSpec, incomingSpec) {
   return out;
 }
 
+function resolveAuthoritativeSha256(readRes, fallbackSha256) {
+  if (!readRes?.exists) return null;
+  if (typeof readRes.sha256 === 'string' && readRes.sha256.trim()) {
+    return readRes.sha256.trim();
+  }
+  return fallbackSha256 ?? null;
+}
+
 export class McpManagerService {
   constructor({ configStore, dialect = DEFAULT_GENERIC_DIALECT, runtimeInspector = null }) {
     assertConfigStorePort(configStore);
@@ -199,7 +207,7 @@ export class McpManagerService {
       globalConfig: {
         exists: globalRead.exists,
         displayPath: globalRead.displayPath,
-        sha256: parsedGlobal.sha256,
+        sha256: resolveAuthoritativeSha256(globalRead, parsedGlobal.sha256),
         malformed: !parsedGlobal.ok,
         parseError: parsedGlobal.parseError,
         servers: globalServers,
@@ -243,12 +251,13 @@ export class McpManagerService {
       };
     }
 
-    if (parsed.sha256 !== expectedSha256) {
+    const currentSha256 = resolveAuthoritativeSha256(readRes, parsed.sha256);
+    if (currentSha256 !== expectedSha256) {
       return {
         ok: false,
         code: ERROR_CODES.CONFLICT,
         errors: ['Config file changed on disk since last load. Reload and review before saving.'],
-        actualSha256: parsed.sha256,
+        actualSha256: currentSha256,
       };
     }
 
@@ -288,7 +297,7 @@ export class McpManagerService {
     const nextRaw = applyUpsertToDocument(parsed, { name, originalName, spec: unmaskedSpec }, this.dialect.serversRootKey);
     const writeRes = await this.configStore.writeGlobalConfig({
       rawText: nextRaw,
-      expectedSha256: parsed.sha256,
+      expectedSha256: currentSha256,
     });
     if (!writeRes.ok) {
       return {
@@ -314,8 +323,9 @@ export class McpManagerService {
     if (!parsed.ok) {
       return { ok: false, code: ERROR_CODES.MALFORMED_JSON, errors: [parsed.parseError?.message || 'Malformed JSON'] };
     }
-    if (parsed.sha256 !== expectedSha256) {
-      return { ok: false, code: ERROR_CODES.CONFLICT, errors: ['Config changed on disk. Reload first.'], actualSha256: parsed.sha256 };
+    const currentSha256 = resolveAuthoritativeSha256(readRes, parsed.sha256);
+    if (currentSha256 !== expectedSha256) {
+      return { ok: false, code: ERROR_CODES.CONFLICT, errors: ['Config changed on disk. Reload first.'], actualSha256: currentSha256 };
     }
 
     const nextRaw = applyToggleDisabledToDocument(parsed, name, Boolean(disabled), this.dialect.serversRootKey);
@@ -324,7 +334,7 @@ export class McpManagerService {
     }
     const writeRes = await this.configStore.writeGlobalConfig({
       rawText: nextRaw,
-      expectedSha256: parsed.sha256,
+      expectedSha256: currentSha256,
     });
     if (!writeRes.ok) {
       return {
@@ -346,8 +356,9 @@ export class McpManagerService {
     if (!parsed.ok) {
       return { ok: false, code: ERROR_CODES.MALFORMED_JSON, errors: [parsed.parseError?.message || 'Malformed JSON'] };
     }
-    if (parsed.sha256 !== expectedSha256) {
-      return { ok: false, code: ERROR_CODES.CONFLICT, errors: ['Config changed on disk. Reload first.'], actualSha256: parsed.sha256 };
+    const currentSha256 = resolveAuthoritativeSha256(readRes, parsed.sha256);
+    if (currentSha256 !== expectedSha256) {
+      return { ok: false, code: ERROR_CODES.CONFLICT, errors: ['Config changed on disk. Reload first.'], actualSha256: currentSha256 };
     }
 
     const nextRaw = applyDeleteFromDocument(parsed, name, this.dialect.serversRootKey);
@@ -356,7 +367,7 @@ export class McpManagerService {
     }
     const writeRes = await this.configStore.writeGlobalConfig({
       rawText: nextRaw,
-      expectedSha256: parsed.sha256,
+      expectedSha256: currentSha256,
     });
     if (!writeRes.ok) {
       return {
@@ -441,7 +452,8 @@ export class McpManagerService {
     }
 
     const currentRead = await this.configStore.readGlobalConfig();
-    const currentSha256 = currentRead.exists ? await sha256Hex(currentRead.rawText) : null;
+    const fallbackSha256 = currentRead.exists ? await sha256Hex(currentRead.rawText) : null;
+    const currentSha256 = resolveAuthoritativeSha256(currentRead, fallbackSha256);
     if (currentSha256 !== expectedSha256) {
       return {
         ok: false,
@@ -462,7 +474,7 @@ export class McpManagerService {
     const normalizedRaw = serializeConfigDocument(parsedNext.doc, parsedNext.eol);
     const writeRes = await this.configStore.writeGlobalConfig({
       rawText: normalizedRaw,
-      expectedSha256,
+      expectedSha256: currentSha256,
     });
     if (!writeRes.ok) {
       return {
