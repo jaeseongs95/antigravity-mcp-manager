@@ -24,7 +24,7 @@ import {
 } from '../sidecar/http-app.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_UI_DIR = path.resolve(__dirname, '../../../sidecars/mcp_manager/ui');
+const DEFAULT_UI_DIR = path.resolve(__dirname, '../../ui');
 
 class DesktopResponse {
   constructor(body, { contentType = 'application/json; charset=utf-8', status = 200, headers = {} } = {}) {

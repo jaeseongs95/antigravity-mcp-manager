@@ -1,51 +1,57 @@
-# Antigravity MCP Manager (`v2.1.0`)
+# Antigravity MCP Manager (`v3.0.0`)
 
 [한국어 문서 (README.ko.md)](./README.ko.md)
 
-A safe, vendor-independent **MCP Server Manager** for **Antigravity 2.0 Native Desktop App**, providing both an official **Plugin + `AUX_PANE` UI Sidecar** (`plugin.json` + `sidecars/mcp_manager/sidecar.json`) and an optional **Native Settings Left-Sidebar Menu** (`Browser` → `MCP Manager`) backed by the same hardened loopback HTTP server (`desktop-server.mjs`).
+A safe, vendor-independent **MCP Server Manager** for **Antigravity 2.0 Native Desktop App**, built as a zero-dependency **`AddonManifest.v2`** (`trustLevel: "trusted"`, `capabilities: ["renderer"]`, Option A **Named-Scope Config Bridge**) plugin hosted by [`antigravity-native-addon-host`](https://github.com/jaeseongs95/antigravity-native-addon-host) (`v2.3.0+`).
 
-> **Safe & Decoupled Architecture**: Zero `statusbar_autoinject.js` piggybacking, zero React/Angular internal state scraping, zero LLM-callable config write tools, and optional `@electron/asar` Settings sidebar integration with an independent marker + automatic `.orig` backup preservation.
+> **Zero `app.asar` Patching · Zero `mainHook` · Zero `AUX_PANE` Sidecar · Zero Runtime Dependencies**: `antigravity-mcp-manager` never patches or touches `app.asar`, carries zero runtime npm dependencies, and removes the separate `AUX_PANE` sidecar pane (`플러그인 > MCP Manager`). All full-featured MCP CRUD runs directly inside **Settings → MCP Manager** and the **Customizations → MCP Manager** centered popup modal inside Isolated World `998` Shadow DOM via `antigravity-native-addon-host` `v2.3.0+`'s Option A **Named-Scope Config Bridge** (`trustLevel: "trusted"` + `trust-policy.json` SHA-256 pinning).
 
 ## Features
-- **Native Settings Sidebar & Built-In `EN | 한국어` Toggle**: Mounts directly under **Browser** (or Korean **브라우저**) in Antigravity Settings with 0px layout shift, preserves the native `X` close button, inherits host font/theme, and includes a built-in English/Korean language toggle persisted across restarts.
-- **Single Canonical Write Scope**: Reads and writes only `~/.gemini/config/mcp_config.json` with mandatory SHA-256 CAS (`409 Conflict` protection), advisory file lock, private backups stored outside `plugins/` (`~/.gemini/config/.mcp-manager-backups/`), and same-filesystem atomic replace (`fsync` + `rename`).
-- **Read-Only Plugin Inventory**: Displays `plugins/*/mcp_config.json` (global & workspace `.agents/plugins/`) with plugin badges, plugin disabled status, global name-collision warnings, and safe **Clone to Global** (preserving full secrets server-side without exposing masked values).
-- **Live Read-Only Status**: Queries Antigravity's local loopback Language Server (`GetMcpServerStates`, `GetAllPlugins`) for live readiness badges, tool counts, and redacted error summaries.
-- **Declarative Smart Paste**: Parses `mcpServers` JSON snippets and Streamable HTTP `https://` URLs, normalizes legacy `serverUrl` → `url`, and detects legacy `/sse` endpoints with an editable `mcp-remote` Stdio preview.
-- **Security & Recovery First**: Hard-blocks dangerous environment overrides (`NODE_OPTIONS`, `LD_PRELOAD`, etc.) and cleartext `http://` auth headers or sensitive query tokens on non-loopback hosts, requires explicit confirmation before saving Stdio commands (including Raw JSON saves), masks secret inputs by default, and fails closed on malformed JSON with Raw JSON recovery + last-good backup restore.
+- **Native Shadow DOM CRUD in Settings & Customizations (`AddonManifest.v2`, World `998`)**:
+  - Mounts **MCP Manager** directly under **Browser** (or Korean **브라우저**) in Antigravity **Settings** (`settings-nav` declared `shadow: false` for native Tailwind inheritance with 0px layout shift; `pane` mounted inside open Shadow DOM Option B2 with preserved top-right `✕` close control).
+  - Mounts an **MCP Manager** (`MCP 매니저` in KO) Shadow DOM button in **Customizations → MCP Servers** right before the native `[]` / `+` action icons, opening a centered native `<dialog>.showModal()` popup via `addonHost.openModal` (`PortalArbiter`-coordinated, titlebar-safe `marginTop` & `zIndex`, `✕`, capture-phase IME-safe `Esc` focus restoration).
+  - Powered directly by `antigravity-native-addon-host` `v2.3.0+` **Option A Named-Scope Config Bridge** with 3 least-privilege scopes:
+    - `antigravity:mcp-config` (`rw`): `~/.gemini/config/mcp_config.json` (sole canonical write target)
+    - `antigravity:plugin-mcp-configs` (`ro`): read-only plugin MCP inventory
+    - `antigravity:mcp-config-legacy` (`ro`): read-only 1-time legacy import preview
+  - Cleanly unmounts all slots, modals, styles, and listeners immediately on `dispose()` when disabled or unregistered.
+- **Host Language Auto-Detection & `EN | 한국어` Toggle**: Automatically detects Korean vs English host UI on first load (with explicit user override persisted under `storageNamespace` key `antigravity-mcp-manager:lang`, including 1-time migration from v2.1's `agy-mcp-manager-lang`).
+- **Single Canonical Write Scope & Authoritative CAS**: Reads and writes only `~/.gemini/config/mcp_config.json` with mandatory on-disk SHA-256 CAS (preserving exact disk digests across CRLF/non-canonical JSON files), advisory file lock, private backups outside `plugins/`, ancestor/backup symlink protection, and atomic replace.
+- **Read-Only Plugin Inventory & Declarative Smart Paste**: Displays read-only plugin MCP entries with collision warnings and secret-preserving **Clone to Global**, parses `mcpServers` JSON and Streamable HTTP URLs, normalizes `serverUrl` → `url`, detects legacy `/sse` with an editable `mcp-remote` Stdio preview, enforces explicit Stdio confirmation, and fails closed on malformed JSON with Raw JSON CAS recovery.
 
-## Architecture
-- `src/core/**`: 100% vendor-independent pure ESM domain logic (zero `node:fs`, `child_process`, `sidecar_sdk`, Antigravity, or DOM dependencies).
-- `src/adapters/fs-config-store.mjs`: Write-jailed atomic filesystem store (`mcp_config.json` only) with ancestor symlink/junction escape defense.
-- `src/adapters/antigravity/**`: Antigravity 2.0 dialect, path resolver, and loopback-only read-only LS inspector.
-- `src/adapters/sidecar/http-app.mjs`: Hardened `sidecar_sdk` adapter (`POST`-only `/api/*`, loopback `Host`/`Origin`/`Sec-Fetch-Site` check, constant-time `x-sidecar-token`, 1 MiB body limit, strict CSP, `Cache-Control: no-store`, zero `child_process`).
-- `sidecars/mcp_manager/**`: Official `SIDECAR_UI_ENTRYPOINT_AUX_PANE` web UI synced to Antigravity's native Light/Dark theme tokens.
+## Architecture (SOLID & Vendor-Independent)
+- `addon-manifest.json`: Declarative `AddonManifest.v2` contract (`schemaVersion: 2`, `trustLevel: "trusted"`, `compatibility: { hostProfile: "antigravity-desktop", minHostVersion: "2.3.0" }`, `capabilities: ["renderer"]`, `configBridge.scopes` for the 3 scopes above, 4 non-exclusive `addon-owned-slot` entries with Shadow DOM Option B2 declarations, `storageNamespace: "antigravity-mcp-manager"`, `ipcChannelPrefix: "mcp-manager:"`, `loadOrder: 60`).
+- `src/adapters/antigravity/renderer/*.mjs` → `src/adapters/antigravity/addon-renderer.js`: SOLID modular renderer (`host-runtime`, `host-config-store`, `native-mcp-panel`, `addon-styles`, `settings-sidebar-mount`, `customizations-mount`, `mount-coordinator`) deterministically assembled by `scripts/build-renderer.mjs` with zero external dependencies and zero unsafe DOM sinks.
+- `src/core/**`: 100% vendor-independent pure ESM domain logic (zero Node/DOM/Sidecar/host dependencies).
+- `src/adapters/fs-config-store.mjs`, `src/adapters/antigravity/**`, `src/adapters/sidecar/http-app.mjs`, `src/ui/**`: Reusable write-jailed FS store, loopback-only LS inspector, hardened HTTP security middleware, and standalone loopback UI assets.
 
-## Install & Usage (Antigravity 2.0 Native App)
-1. Place this repository under `~/.gemini/config/plugins/antigravity-mcp-manager/` and run `npm ci --omit=dev`.
-2. **Option A — Native Settings Left-Sidebar Menu (Recommended UX)**:
-   - Install the independent 1-line Electron loader hook (uses official `@electron/asar`, preserves `app.asar.*.orig` backup, never touches `statusbar_autoinject.js`):
-     ```bash
-     npm run install:settings
-     ```
-   - Restart Antigravity Desktop and open **Settings → MCP Manager** (directly under **Browser**).
-   - Remove cleanly anytime with `npm run uninstall:settings`.
-3. **Option B — Official Plugin `AUX_PANE` Sidecar**:
-   - Manage or disable cleanly anytime from Antigravity **Customizations**.
+## Install, Register & Trust Approve (via `antigravity-native-addon-host` v2.3.0+)
+1. Ensure [`antigravity-native-addon-host`](https://github.com/jaeseongs95/antigravity-native-addon-host) **`v2.3.0+`** is installed/upgraded on your Antigravity Desktop (`addon-host --install` or `addon-host --upgrade`).
+2. Close Antigravity Desktop, then place this repository under `~/.gemini/config/plugins/antigravity-mcp-manager/` (excluding `.git` and `node_modules` — zero runtime dependencies).
+3. Validate, register, approve SHA-256 trust pinning, and check host health:
+   ```bash
+   addon-host --validate ~/.gemini/config/plugins/antigravity-mcp-manager/addon-manifest.json
+   addon-host --register ~/.gemini/config/plugins/antigravity-mcp-manager/addon-manifest.json
+   addon-host trust approve antigravity-mcp-manager
+   addon-host --doctor
+   ```
+   > **Note**: Whenever `src/adapters/antigravity/addon-renderer.js` changes after an update/rebuild, re-run `addon-host trust approve antigravity-mcp-manager` to refresh the SHA-256 pin in `~/.gemini/antigravity/trust-policy.json`.
+4. Start Antigravity Desktop and open **Settings → MCP Manager** or **Customizations → MCP Servers → MCP Manager**.
+5. To revoke trust or unregister cleanly anytime:
+   ```bash
+   addon-host trust revoke antigravity-mcp-manager
+   addon-host --unregister antigravity-mcp-manager
+   ```
 
-## Migrating from v1.x (Legacy Cleanup)
-If you previously installed `v1.x` (which injected `mcp_manager_autoinject.js`), clean up the legacy hooks before enabling `v2.0.0`:
-1. If you still have a `v1.x` checkout, run `node scripts/install.js --uninstall`.
-2. Or manually delete `~/.gemini/antigravity/mcp_manager_autoinject.js` and remove any `MCP_MANAGER_VERSION` / `MCP_MANAGER` injected block from `~/.gemini/antigravity/statusbar_autoinject.js` and `~/.gemini/antigravity/app_storage.json`.
-3. Existing `~/.gemini/antigravity/mcp_config.json` entries are never mutated automatically; use the **Legacy Import** preview in the v2.0.0 UI to copy desired entries into `~/.gemini/config/mcp_config.json`.
-
-## Rollback (`v2.0.0` → `v1.4.18`)
-1. Disable or remove `~/.gemini/config/plugins/antigravity-mcp-manager/` (e.g., `agy plugin disable antigravity-mcp-manager` and delete the plugin folder).
-2. If you need to restore the last good `~/.gemini/config/mcp_config.json`, copy `~/.gemini/config/.mcp-manager-backups/mcp_config.last-good.json` back to `~/.gemini/config/mcp_config.json`.
-3. If you specifically require legacy `v1.4.18`, check out tag `v1.4.18` separately and follow its README instructions.
+## Migrating from v2.x / v1 Host
+`v3.0.0` removes `sidecars/` (`AUX_PANE`), `scripts/install-settings-menu.mjs`, `scripts/electron-hook.cjs`, and `@electron/asar` completely:
+1. Upgrade [`antigravity-native-addon-host`](https://github.com/jaeseongs95/antigravity-native-addon-host) to **`v2.3.0+`** (`addon-host --upgrade`, or `addon-host --install --replace-legacy` if migrating from v2.1.x direct `app.asar` patching).
+2. Close Antigravity Desktop, mirror `v3.0.0` to `~/.gemini/config/plugins/antigravity-mcp-manager/` (removing any stale `node_modules/` and `sidecars/`), then run `addon-host --register ~/.gemini/config/plugins/antigravity-mcp-manager/addon-manifest.json` followed by `addon-host trust approve antigravity-mcp-manager`.
+3. Existing language preferences saved in `agy-mcp-manager-lang` are migrated automatically to `antigravity-mcp-manager:lang` on first open.
 
 ## Development & Tests
 ```bash
+npm run build:renderer
 npm test
 ```
-Runs all 26 unit, core-purity, filesystem write-jail/symlink-junction/CAS, Sidecar & Desktop HTTP security, `@electron/asar` installer round-trip, EN/KO `I18N` parity, and real Headless Chromium/Edge CDP UI safety tests (`NMCP-TC-001`–`NMCP-TC-026`, `NMCP-TC-015B`, `NMCP-TC-020B`, `NMCP-TC-020C`) on Node 22+.
+Runs all 30 unit, core-purity, `AddonManifest.v2` contract/SOLID parity, Named-Scope Config Bridge (`rawText: null` on `status: 'ok'`, CRLF on-disk `sha256` CAS, `corrupt` recovery), filesystem write-jail/symlink-junction/CAS, HTTP security, EN/KO `I18N` parity, and real Headless Chromium/Edge CDP E2E tests (`NMCP-TC-001`–`NMCP-TC-032`) on Node 22+.

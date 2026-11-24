@@ -2,15 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { ERROR_CODES } from '../../src/core/model.mjs';
 import { McpManagerService } from '../../src/core/manager-service.mjs';
 import { createFsConfigStore } from '../../src/adapters/fs-config-store.mjs';
+import { startDesktopMcpServer } from '../../src/adapters/antigravity/desktop-server.mjs';
 import {
   attachSidecarSecurityMiddleware,
   registerSidecarRoutes,
@@ -20,7 +19,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '../..');
-const UI_DIR = path.join(ROOT_DIR, 'sidecars', 'mcp_manager', 'ui');
+const UI_DIR = path.join(ROOT_DIR, 'src', 'ui');
 
 class TestResponse {
   constructor(body, { contentType = 'text/plain', status = 200, headers = {} } = {}) {
@@ -97,18 +96,7 @@ function sendRawHttpRequest({ port, method = 'POST', reqPath = '/api/snapshot', 
   });
 }
 
-function getFreePort() {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
-    });
-    srv.on('error', reject);
-  });
-}
-
-test('NMCP-TC-014: Official plugin.json, sidecar.json, .gitignore, and zero legacy artifacts', () => {
+test('NMCP-TC-014: Official plugin.json, .gitignore, src/ui assets, and zero legacy/AUX_PANE sidecar artifacts', () => {
   const pluginManifest = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'plugin.json'), 'utf8'));
   const allowedTopFields = new Set(['name', 'displayName', 'description', 'version', 'logo', 'author', 'homepage', 'repository', 'suggestedPrompts', 'disabled']);
   for (const key of Object.keys(pluginManifest)) {
@@ -118,9 +106,10 @@ test('NMCP-TC-014: Official plugin.json, sidecar.json, .gitignore, and zero lega
   assert.equal(fs.existsSync(path.join(ROOT_DIR, '.gitignore')), true);
   assert.equal(fs.existsSync(path.join(ROOT_DIR, 'docs/templates/README_TEMPLATE.md')), false);
 
-  const sidecarManifest = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'sidecars/mcp_manager/sidecar.json'), 'utf8'));
-  assert.equal(sidecarManifest.has_web_ui, true);
-  assert.equal(sidecarManifest.ui_config.views[0].entrypoint, 'SIDECAR_UI_ENTRYPOINT_AUX_PANE');
+  assert.equal(fs.existsSync(path.join(ROOT_DIR, 'sidecars')), false, 'AUX_PANE sidecars/ directory must be removed');
+  assert.equal(fs.existsSync(path.join(UI_DIR, 'index.html')), true);
+  assert.equal(fs.existsSync(path.join(UI_DIR, 'app.js')), true);
+  assert.equal(fs.existsSync(path.join(UI_DIR, 'styles.css')), true);
   assert.equal(fs.existsSync(path.join(ROOT_DIR, 'skills')), false);
   assert.equal(fs.existsSync(path.join(ROOT_DIR, 'dist')), false);
 });
@@ -132,7 +121,7 @@ test('NMCP-TC-015 & NMCP-TC-016: Sidecar security middleware enforces Host/Origi
 
   for (const f of [
     path.join(ROOT_DIR, 'src/adapters/sidecar/http-app.mjs'),
-    path.join(ROOT_DIR, 'sidecars/mcp_manager/main.mjs'),
+    path.join(ROOT_DIR, 'src/adapters/antigravity/desktop-server.mjs'),
   ]) {
     const src = fs.readFileSync(f, 'utf8');
     const codeOnly = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
@@ -352,15 +341,8 @@ test('NMCP-TC-015 & NMCP-TC-016: Sidecar security middleware enforces Host/Origi
   }
 });
 
-test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with real sidecar_sdk and serves assets + security guards', async (t) => {
-  const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
-  const sdkLoader = path.join(home, '.gemini', 'antigravity', 'lib', 'node_modules', 'sidecar_sdk', 'register_loader.js');
-  if (!fs.existsSync(sdkLoader)) {
-    t.skip('Antigravity Desktop sidecar_sdk is not installed on this host');
-    return;
-  }
-
-  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-real-sidecar-home-'));
+test('NMCP-TC-015B (Real Entrypoint): startDesktopMcpServer boots and serves src/ui assets + security guards', async () => {
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-real-desktop-home-'));
   const cfgDir = path.join(tmpHome, '.gemini', 'config');
   fs.mkdirSync(cfgDir, { recursive: true });
   fs.writeFileSync(
@@ -369,44 +351,18 @@ test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with r
     'utf8'
   );
 
-  const port = await getFreePort();
-  const token = 'real-sdk-token-999';
-  const child = spawn(
-    process.execPath,
-    ['--import', pathToFileURL(sdkLoader).href, path.join(ROOT_DIR, 'sidecars/mcp_manager/main.mjs')],
-    {
-      cwd: path.join(ROOT_DIR, 'sidecars/mcp_manager'),
-      env: {
-        ...process.env,
-        AGY_MCP_HOME_OVERRIDE: tmpHome,
-        ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:1',
-        ANTIGRAVITY_CSRF_TOKEN: 'dummy-csrf-not-leaked',
-        ANTIGRAVITY_SIDECAR_WEB_PORT: String(port),
-        ANTIGRAVITY_SIDECAR_UI_TOKEN: token,
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }
-  );
+  const token = 'real-desktop-token-999';
+  const desktop = await startDesktopMcpServer({
+    homeDir: tmpHome,
+    lsAddress: '127.0.0.1:1',
+    csrfToken: 'dummy-csrf-not-leaked',
+    token,
+  });
+  const port = desktop.port;
 
   try {
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('Real sidecar boot timeout')), 6000);
-      let out = '';
-      child.stdout.on('data', (d) => {
-        out += String(d);
-        if (out.includes('listening on 127.0.0.1:')) {
-          clearTimeout(timer);
-          resolve();
-        }
-      });
-      child.on('exit', (code) => {
-        clearTimeout(timer);
-        reject(new Error(`Real sidecar exited early (${code})`));
-      });
-    });
-
     // Verify GET /, /styles.css, /app.js (strict CSP + nosniff) and /preload.js (200)
-    // including Sec-Fetch-Site: cross-site for Antigravity Desktop AUX_PANE cross-origin iframe (R6 F1)
+    // including Sec-Fetch-Site: cross-site for cross-origin iframe embedding (R6 F1)
     for (const assetPath of ['/', '/styles.css', '/app.js']) {
       const assetRes = await sendRawHttpRequest({
         port,
@@ -426,7 +382,7 @@ test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with r
       headers: { Host: `127.0.0.1:${port}`, 'Sec-Fetch-Site': 'cross-site' },
       body: '',
     });
-    assert.equal(preloadRes.status, 200, 'Expected 200 for cross-site iframe GET /preload.js from real sidecar_sdk');
+    assert.equal(preloadRes.status, 200, 'Expected 200 for cross-site iframe GET /preload.js from desktop server');
 
     // GET /api/snapshot MUST be rejected with 405
     const getApiRes = await sendRawHttpRequest({
@@ -462,7 +418,7 @@ test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with r
     });
     assert.equal(unauth.status, 401);
 
-    // Chunked > 1 MiB MUST return 413 without crashing real sidecar_sdk server
+    // Chunked > 1 MiB MUST return 413 without crashing desktop server
     const realChunked413 = await new Promise((resolve, reject) => {
       const req = http.request(
         {
@@ -496,7 +452,7 @@ test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with r
     });
     assert.equal(realChunked413.status, 413);
 
-    // Workspace .agents/plugins discovery over real sidecar_sdk
+    // Workspace .agents/plugins discovery over desktop server
     const wsDir = path.join(tmpHome, 'sample-ws');
     const wsPlugDir = path.join(wsDir, '.agents', 'plugins', 'ws-real');
     fs.mkdirSync(wsPlugDir, { recursive: true });
@@ -526,7 +482,7 @@ test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with r
     assert.equal(parsedSnap.globalConfig.servers[0].name, 'realSrv');
     assert.equal(parsedSnap.pluginServers.some((p) => p.pluginDir === 'ws-real' && p.name === 'wsRealSrv'), true);
 
-    // 428 Precondition Required (Stdio confirmStdio: false) on real sidecar_sdk
+    // 428 Precondition Required (Stdio confirmStdio: false) on desktop server
     const stdio428 = await sendRawHttpRequest({
       port,
       reqPath: '/api/upsert',
@@ -546,7 +502,7 @@ test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with r
     });
     assert.equal(stdio428.status, 428);
 
-    // 409 Conflict (stale expectedSha256) on real sidecar_sdk
+    // 409 Conflict (stale expectedSha256) on desktop server
     const conflict409 = await sendRawHttpRequest({
       port,
       reqPath: '/api/upsert',
@@ -566,8 +522,7 @@ test('NMCP-TC-015B (Real Entrypoint): sidecars/mcp_manager/main.mjs boots with r
     });
     assert.equal(conflict409.status, 409);
   } finally {
-    child.kill();
-    await new Promise((r) => setTimeout(r, 100));
+    await desktop.close();
     fs.rmSync(tmpHome, { recursive: true, force: true });
   }
 });
