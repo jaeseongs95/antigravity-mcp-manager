@@ -199,7 +199,10 @@ export function createHostBridgeConfigStore(addonHost) {
         pluginName: pluginDir,
         pluginDir,
         rawText,
-        displayPath: `~/.gemini/config/plugins/${pluginDir}/mcp_config.json`,
+        displayPath:
+          pluginScope === 'workspace'
+            ? `<workspace>/.agents/plugins/${pluginDir}/mcp_config.json`
+            : `~/.gemini/config/plugins/${pluginDir}/mcp_config.json`,
       });
     }
     return normalized;

@@ -166,6 +166,14 @@ test('NMCP-TC-031 (Unit): detectHostLang auto-detects Korean vs English host DOM
               reason: null,
             }),
             Object.freeze({
+              pluginId: 'workspace:local-demo',
+              status: 'ok',
+              data: { mcpServers: { wsTool: { url: 'https://ws-tool.example/mcp' } } },
+              rawText: null,
+              sha256: 'ws1',
+              reason: null,
+            }),
+            Object.freeze({
               pluginId: 'broken-plugin',
               status: 'corrupt',
               data: null,
@@ -228,14 +236,20 @@ test('NMCP-TC-031 (Unit): detectHostLang auto-detects Korean vs English host DOM
   const store = createHostBridgeConfigStore(mockAddonHostV23);
   const service = new McpManagerService({ configStore: store });
 
-  // 4a. Initial missing file + plugin-files (rawText:null) + legacy (rawText:null)
+  // 4a. Initial missing file + plugin-files (rawText:null, global vs workspace displayPath F2) + legacy (rawText:null)
   const initSnap = await service.getSnapshot({ includeRawText: true });
   assert.equal(initSnap.ok, true);
   assert.equal(initSnap.globalConfig.exists, false);
   assert.equal(initSnap.globalConfig.sha256, null);
-  assert.equal(initSnap.pluginServers.length, 1);
-  assert.equal(initSnap.pluginServers[0].pluginId, 'global:sennard');
-  assert.equal(initSnap.pluginServers[0].name, 'sennard');
+  assert.equal(initSnap.pluginServers.length, 2);
+  const globalPlug = initSnap.pluginServers.find((p) => p.pluginId === 'global:sennard');
+  const wsPlug = initSnap.pluginServers.find((p) => p.pluginId === 'workspace:local-demo');
+  assert.ok(globalPlug, 'global plugin server must be listed');
+  assert.equal(globalPlug.name, 'sennard');
+  assert.equal(globalPlug.displayPath, '~/.gemini/config/plugins/sennard/mcp_config.json');
+  assert.ok(wsPlug, 'workspace plugin server must be listed');
+  assert.equal(wsPlug.name, 'wsTool');
+  assert.equal(wsPlug.displayPath, '<workspace>/.agents/plugins/local-demo/mcp_config.json');
   assert.equal(initSnap.legacyImport.exists, true);
   assert.equal(initSnap.legacyImport.servers[0].name, 'oldSrv');
 
@@ -391,6 +405,10 @@ test('NMCP-TC-032 (CDP E2E): Native Shadow DOM MCP Manager CRUD panel works end-
     );
 
     async function readConfigScope(scopeId) {
+      if (window.__TEST_ADDON_HOST_THROW_NEXT__) {
+        window.__TEST_ADDON_HOST_THROW_NEXT__ = false;
+        throw new Error('ERR_CONFIG_SIMULATED_THROW');
+      }
       if (scopeId === 'antigravity:mcp-config') {
         const hash = await sha256(globalRaw);
         try {
@@ -769,6 +787,26 @@ test('NMCP-TC-032 (CDP E2E): Native Shadow DOM MCP Manager CRUD panel works end-
     })()`);
     assert.equal(afterEditorEsc.dialogStillOpen, true);
     assert.equal(afterEditorEsc.editorClosed, true);
+
+    // 8b. F1 regression guard: mid-session write rejection renders error banner without uncaught rejection
+    await evalMain(`window.__TEST_ADDON_HOST_THROW_NEXT__ = true;`);
+    const f1State = await evalMain(`(async () => {
+      const sr = document.querySelector('dialog[data-agy-mcp-customizations-overlay="true"] .addon-host-modal-shadow-host').shadowRoot;
+      const prevErrorBanner = sr.querySelector('.mcp-banner-error')?.textContent || '';
+      const toggleBtn = sr.querySelector('[data-testid="btn-toggle-externalSrv"]');
+      if (toggleBtn) toggleBtn.click();
+      await new Promise((r) => setTimeout(r, 120));
+      return {
+        hadToggleBtn: Boolean(toggleBtn),
+        prevErrorBanner,
+        afterBanner: sr.querySelector('.mcp-banner-error')?.textContent || '',
+      };
+    })()`);
+    assert.equal(f1State.hadToggleBtn, true);
+    assert.ok(
+      f1State.afterBanner.includes('ERR_CONFIG_SIMULATED_THROW'),
+      `F1 guard must catch thrown write-path error into banner instead of unhandled rejection; got: ${f1State.afterBanner}`
+    );
 
     assert.deepEqual(exceptions, [], 'Zero uncaught runtime exceptions allowed');
 

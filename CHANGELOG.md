@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.0.1 — Surface-Centered Customizations Modal (`antigravity-addons` v2.4.0+/v2.5.1+), Mutation Guards (F1), Workspace Plugin Path (F2) & Host Rename Docs
+- **Fixed Customizations Popup Centering via `antigravity-addons` `v2.4.0+` Per-Surface Bounds API**:
+  - Updated `src/adapters/antigravity/renderer/customizations-mount.mjs` to pass `{ shadow: true, surface: 'customizations-page', onClose }` to `runtime.openModal(...)`, call `modalHandle.reposition('customizations-page')` on re-open, and preserve host-managed surface insets (`left`/`top`/`right`/`bottom`, `margin: auto`) and dynamic resize-clamped `maxWidth`/`maxHeight` whenever `data-addon-host-modal-surface` is active (instead of overwriting with `100vw`/`100vh`), while preserving full viewport-centered backward compatibility on Host `v2.3.0`.
+  - Extended `src/adapters/antigravity/renderer/host-runtime.mjs` to forward optional `getSurfaceBounds`, `getActiveSurface`, and `listSurfaces` safely with `v2.3.0` fallbacks.
+- **Hardened Native Panel Mutations (`F1`) & Workspace Plugin Display Path (`F2`)**:
+  - Wrapped all 7 mutating actions in `src/adapters/antigravity/renderer/native-mcp-panel.mjs` (`submitEditor`, `submitClonePlugin`, `submitImportLegacy`, `submitRawJson`, `handleToggleDisabled`, `handleDelete`, `handleRestoreBackup`) with a unified `runMutation` `try/catch` + in-flight `mutating` serialization guard so thrown bridge errors render cleanly in the error banner with zero unhandled rejections or concurrent double-click races.
+  - Updated `src/adapters/antigravity/renderer/host-config-store.mjs` so `workspace:` plugin entries report `<workspace>/.agents/plugins/<plugin>/mcp_config.json` instead of `~/.gemini/config/plugins/...`.
+- **Docs & Tests**:
+  - Updated `README.md`, `README.ko.md`, `docs/TEST_CASES.md`, and launcher copy for the [`antigravity-addons`](https://github.com/jaeseongs95/antigravity-addons) rename and `v2.5.1` Settings `Addon Manager` tab coexistence.
+  - Added `NMCP-TC-033` (real Chromium CDP E2E verifying `customizations-page` surface centering across wide `1280x800` and narrow `960x680` viewports with a `260px` sidebar) and extended `NMCP-TC-024`, `NMCP-TC-031`, and `NMCP-TC-032` for surface API forwarding, `F1`, and `F2` (31/31 tests).
+
 ## 3.0.0 — `AddonManifest.v2` (`trusted`, Host `v2.3.0+` Named-Scope Config Bridge), Native Shadow DOM CRUD, AUX_PANE Removal & SOLID Renderer
 - **BREAKING — Migrated to `AddonManifest.v2` (`antigravity-native-addon-host` `v2.3.0+`) & Removed `AUX_PANE` Sidecar / `app.asar` / `mainHook`**:
   - Removed `sidecars/` (`AUX_PANE` **플러그인 > MCP Manager** pane), `scripts/install-settings-menu.mjs`, `scripts/electron-hook.cjs`, `@electron/asar` dependency (now **0 runtime npm dependencies**), and legacy `install:settings` / `uninstall:settings` / `status:settings` scripts.

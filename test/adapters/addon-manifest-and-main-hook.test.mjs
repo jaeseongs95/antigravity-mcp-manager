@@ -208,8 +208,33 @@ test('NMCP-TC-024 (Unit): host-runtime enforces AddonManifest.v2 handle contract
   rt.injectStyle('s1', ':host { display: block; }', { slotId: SLOT_IDS.SETTINGS_PANE });
   assert.deepEqual(styleCalls[0].opts, { slotId: SLOT_IDS.SETTINGS_PANE });
 
-  rt.openModal(SLOT_IDS.CUSTOMIZATIONS_OVERLAY, { shadow: true });
-  assert.deepEqual(modalCalls[0], { slotId: SLOT_IDS.CUSTOMIZATIONS_OVERLAY, opts: { shadow: true } });
+  rt.openModal(SLOT_IDS.CUSTOMIZATIONS_OVERLAY, { shadow: true, surface: 'customizations-page' });
+  assert.deepEqual(modalCalls[0], {
+    slotId: SLOT_IDS.CUSTOMIZATIONS_OVERLAY,
+    opts: { shadow: true, surface: 'customizations-page' },
+  });
+
+  // 4b. Surface geometry helpers fall back safely on Host v2.3.0 and forward on Host v2.4.0+
+  assert.equal(rt.getSurfaceBounds('customizations-page'), null);
+  assert.equal(rt.getActiveSurface(), null);
+  assert.deepEqual(rt.listSurfaces(), []);
+  const rtV24 = createHostRuntime({
+    addonHost: {
+      ...fakeHost,
+      getSurfaceBounds: (s) => ({ surfaceId: s, centerX: 770, centerY: 418 }),
+      getActiveSurface: () => ({ surfaceId: 'customizations-page', centerX: 770, centerY: 418 }),
+      listSurfaces: () => ['settings-pane', 'customizations-page', 'viewport'],
+    },
+    win: fakeWin,
+    doc: {},
+  });
+  assert.deepEqual(rtV24.getSurfaceBounds('customizations-page'), {
+    surfaceId: 'customizations-page',
+    centerX: 770,
+    centerY: 418,
+  });
+  assert.equal(rtV24.getActiveSurface().surfaceId, 'customizations-page');
+  assert.deepEqual(rtV24.listSurfaces(), ['settings-pane', 'customizations-page', 'viewport']);
 
   // 5. addManagedListener fallback removes listener on onDispose()
   const removed = [];
