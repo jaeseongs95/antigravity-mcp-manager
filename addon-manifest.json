@@ -3,14 +3,30 @@
   "pluginId": "antigravity-mcp-manager",
   "displayName": "Antigravity MCP Manager",
   "version": "3.0.0",
-  "trustLevel": "restricted",
+  "trustLevel": "trusted",
   "compatibility": {
     "hostProfile": "antigravity-desktop",
-    "minHostVersion": "2.0.0"
+    "minHostVersion": "2.3.0"
   },
   "capabilities": [
     "renderer"
   ],
+  "configBridge": {
+    "scopes": [
+      {
+        "scopeId": "antigravity:mcp-config",
+        "access": "rw"
+      },
+      {
+        "scopeId": "antigravity:plugin-mcp-configs",
+        "access": "ro"
+      },
+      {
+        "scopeId": "antigravity:mcp-config-legacy",
+        "access": "ro"
+      }
+    ]
+  },
   "entry": {
     "rendererScript": "src/adapters/antigravity/addon-renderer.js"
   },

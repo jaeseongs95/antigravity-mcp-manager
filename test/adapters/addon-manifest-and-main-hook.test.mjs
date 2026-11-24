@@ -12,6 +12,9 @@ import {
   assembleRendererSource,
 } from '../../scripts/build-renderer.mjs';
 import {
+  HOST_CONFIG_SCOPES,
+} from '../../src/adapters/antigravity/renderer/host-config-store.mjs';
+import {
   SLOT_IDS,
   assertAddonHostHandle,
   createHostRuntime,
@@ -32,7 +35,7 @@ const MANIFEST_PATH = path.join(ROOT_DIR, 'addon-manifest.json');
 const RENDERER_SRC_DIR = path.join(ROOT_DIR, 'src', 'adapters', 'antigravity', 'renderer');
 const LEGACY_ELECTRON_HOOK_PATH = path.join(ROOT_DIR, 'scripts', 'electron-hook.cjs');
 
-test('NMCP-TC-022 (Contract & SOLID Parity): addon-manifest.json satisfies AddonManifest.v2 (restricted, renderer-only, Shadow DOM declarations), zero legacy mainHook/app.asar code exists, and addon-renderer.js matches modular SOLID sources with zero unsafe DOM sinks', () => {
+test('NMCP-TC-022 (Contract & SOLID Parity): addon-manifest.json satisfies AddonManifest.v2 (trusted, renderer-only, Named-Scope Config Bridge, Shadow DOM declarations), zero legacy mainHook/app.asar code exists, and addon-renderer.js matches modular SOLID sources with zero unsafe DOM sinks', () => {
   // 1. AddonManifest.v2 schema & contract checks
   assert.equal(fs.existsSync(MANIFEST_PATH), true, 'addon-manifest.json must exist at repository root');
   const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
@@ -43,11 +46,18 @@ test('NMCP-TC-022 (Contract & SOLID Parity): addon-manifest.json satisfies Addon
   assert.equal(manifest.pluginId, 'antigravity-mcp-manager');
   assert.equal(manifest.version, pkg.version);
   assert.equal(pluginJson.version, pkg.version);
-  assert.equal(manifest.trustLevel, 'restricted');
-  assert.deepEqual(manifest.compatibility, { hostProfile: 'antigravity-desktop', minHostVersion: '2.0.0' });
+  assert.equal(manifest.trustLevel, 'trusted');
+  assert.deepEqual(manifest.compatibility, { hostProfile: 'antigravity-desktop', minHostVersion: '2.3.0' });
   assert.deepEqual(manifest.capabilities, ['renderer']);
+  assert.deepEqual(manifest.configBridge, {
+    scopes: [
+      { scopeId: HOST_CONFIG_SCOPES.GLOBAL_MCP, access: 'rw' },
+      { scopeId: HOST_CONFIG_SCOPES.PLUGIN_MCP, access: 'ro' },
+      { scopeId: HOST_CONFIG_SCOPES.LEGACY_MCP, access: 'ro' },
+    ],
+  });
   assert.equal(manifest.entry.rendererScript, 'src/adapters/antigravity/addon-renderer.js');
-  assert.equal(manifest.entry.mainHookScript, undefined, 'restricted AddonManifest.v2 plugin must not declare mainHookScript');
+  assert.equal(manifest.entry.mainHookScript, undefined, 'Renderer-only AddonManifest.v2 plugin must not declare mainHookScript');
   assert.equal(fs.existsSync(path.join(ROOT_DIR, manifest.entry.rendererScript)), true);
   assert.equal(fs.existsSync(LEGACY_ELECTRON_HOOK_PATH), false, 'Legacy v1 scripts/electron-hook.cjs must be removed');
   assert.equal(fs.existsSync(path.join(ROOT_DIR, 'sidecars')), false, 'AUX_PANE sidecars/ directory must be removed');

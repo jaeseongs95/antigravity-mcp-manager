@@ -315,6 +315,11 @@ test('NMCP-TC-031 (Unit): detectHostLang auto-detects Korean vs English host DOM
   assert.equal(jailRes.ok, false);
   assert.equal(jailRes.code, ERROR_CODES.WRITE_JAIL_VIOLATION);
 
+  forceWriteReason = 'ERR_CONFIG_BACKUP_SYMLINK_FORBIDDEN';
+  const backupJailRes = await store.writeGlobalConfig({ rawText: storedRaw, expectedSha256: storedSha });
+  assert.equal(backupJailRes.ok, false);
+  assert.equal(backupJailRes.code, ERROR_CODES.WRITE_JAIL_VIOLATION);
+
   // 4f. Corrupt JSON fail-closed detection + Raw JSON CAS repair (corrupt carries rawText)
   storedRaw = '{ "mcpServers": broken';
   storedSha = await sha256Hex(storedRaw);
@@ -349,6 +354,18 @@ test('NMCP-TC-032 (CDP E2E): Native Shadow DOM MCP Manager CRUD panel works end-
   fs.mkdirSync(profileDir, { recursive: true });
 
   const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+  assert.equal(manifest.trustLevel, 'trusted', 'addon-manifest.json must declare trusted for Host v2.3.0 Config Bridge');
+  assert.equal(manifest.compatibility?.minHostVersion, '2.3.0');
+  const declaredBridgeScopes = Array.isArray(manifest.configBridge?.scopes) ? manifest.configBridge.scopes : [];
+  assert.deepEqual(
+    declaredBridgeScopes.map((s) => ({ scopeId: s.scopeId, access: s.access })),
+    [
+      { scopeId: HOST_CONFIG_SCOPES.GLOBAL_MCP, access: 'rw' },
+      { scopeId: HOST_CONFIG_SCOPES.PLUGIN_MCP, access: 'ro' },
+      { scopeId: HOST_CONFIG_SCOPES.LEGACY_MCP, access: 'ro' },
+    ],
+    'NMCP-TC-032 must enforce manifest-to-scope parity with addon-manifest.json'
+  );
   const hostHarness = buildAddonHostHarnessScript(manifest);
   const rendererSrc = fs.readFileSync(RENDERER_OUTPUT_PATH, 'utf8');
 
@@ -369,11 +386,9 @@ test('NMCP-TC-032 (CDP E2E): Native Shadow DOM MCP Manager CRUD panel works end-
       }
     }, null, 2) + '\\n';
 
-    const configScopes = Object.freeze([
-      Object.freeze({ scopeId: 'antigravity:mcp-config', access: 'rw', maxBytes: 262144 }),
-      Object.freeze({ scopeId: 'antigravity:plugin-mcp-configs', access: 'ro', maxBytes: 262144 }),
-      Object.freeze({ scopeId: 'antigravity:mcp-config-legacy', access: 'ro', maxBytes: 262144 }),
-    ]);
+    const configScopes = Object.freeze(
+      ${JSON.stringify(declaredBridgeScopes)}.map((s) => Object.freeze({ scopeId: s.scopeId, access: s.access, maxBytes: 262144 }))
+    );
 
     async function readConfigScope(scopeId) {
       if (scopeId === 'antigravity:mcp-config') {

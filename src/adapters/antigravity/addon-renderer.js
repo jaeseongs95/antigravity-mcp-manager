@@ -1484,6 +1484,7 @@
     if (
       code === 'ERR_CONFIG_SYMLINK_FORBIDDEN' ||
       code === 'ERR_CONFIG_ANCESTOR_SYMLINK_FORBIDDEN' ||
+      code === 'ERR_CONFIG_BACKUP_SYMLINK_FORBIDDEN' ||
       code === 'ERR_CONFIG_RESERVED_PATH' ||
       code === 'ERR_CONFIG_SCOPE_READ_ONLY' ||
       code.startsWith('ERR_CONFIG_SCOPE_READ_ONLY:')
@@ -1711,7 +1712,7 @@
   const LAUNCHER_COPY = Object.freeze({
     en: Object.freeze({
       title: 'MCP Manager',
-      badge: 'AddonManifest.v2 · Restricted',
+      badge: 'AddonManifest.v2 · Config Bridge',
       status: 'Awaiting Host Config Bridge',
       lead: 'Running in Antigravity Native Addon Host v2+ Shadow DOM isolation (AUX_PANE sidecar removed). Direct editing inside Settings & Customizations popup activates automatically once the host exposes Named-Scope Config Bridge or loopback URL.',
       stepsHeading: 'How this panel connects',
@@ -1727,7 +1728,7 @@
     }),
     ko: Object.freeze({
       title: 'MCP 매니저',
-      badge: 'AddonManifest.v2 · Restricted',
+      badge: 'AddonManifest.v2 · Config Bridge',
       status: '호스트 설정 브리지 대기 중',
       lead: 'Antigravity Native Addon Host v2+ Shadow DOM 격리 모드로 실행 중입니다(AUX_PANE 사이드카 제거 완료). 호스트가 Named-Scope Config Bridge 또는 loopback URL을 제공하면 설정 화면과 Customizations 팝업에서 즉시 실시간 편집이 활성화됩니다.',
       stepsHeading: '연동 안내',

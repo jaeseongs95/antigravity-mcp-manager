@@ -62,6 +62,7 @@ function mapHostBridgeReasonToErrorCode(reason) {
   if (
     code === 'ERR_CONFIG_SYMLINK_FORBIDDEN' ||
     code === 'ERR_CONFIG_ANCESTOR_SYMLINK_FORBIDDEN' ||
+    code === 'ERR_CONFIG_BACKUP_SYMLINK_FORBIDDEN' ||
     code === 'ERR_CONFIG_RESERVED_PATH' ||
     code === 'ERR_CONFIG_SCOPE_READ_ONLY' ||
     code.startsWith('ERR_CONFIG_SCOPE_READ_ONLY:')
