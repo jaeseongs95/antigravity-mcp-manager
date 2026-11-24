@@ -72,12 +72,13 @@ export async function waitUntil(fn, timeoutMs = 8000, intervalMs = 40) {
  *   state counter + titlebar safe `marginTop` + `zIndex` + capture-phase IME-safe `Escape` LIFO
  * - `addManagedListener`, `onDispose`, and deterministic `dispose()` teardown
  */
-export function buildAddonHostHarnessScript(manifest) {
+export function buildAddonHostHarnessScript(manifest, harnessOpts = {}) {
   const schemaVersion = Number(manifest.schemaVersion || 2);
   const trustLevel = String(manifest.trustLevel || 'restricted');
   const pluginId = String(manifest.pluginId);
   const version = String(manifest.version || '0.0.0');
   const noTranslate = !manifest.isolation || manifest.isolation.noTranslate !== false;
+  const enableSurfaceGeometry = Boolean(harnessOpts && harnessOpts.enableSurfaceGeometry);
   const uiSlots = (manifest.uiSlots || []).map((s) => ({
     slotId: s.slotId,
     slot: s.slot,
@@ -91,6 +92,7 @@ export function buildAddonHostHarnessScript(manifest) {
     const trustLevel = ${JSON.stringify(trustLevel)};
     const schemaVersion = ${JSON.stringify(schemaVersion)};
     const noTranslate = ${JSON.stringify(noTranslate)};
+    const enableSurfaceGeometry = ${JSON.stringify(enableSurfaceGeometry)};
     const slotDefs = Object.create(null);
     for (const def of ${JSON.stringify(uiSlots)}) slotDefs[def.slotId] = def;
 
@@ -98,6 +100,7 @@ export function buildAddonHostHarnessScript(manifest) {
     const styleRecords = new Map();
     const shadowRootsBySlot = new Map();
     const modalStack = [];
+    const modalCalls = [];
     const managedListeners = [];
     const disposers = [];
     let modalSeq = 0;
@@ -229,8 +232,13 @@ export function buildAddonHostHarnessScript(manifest) {
     function closeModalEntry(entry) {
       const idx = modalStack.indexOf(entry);
       if (idx === -1) return false;
+      entry.closing = true;
       modalStack.splice(idx, 1);
       if (entry.shadowRoot) unregisterShadowRoot(entry.slotId, entry.shadowRoot);
+      if (typeof entry.onResizeCleanup === 'function') {
+        try { entry.onResizeCleanup(); } catch {}
+        entry.onResizeCleanup = null;
+      }
       try {
         if (typeof entry.el.close === 'function' && entry.el.open) entry.el.close();
       } catch {}
@@ -243,6 +251,69 @@ export function buildAddonHostHarnessScript(manifest) {
       }
       notifyPortalState();
       return true;
+    }
+
+    function computeSurfaceBounds(surfaceIdOrOpts) {
+      const vw = Number(window.innerWidth) || 0;
+      const vh = Number(window.innerHeight) || 0;
+      const requested =
+        typeof surfaceIdOrOpts === 'string' && surfaceIdOrOpts.trim()
+          ? surfaceIdOrOpts.trim()
+          : surfaceIdOrOpts && typeof surfaceIdOrOpts.surface === 'string' && surfaceIdOrOpts.surface.trim()
+            ? surfaceIdOrOpts.surface.trim()
+            : 'auto';
+      let left = 0;
+      let top = 36;
+      let right = vw;
+      let bottom = vh;
+      let matched = false;
+      let source = 'viewport';
+      let surfaceId = requested === 'auto' || requested === 'active' ? 'viewport' : requested;
+
+      if (requested === 'customizations-page' || requested === 'auto') {
+        const directEl = document.querySelector('[data-testid="customizations-view"]');
+        const rect = directEl ? directEl.getBoundingClientRect() : null;
+        if (rect && rect.width > 0 && rect.height > 0) {
+          left = Math.max(0, rect.left);
+          top = Math.max(36, rect.top);
+          right = Math.min(vw, rect.right);
+          bottom = Math.min(vh, rect.bottom);
+          matched = true;
+          source = 'selector';
+          surfaceId = 'customizations-page';
+        } else {
+          const leftChrome = document.querySelector('[data-testid="sidebar"], [data-testid="left-sidebar"], aside, nav');
+          const lr = leftChrome ? leftChrome.getBoundingClientRect() : null;
+          if (lr && lr.width > 0 && lr.left <= 12 && lr.right < vw * 0.65) {
+            left = lr.right;
+            matched = true;
+            source = 'chrome-subtracted';
+            surfaceId = 'customizations-page';
+          }
+        }
+      }
+
+      const width = Math.max(0, right - left);
+      const height = Math.max(0, bottom - top);
+      return Object.freeze({
+        surfaceId,
+        requestedSurfaceId: requested,
+        matched,
+        source,
+        left,
+        top,
+        right,
+        bottom,
+        width,
+        height,
+        centerX: left + width / 2,
+        centerY: top + height / 2,
+        insetLeft: left,
+        insetTop: top,
+        insetRight: Math.max(0, vw - right),
+        insetBottom: Math.max(0, vh - bottom),
+        viewport: Object.freeze({ width: vw, height: vh }),
+      });
     }
 
     window.addEventListener(
@@ -373,6 +444,11 @@ export function buildAddonHostHarnessScript(manifest) {
           throw new Error('ERR_INVALID_MODAL_SLOT_KIND:' + slotDef.slot);
         }
         const options = opts && typeof opts === 'object' ? opts : {};
+        modalCalls.push({
+          slotId,
+          surface: typeof options.surface === 'string' ? options.surface : null,
+          align: typeof options.align === 'string' ? options.align : null,
+        });
         const prevFocus = document.activeElement || null;
         const dlg = document.createElement('dialog');
         dlg.setAttribute('data-addon-host-modal-dialog', '1');
@@ -404,6 +480,31 @@ export function buildAddonHostHarnessScript(manifest) {
         }
 
         (document.body || document.documentElement).appendChild(dlg);
+        const requestedSurface =
+          typeof options.surface === 'string' && options.surface.trim()
+            ? options.surface.trim()
+            : options.align === 'surface'
+              ? 'auto'
+              : null;
+        const applySurfaceBounds = (targetSurface) => {
+          if (!enableSurfaceGeometry) return null;
+          const bounds = computeSurfaceBounds(targetSurface || 'auto');
+          if (bounds && dlg.style) {
+            dlg.setAttribute('data-addon-host-modal-surface', bounds.surfaceId);
+            if (bounds.viewport && bounds.viewport.width > 0 && bounds.viewport.height > 0) {
+              dlg.style.position = 'fixed';
+              dlg.style.inset = '';
+              dlg.style.left = bounds.insetLeft + 'px';
+              dlg.style.top = bounds.insetTop + 'px';
+              dlg.style.right = bounds.insetRight + 'px';
+              dlg.style.bottom = bounds.insetBottom + 'px';
+              dlg.style.margin = 'auto';
+              dlg.style.maxWidth = Math.max(120, Math.floor(bounds.width - 24)) + 'px';
+              dlg.style.maxHeight = Math.max(120, Math.floor(bounds.height - 24)) + 'px';
+            }
+          }
+          return bounds;
+        };
         const entry = {
           id: 'modal-' + (++modalSeq),
           slotId,
@@ -411,8 +512,19 @@ export function buildAddonHostHarnessScript(manifest) {
           bodyEl,
           shadowRoot,
           prevFocus,
+          surfaceTarget: requestedSurface,
+          onResizeCleanup: null,
           onClose: options.onClose || null,
         };
+        if (enableSurfaceGeometry && requestedSurface) {
+          applySurfaceBounds(requestedSurface);
+          const handleResize = () => {
+            if (entry.closing || !modalStack.includes(entry)) return;
+            applySurfaceBounds(entry.surfaceTarget);
+          };
+          window.addEventListener('resize', handleResize);
+          entry.onResizeCleanup = () => window.removeEventListener('resize', handleResize);
+        }
         dlg.addEventListener('cancel', (ev) => {
           if (ev.cancelable) ev.preventDefault();
           closeModalEntry(modalStack[modalStack.length - 1]);
@@ -425,13 +537,41 @@ export function buildAddonHostHarnessScript(manifest) {
           try { dlg.showModal(); } catch {}
         }
         notifyPortalState();
-        return Object.freeze({
+        const modalHandle = {
           id: entry.id,
           element: dlg,
           bodyEl,
           close: () => closeModalEntry(entry),
-        });
+        };
+        if (enableSurfaceGeometry) {
+          modalHandle.reposition = (nextSurface) => {
+            if (entry.closing || !modalStack.includes(entry)) return null;
+            if (typeof nextSurface === 'string' && nextSurface.trim()) {
+              entry.surfaceTarget = nextSurface.trim();
+            } else if (!entry.surfaceTarget) {
+              entry.surfaceTarget = 'auto';
+            }
+            return applySurfaceBounds(entry.surfaceTarget);
+          };
+        }
+        return Object.freeze(modalHandle);
       },
+      ...(enableSurfaceGeometry
+        ? {
+            getSurfaceBounds(surfaceIdOrOpts) {
+              assertActive();
+              return computeSurfaceBounds(surfaceIdOrOpts);
+            },
+            getActiveSurface() {
+              assertActive();
+              return computeSurfaceBounds('auto');
+            },
+            listSurfaces() {
+              assertActive();
+              return Object.freeze(['settings-pane', 'customizations-page', 'automation-page', 'workspace', 'viewport']);
+            },
+          }
+        : {}),
       addManagedListener(target, type, listener, opts) {
         assertActive();
         if (!target || typeof target.addEventListener !== 'function') return () => {};
@@ -481,6 +621,7 @@ export function buildAddonHostHarnessScript(manifest) {
       getPortalTransitions: () => portalTransitions.slice(),
       getPortalActive: () => portalClaimActive,
       getOpenModalCount: () => modalStack.length,
+      getModalCalls: () => modalCalls.slice(),
     };
   })();`;
 }

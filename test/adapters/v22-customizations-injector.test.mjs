@@ -313,3 +313,163 @@ test('NMCP-TC-027 (Real Chromium CDP E2E): Customizations MCP Servers header mou
     } catch {}
   }
 });
+
+test('NMCP-TC-033 (Real Chromium CDP E2E): Customizations popup passes surface="customizations-page" to antigravity-addons v2.4.0+ openModal, centers inside non-full-viewport content surface (excluding left sidebar), and respects dynamic host maxWidth on narrow resize', async (t) => {
+  const browserBin = findChromiumBinary();
+  if (!browserBin || typeof WebSocket !== 'function') {
+    t.skip('Headless Chromium/Edge binary or global WebSocket is unavailable on this host');
+    return;
+  }
+
+  const rendererSrc = fs.readFileSync(RENDERER_PATH, 'utf8');
+  const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+  const hostHarness = buildAddonHostHarnessScript(manifest, { enableSurfaceGeometry: true });
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-customizations-surface-cdp-'));
+  const profileDir = path.join(tmpDir, 'profile');
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  const parentServer = http.createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(`<!doctype html>
+      <html>
+        <body style="margin:0;padding:0;background:#0d0e11;color:#e5e7eb;font-family:sans-serif;display:flex;height:100vh;width:100vw;overflow:hidden;">
+          <aside data-testid="sidebar" style="width:260px;flex:0 0 260px;height:100vh;background:#16181d;border-right:1px solid #2b2f38;">Sidebar</aside>
+          <main data-testid="customizations-view" style="flex:1;min-width:0;padding:48px 24px 24px 24px;box-sizing:border-box;">
+            <h1>Customizations</h1>
+            <section id="mcp-section" style="max-width:720px;">
+              <div id="mcp-header-row" style="display:flex;align-items:center;justify-content:space-between;">
+                <button type="button" id="mcp-collapse-btn" style="background:transparent;border:0;color:inherit;">
+                  <span>MCP Servers</span> <span>3</span>
+                </button>
+                <div id="mcp-header-actions" style="display:flex;align-items:center;gap:6px;">
+                  <button type="button" id="btn-raw-config" style="width:24px;height:24px;">[]</button>
+                  <button type="button" id="btn-add-mcp" style="width:24px;height:24px;">+</button>
+                </div>
+              </div>
+            </section>
+          </main>
+          <script>${hostHarness}</script>
+          <script>
+            (function(addonHost) {
+              ${rendererSrc}
+            })(window.__TEST_ADDON_HOST__);
+          </script>
+        </body>
+      </html>`);
+  });
+  await new Promise((r) => parentServer.listen(0, '127.0.0.1', r));
+  const parentPort = parentServer.address().port;
+
+  const session = await launchCdpSession({ browserBin, profileDir });
+  try {
+    const { cdp, evalMain } = session;
+    await cdp('Emulation.setDeviceMetricsOverride', {
+      width: 1280,
+      height: 800,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await cdp('Page.navigate', { url: `http://localhost:${parentPort}/` });
+
+    assert.equal(
+      await waitUntil(() =>
+        evalMain(`(() => {
+          const slot = document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.customizations-btn"]');
+          return Boolean(slot && slot.shadowRoot && slot.shadowRoot.querySelector('[data-agy-mcp-customizations-btn="true"]'));
+        })()`)
+      ),
+      true,
+      'Customizations MCP Manager button must mount inside Shadow DOM'
+    );
+
+    // 1. Wide viewport (1280x800, left sidebar 260px -> customizations-page surface [260..1280, 36..800], centerX=770, centerY=418)
+    await evalMain(`document.querySelector('[data-addon-host-slot="antigravity-mcp-manager.customizations-btn"]').shadowRoot.querySelector('[data-agy-mcp-customizations-btn="true"]').click()`);
+    const wideMetrics = await evalMain(`(() => {
+      const dlg = document.querySelector('dialog[data-addon-host-modal-dialog="1"]');
+      const surfaceBounds = window.__TEST_ADDON_HOST__.getSurfaceBounds('customizations-page');
+      const rect = dlg?.getBoundingClientRect();
+      return {
+        modalCalls: window.__TEST_ADDON_HOST_DIAG__.getModalCalls(),
+        surfaceAttr: dlg?.getAttribute('data-addon-host-modal-surface') || null,
+        maxWidthInline: dlg?.style.maxWidth || '',
+        dlgLeft: rect?.left ?? 0,
+        dlgRight: rect?.right ?? 0,
+        dlgTop: rect?.top ?? 0,
+        dlgBottom: rect?.bottom ?? 0,
+        dlgWidth: rect?.width ?? 0,
+        dlgHeight: rect?.height ?? 0,
+        dlgCenterX: rect ? (rect.left + rect.right) / 2 : 0,
+        dlgCenterY: rect ? (rect.top + rect.bottom) / 2 : 0,
+        surfaceCenterX: surfaceBounds.centerX,
+        surfaceCenterY: surfaceBounds.centerY,
+        viewportCenterX: window.innerWidth / 2,
+      };
+    })()`);
+    assert.equal(wideMetrics.modalCalls.length, 1);
+    assert.equal(wideMetrics.modalCalls[0].surface, 'customizations-page');
+    assert.equal(wideMetrics.surfaceAttr, 'customizations-page');
+    assert.ok(
+      !wideMetrics.maxWidthInline.includes('100vw'),
+      `Renderer must NOT overwrite host surface maxWidth with 100vw; got: ${wideMetrics.maxWidthInline}`
+    );
+    assert.ok(
+      Math.abs(wideMetrics.dlgCenterX - wideMetrics.surfaceCenterX) <= 2,
+      `Modal centerX (${wideMetrics.dlgCenterX}) must match customizations-page surface centerX (${wideMetrics.surfaceCenterX}), not viewport centerX (${wideMetrics.viewportCenterX})`
+    );
+    assert.ok(
+      Math.abs(wideMetrics.dlgCenterX - wideMetrics.viewportCenterX) >= 100,
+      'Modal must visibly shift into the content surface right of the 260px sidebar'
+    );
+    assert.ok(
+      Math.abs(wideMetrics.dlgCenterY - wideMetrics.surfaceCenterY) <= 2,
+      `Modal centerY (${wideMetrics.dlgCenterY}) must match surface centerY (${wideMetrics.surfaceCenterY})`
+    );
+    assert.ok(Math.abs(wideMetrics.dlgWidth - 820) <= 2, `Expected 820px width on wide surface, got ${wideMetrics.dlgWidth}`);
+
+    // 2. Narrow viewport (960x680, left sidebar 260px -> surface width=700, maxWidth=676 < 820, centerX=610)
+    await cdp('Emulation.setDeviceMetricsOverride', {
+      width: 960,
+      height: 680,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await evalMain(`window.dispatchEvent(new Event('resize'))`);
+    const narrowMetrics = await evalMain(`(() => {
+      const dlg = document.querySelector('dialog[data-addon-host-modal-dialog="1"]');
+      const surfaceBounds = window.__TEST_ADDON_HOST__.getSurfaceBounds('customizations-page');
+      const rect = dlg?.getBoundingClientRect();
+      return {
+        dlgLeft: rect?.left ?? 0,
+        dlgRight: rect?.right ?? 0,
+        dlgWidth: rect?.width ?? 0,
+        dlgCenterX: rect ? (rect.left + rect.right) / 2 : 0,
+        surfaceLeft: surfaceBounds.left,
+        surfaceRight: surfaceBounds.right,
+        surfaceWidth: surfaceBounds.width,
+        surfaceCenterX: surfaceBounds.centerX,
+      };
+    })()`);
+    assert.ok(
+      narrowMetrics.dlgLeft >= narrowMetrics.surfaceLeft && narrowMetrics.dlgRight <= narrowMetrics.surfaceRight + 1,
+      `Modal [${narrowMetrics.dlgLeft}..${narrowMetrics.dlgRight}] must stay clamped inside narrow surface [${narrowMetrics.surfaceLeft}..${narrowMetrics.surfaceRight}]`
+    );
+    assert.ok(
+      narrowMetrics.dlgWidth <= narrowMetrics.surfaceWidth - 20,
+      `Modal width (${narrowMetrics.dlgWidth}) must shrink to host surface maxWidth (${narrowMetrics.surfaceWidth - 24})`
+    );
+    assert.ok(
+      Math.abs(narrowMetrics.dlgCenterX - narrowMetrics.surfaceCenterX) <= 2,
+      `Narrow modal centerX (${narrowMetrics.dlgCenterX}) must remain centered at surface centerX (${narrowMetrics.surfaceCenterX})`
+    );
+
+    // 3. Clean dispose() removes custom slot, open modal, and all owner styles
+    await evalMain(`window.__TEST_ADDON_HOST__.dispose()`);
+    assert.equal(await evalMain(`document.querySelectorAll('[data-addon-host-owner="antigravity-mcp-manager"]').length`), 0);
+  } finally {
+    await session.close();
+    await new Promise((r) => parentServer.close(r));
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch {}
+  }
+});

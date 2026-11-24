@@ -182,6 +182,7 @@ export function createNativeMcpPanel({
   let rawDraftDirty = false;
   let snapshotRequestSeq = 0;
   let busy = false;
+  let mutating = false;
 
   function getLang() {
     const resolved =
@@ -490,135 +491,160 @@ export function createNativeMcpPanel({
     }
   }
 
+  async function runMutation(fallbackErrorKey, task) {
+    if (mutating || disposed) return;
+    mutating = true;
+    try {
+      const reloadMode = await task();
+      if (disposed) return;
+      if (reloadMode) {
+        await loadSnapshot(reloadMode === 'raw');
+      }
+    } catch (err) {
+      if (disposed) return;
+      setBanner('error', err?.message || t(fallbackErrorKey));
+    } finally {
+      mutating = false;
+    }
+  }
+
   async function submitEditor(confirmStdio = false) {
     if (!editorState || !snapshot || disposed) return;
-    const spec = buildSpecFromEditor();
-    const payload = {
-      name: editorState.name.trim(),
-      originalName: editorState.originalName,
-      spec,
-      expectedSha256: snapshot.globalConfig.sha256,
-      confirmStdio,
-    };
-    const data = await service.upsertServer(payload);
-    if (disposed) return;
-    if (data.code === 'CONFIRMATION_REQUIRED') {
-      pendingStdioConfirm = {
-        kind: 'upsert',
-        payload,
-        preview: data.confirmationPreview || { name: payload.name, command: spec.command, args: spec.args || [] },
+    await runMutation('saveFailed', async () => {
+      const spec = buildSpecFromEditor();
+      const payload = {
+        name: editorState.name.trim(),
+        originalName: editorState.originalName,
+        spec,
+        expectedSha256: snapshot.globalConfig.sha256,
+        confirmStdio,
       };
-      renderAll();
-      return;
-    }
-    if (data.code === 'CONFLICT') {
-      handleConflictBanner();
-      return;
-    }
-    if (!data.ok) {
-      setBanner('error', (data.errors || [t('saveFailed')]).join(' '));
-      return;
-    }
-    scrubSensitiveState({ keepRawIfMalformed: true });
-    clearBanner();
-    await loadSnapshot(activeTab === 'raw');
+      const data = await service.upsertServer(payload);
+      if (disposed) return false;
+      if (data.code === 'CONFIRMATION_REQUIRED') {
+        pendingStdioConfirm = {
+          kind: 'upsert',
+          payload,
+          preview: data.confirmationPreview || { name: payload.name, command: spec.command, args: spec.args || [] },
+        };
+        renderAll();
+        return false;
+      }
+      if (data.code === 'CONFLICT') {
+        handleConflictBanner();
+        return false;
+      }
+      if (!data.ok) {
+        setBanner('error', (data.errors || [t('saveFailed')]).join(' '));
+        return false;
+      }
+      scrubSensitiveState({ keepRawIfMalformed: true });
+      clearBanner();
+      return activeTab === 'raw' ? 'raw' : 'list';
+    });
   }
 
   async function submitClonePlugin(ps, confirmStdio = false) {
     if (!snapshot || disposed) return;
-    const targetName = `${ps.name}-copy`;
-    const payload = {
-      pluginId: ps.pluginId || null,
-      pluginDir: ps.pluginDir,
-      serverName: ps.name,
-      targetName,
-      expectedSha256: snapshot.globalConfig.sha256,
-      confirmStdio,
-    };
-    const data = await service.clonePluginServer(payload);
-    if (disposed) return;
-    if (data.code === 'CONFIRMATION_REQUIRED') {
-      pendingStdioConfirm = {
-        kind: 'clone',
-        payload,
-        preview: data.confirmationPreview || { name: targetName, command: ps.spec?.command || '', args: ps.spec?.args || [] },
+    await runMutation('cloneFailed', async () => {
+      const targetName = `${ps.name}-copy`;
+      const payload = {
+        pluginId: ps.pluginId || null,
+        pluginDir: ps.pluginDir,
+        serverName: ps.name,
+        targetName,
+        expectedSha256: snapshot.globalConfig.sha256,
+        confirmStdio,
       };
-      renderAll();
-      return;
-    }
-    if (data.code === 'CONFLICT') {
-      handleConflictBanner();
-      return;
-    }
-    if (!data.ok) {
-      setBanner('error', (data.errors || [t('cloneFailed')]).join(' '));
-      return;
-    }
-    pendingStdioConfirm = null;
-    clearBanner();
-    await loadSnapshot(false);
+      const data = await service.clonePluginServer(payload);
+      if (disposed) return false;
+      if (data.code === 'CONFIRMATION_REQUIRED') {
+        pendingStdioConfirm = {
+          kind: 'clone',
+          payload,
+          preview: data.confirmationPreview || { name: targetName, command: ps.spec?.command || '', args: ps.spec?.args || [] },
+        };
+        renderAll();
+        return false;
+      }
+      if (data.code === 'CONFLICT') {
+        handleConflictBanner();
+        return false;
+      }
+      if (!data.ok) {
+        setBanner('error', (data.errors || [t('cloneFailed')]).join(' '));
+        return false;
+      }
+      pendingStdioConfirm = null;
+      clearBanner();
+      return 'list';
+    });
   }
 
   async function submitImportLegacy(ls, confirmStdio = false) {
     if (!snapshot || disposed) return;
-    const payload = {
-      serverName: ls.name,
-      expectedSha256: snapshot.globalConfig.sha256,
-      confirmStdio,
-    };
-    const data = await service.importLegacyServer(payload);
-    if (disposed) return;
-    if (data.code === 'CONFIRMATION_REQUIRED') {
-      pendingStdioConfirm = {
-        kind: 'legacy',
-        payload,
-        preview: data.confirmationPreview || { name: ls.name, command: ls.spec?.command || '', args: ls.spec?.args || [] },
+    await runMutation('importFailed', async () => {
+      const payload = {
+        serverName: ls.name,
+        expectedSha256: snapshot.globalConfig.sha256,
+        confirmStdio,
       };
-      renderAll();
-      return;
-    }
-    if (data.code === 'CONFLICT') {
-      handleConflictBanner();
-      return;
-    }
-    if (!data.ok) {
-      setBanner('error', (data.errors || [t('importFailed')]).join(' '));
-      return;
-    }
-    pendingStdioConfirm = null;
-    clearBanner();
-    await loadSnapshot(false);
+      const data = await service.importLegacyServer(payload);
+      if (disposed) return false;
+      if (data.code === 'CONFIRMATION_REQUIRED') {
+        pendingStdioConfirm = {
+          kind: 'legacy',
+          payload,
+          preview: data.confirmationPreview || { name: ls.name, command: ls.spec?.command || '', args: ls.spec?.args || [] },
+        };
+        renderAll();
+        return false;
+      }
+      if (data.code === 'CONFLICT') {
+        handleConflictBanner();
+        return false;
+      }
+      if (!data.ok) {
+        setBanner('error', (data.errors || [t('importFailed')]).join(' '));
+        return false;
+      }
+      pendingStdioConfirm = null;
+      clearBanner();
+      return 'list';
+    });
   }
 
   async function submitRawJson(confirmStdio = false) {
     if (!snapshot || disposed) return;
-    const payload = {
-      rawText: rawDraft,
-      expectedSha256: snapshot.globalConfig.sha256,
-      confirmStdio,
-    };
-    const data = await service.saveRawJson(payload);
-    if (disposed) return;
-    if (data.code === 'CONFIRMATION_REQUIRED') {
-      pendingStdioConfirm = {
-        kind: 'raw',
-        payload,
-        preview: { name: t('rawStdioPreviewName'), command: t('rawStdioPreviewCmd'), args: [] },
+    await runMutation('rawSaveFailed', async () => {
+      const payload = {
+        rawText: rawDraft,
+        expectedSha256: snapshot.globalConfig.sha256,
+        confirmStdio,
       };
-      renderAll();
-      return;
-    }
-    if (data.code === 'CONFLICT') {
-      handleConflictBanner();
-      return;
-    }
-    if (!data.ok) {
-      setBanner('error', (data.errors || [t('rawSaveFailed')]).join(' '));
-      return;
-    }
-    pendingStdioConfirm = null;
-    clearBanner();
-    await loadSnapshot(true);
+      const data = await service.saveRawJson(payload);
+      if (disposed) return false;
+      if (data.code === 'CONFIRMATION_REQUIRED') {
+        pendingStdioConfirm = {
+          kind: 'raw',
+          payload,
+          preview: { name: t('rawStdioPreviewName'), command: t('rawStdioPreviewCmd'), args: [] },
+        };
+        renderAll();
+        return false;
+      }
+      if (data.code === 'CONFLICT') {
+        handleConflictBanner();
+        return false;
+      }
+      if (!data.ok) {
+        setBanner('error', (data.errors || [t('rawSaveFailed')]).join(' '));
+        return false;
+      }
+      pendingStdioConfirm = null;
+      clearBanner();
+      return 'raw';
+    });
   }
 
   async function confirmPendingStdio() {
@@ -644,41 +670,65 @@ export function createNativeMcpPanel({
 
   async function handleToggleDisabled(server) {
     if (!snapshot || disposed) return;
-    const data = await service.toggleServerDisabled({
-      name: server.name,
-      disabled: !server.disabled,
-      expectedSha256: snapshot.globalConfig.sha256,
+    await runMutation('toggleFailed', async () => {
+      const data = await service.toggleServerDisabled({
+        name: server.name,
+        disabled: !server.disabled,
+        expectedSha256: snapshot.globalConfig.sha256,
+      });
+      if (disposed) return false;
+      if (data.code === 'CONFLICT') {
+        handleConflictBanner();
+        return false;
+      }
+      if (!data.ok) {
+        setBanner('error', (data.errors || [t('toggleFailed')]).join(' '));
+        return false;
+      }
+      clearBanner();
+      return 'list';
     });
-    if (disposed) return;
-    if (data.code === 'CONFLICT') {
-      handleConflictBanner();
-      return;
-    }
-    if (!data.ok) {
-      setBanner('error', (data.errors || [t('toggleFailed')]).join(' '));
-      return;
-    }
-    clearBanner();
-    await loadSnapshot(false);
   }
 
   async function handleDelete(server) {
     if (!snapshot || disposed) return;
-    const data = await service.deleteServer({
-      name: server.name,
-      expectedSha256: snapshot.globalConfig.sha256,
+    await runMutation('deleteFailed', async () => {
+      const data = await service.deleteServer({
+        name: server.name,
+        expectedSha256: snapshot.globalConfig.sha256,
+      });
+      if (disposed) return false;
+      if (data.code === 'CONFLICT') {
+        handleConflictBanner();
+        return false;
+      }
+      if (!data.ok) {
+        setBanner('error', (data.errors || [t('deleteFailed')]).join(' '));
+        return false;
+      }
+      clearBanner();
+      return 'list';
     });
-    if (disposed) return;
-    if (data.code === 'CONFLICT') {
-      handleConflictBanner();
-      return;
-    }
-    if (!data.ok) {
-      setBanner('error', (data.errors || [t('deleteFailed')]).join(' '));
-      return;
-    }
-    clearBanner();
-    await loadSnapshot(false);
+  }
+
+  async function handleRestoreBackup() {
+    if (!snapshot || disposed) return;
+    await runMutation('restoreFailed', async () => {
+      const data = await service.restoreBackup({
+        expectedSha256: snapshot.globalConfig.sha256,
+      });
+      if (disposed) return false;
+      if (data.code === 'CONFLICT') {
+        handleConflictBanner();
+        return false;
+      }
+      if (!data.ok) {
+        setBanner('error', (data.errors || [t('restoreFailed')]).join(' '));
+        return false;
+      }
+      clearBanner();
+      return 'raw';
+    });
   }
 
   function renderStdioConfirmPanel() {
@@ -741,17 +791,7 @@ export function createNativeMcpPanel({
                     type: 'button',
                     className: 'mcp-btn mcp-btn-sm',
                     dataset: { testid: 'btn-restore-backup' },
-                    onClick: async () => {
-                      const data = await service.restoreBackup({
-                        expectedSha256: snapshot.globalConfig.sha256,
-                      });
-                      if (data.code === 'CONFLICT') handleConflictBanner();
-                      else if (!data.ok) setBanner('error', (data.errors || [t('restoreFailed')]).join(' '));
-                      else {
-                        clearBanner();
-                        await loadSnapshot(true);
-                      }
-                    },
+                    onClick: () => void handleRestoreBackup(),
                   },
                   t('restoreBackup')
                 )
