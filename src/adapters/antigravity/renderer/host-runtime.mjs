@@ -60,11 +60,11 @@ const LAUNCHER_COPY = Object.freeze({
     title: 'MCP Manager',
     badge: 'AddonManifest.v2 · Config Bridge',
     status: 'Awaiting Host Config Bridge',
-    lead: 'Running in Antigravity Native Addon Host v2+ Shadow DOM isolation (AUX_PANE sidecar removed). Direct editing inside Settings & Customizations popup activates automatically once the host exposes Named-Scope Config Bridge or loopback URL.',
+    lead: 'Running in antigravity-addons (AddonManifest.v2) Shadow DOM isolation (AUX_PANE sidecar removed). Direct editing inside Settings & Customizations popup activates automatically once the host exposes Named-Scope Config Bridge or loopback URL.',
     stepsHeading: 'How this panel connects',
     steps: Object.freeze([
       'All MCP edits target ~/.gemini/config/mcp_config.json atomically with CAS conflict guards and secret redaction.',
-      'Upgrade antigravity-native-addon-host to a version supporting Named-Scope Config Bridge (Option A) for direct in-Settings & popup management.',
+      'Upgrade antigravity-addons (formerly antigravity-native-addon-host) to v2.3.0+ supporting Named-Scope Config Bridge (Option A) for direct in-Settings & popup management.',
       'This view switches automatically to the live MCP Manager UI as soon as the host bridge or loopback URL is provided.',
     ]),
     configLabel: 'Config File',
@@ -76,11 +76,11 @@ const LAUNCHER_COPY = Object.freeze({
     title: 'MCP 매니저',
     badge: 'AddonManifest.v2 · Config Bridge',
     status: '호스트 설정 브리지 대기 중',
-    lead: 'Antigravity Native Addon Host v2+ Shadow DOM 격리 모드로 실행 중입니다(AUX_PANE 사이드카 제거 완료). 호스트가 Named-Scope Config Bridge 또는 loopback URL을 제공하면 설정 화면과 Customizations 팝업에서 즉시 실시간 편집이 활성화됩니다.',
+    lead: 'antigravity-addons(AddonManifest.v2) Shadow DOM 격리 모드로 실행 중입니다(AUX_PANE 사이드카 제거 완료). 호스트가 Named-Scope Config Bridge 또는 loopback URL을 제공하면 설정 화면과 Customizations 팝업에서 즉시 실시간 편집이 활성화됩니다.',
     stepsHeading: '연동 안내',
     steps: Object.freeze([
       '모든 MCP 설정 변경은 CAS 충돌 방지 및 시크릿 마스킹과 함께 ~/.gemini/config/mcp_config.json에 원자적으로 저장됩니다.',
-      '설정 화면과 팝업에서 바로 편집하려면 Named-Scope Config Bridge(안 A)를 지원하는 antigravity-native-addon-host 버전을 적용하세요.',
+      '설정 화면과 팝업에서 바로 편집하려면 Named-Scope Config Bridge(안 A)를 지원하는 antigravity-addons(구 antigravity-native-addon-host) v2.3.0+ 버전을 적용하세요.',
       '호스트 브리지 또는 loopback URL이 연결되면 이 화면이 자동으로 실제 MCP 매니저 UI로 전환됩니다.',
     ]),
     configLabel: '설정 파일',
@@ -468,6 +468,18 @@ export function createHostRuntime({ addonHost, win = window, doc = document }) {
     return detach;
   }
 
+  function getSurfaceBounds(surfaceIdOrOpts) {
+    return typeof host.getSurfaceBounds === 'function' ? host.getSurfaceBounds(surfaceIdOrOpts) : null;
+  }
+
+  function getActiveSurface() {
+    return typeof host.getActiveSurface === 'function' ? host.getActiveSurface() : null;
+  }
+
+  function listSurfaces() {
+    return typeof host.listSurfaces === 'function' ? host.listSurfaces() : [];
+  }
+
   return Object.freeze({
     pluginId,
     trustLevel,
@@ -488,6 +500,9 @@ export function createHostRuntime({ addonHost, win = window, doc = document }) {
     mountSlot,
     unmountSlot: (slotId) => host.unmountSlot(slotId),
     openModal: (slotId, opts) => host.openModal(slotId, opts || {}),
+    getSurfaceBounds,
+    getActiveSurface,
+    listSurfaces,
     injectStyle,
     removeStyle: (styleId) => host.removeStyle(styleId),
     addManagedListener,

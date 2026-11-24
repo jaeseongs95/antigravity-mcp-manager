@@ -287,6 +287,9 @@ export function createCustomizationsMount({ runtime, onLangChange = () => {}, wi
     lastTriggerBtn = triggerBtn || btnEl || null;
 
     if (activeModalHandle && activeModalHandle.element && activeModalHandle.element.isConnected) {
+      if (typeof activeModalHandle.reposition === 'function') {
+        activeModalHandle.reposition('customizations-page');
+      }
       renderModalContent();
       syncLabels();
       return;
@@ -300,6 +303,7 @@ export function createCustomizationsMount({ runtime, onLangChange = () => {}, wi
 
     const modalHandle = runtime.openModal(SLOT_IDS.CUSTOMIZATIONS_OVERLAY, {
       shadow: true,
+      surface: 'customizations-page',
       onClose: handleModalClosed,
     });
     if (!modalHandle || !modalHandle.bodyEl) return;
@@ -309,15 +313,25 @@ export function createCustomizationsMount({ runtime, onLangChange = () => {}, wi
     if (dlg) {
       dlg.setAttribute(CUSTOMIZATIONS_OVERLAY_ATTR, 'true');
       dlg.setAttribute('aria-label', getButtonLabel());
-      // Centered popup modal window: preserve host-managed titlebar safe inset (`top`/`marginTop`), `margin: auto`, and `zIndex`
+      // Centered popup modal window:
+      // - On antigravity-addons v2.4.0+, preserve host-managed surface insets (`left`/`top`/`right`/`bottom`, `margin: auto`)
+      //   and dynamic resize-tracked `maxWidth`/`maxHeight` when `data-addon-host-modal-surface` is active.
+      // - On legacy Host v2.3.0, preserve titlebar safe inset (`marginTop`/`top`) and viewport-clamped centering.
       if (dlg.style) {
-        dlg.style.width = 'min(820px, calc(100vw - 48px))';
-        dlg.style.maxWidth = 'calc(100vw - 48px)';
-        dlg.style.height = 'min(660px, calc(100vh - 88px))';
-        dlg.style.maxHeight = 'calc(100vh - 88px)';
-        if (dlg.style.margin !== 'auto') {
-          dlg.style.marginLeft = 'auto';
-          dlg.style.marginRight = 'auto';
+        const hostManagedSurface = Boolean(dlg.getAttribute?.('data-addon-host-modal-surface'));
+        dlg.style.boxSizing = 'border-box';
+        if (hostManagedSurface) {
+          dlg.style.width = '820px';
+          dlg.style.height = '660px';
+        } else {
+          dlg.style.width = 'min(820px, calc(100vw - 48px))';
+          dlg.style.maxWidth = 'calc(100vw - 48px)';
+          dlg.style.height = 'min(660px, calc(100vh - 88px))';
+          dlg.style.maxHeight = 'calc(100vh - 88px)';
+          if (dlg.style.margin !== 'auto') {
+            dlg.style.marginLeft = 'auto';
+            dlg.style.marginRight = 'auto';
+          }
         }
         dlg.style.padding = '0';
         dlg.style.border = '1px solid rgba(128, 128, 128, 0.28)';

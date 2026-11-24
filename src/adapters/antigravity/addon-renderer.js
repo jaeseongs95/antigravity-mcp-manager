@@ -1619,7 +1619,10 @@
           pluginName: pluginDir,
           pluginDir,
           rawText,
-          displayPath: `~/.gemini/config/plugins/${pluginDir}/mcp_config.json`,
+          displayPath:
+            pluginScope === 'workspace'
+              ? `<workspace>/.agents/plugins/${pluginDir}/mcp_config.json`
+              : `~/.gemini/config/plugins/${pluginDir}/mcp_config.json`,
         });
       }
       return normalized;
@@ -1714,11 +1717,11 @@
       title: 'MCP Manager',
       badge: 'AddonManifest.v2 · Config Bridge',
       status: 'Awaiting Host Config Bridge',
-      lead: 'Running in Antigravity Native Addon Host v2+ Shadow DOM isolation (AUX_PANE sidecar removed). Direct editing inside Settings & Customizations popup activates automatically once the host exposes Named-Scope Config Bridge or loopback URL.',
+      lead: 'Running in antigravity-addons (AddonManifest.v2) Shadow DOM isolation (AUX_PANE sidecar removed). Direct editing inside Settings & Customizations popup activates automatically once the host exposes Named-Scope Config Bridge or loopback URL.',
       stepsHeading: 'How this panel connects',
       steps: Object.freeze([
         'All MCP edits target ~/.gemini/config/mcp_config.json atomically with CAS conflict guards and secret redaction.',
-        'Upgrade antigravity-native-addon-host to a version supporting Named-Scope Config Bridge (Option A) for direct in-Settings & popup management.',
+        'Upgrade antigravity-addons (formerly antigravity-native-addon-host) to v2.3.0+ supporting Named-Scope Config Bridge (Option A) for direct in-Settings & popup management.',
         'This view switches automatically to the live MCP Manager UI as soon as the host bridge or loopback URL is provided.',
       ]),
       configLabel: 'Config File',
@@ -1730,11 +1733,11 @@
       title: 'MCP 매니저',
       badge: 'AddonManifest.v2 · Config Bridge',
       status: '호스트 설정 브리지 대기 중',
-      lead: 'Antigravity Native Addon Host v2+ Shadow DOM 격리 모드로 실행 중입니다(AUX_PANE 사이드카 제거 완료). 호스트가 Named-Scope Config Bridge 또는 loopback URL을 제공하면 설정 화면과 Customizations 팝업에서 즉시 실시간 편집이 활성화됩니다.',
+      lead: 'antigravity-addons(AddonManifest.v2) Shadow DOM 격리 모드로 실행 중입니다(AUX_PANE 사이드카 제거 완료). 호스트가 Named-Scope Config Bridge 또는 loopback URL을 제공하면 설정 화면과 Customizations 팝업에서 즉시 실시간 편집이 활성화됩니다.',
       stepsHeading: '연동 안내',
       steps: Object.freeze([
         '모든 MCP 설정 변경은 CAS 충돌 방지 및 시크릿 마스킹과 함께 ~/.gemini/config/mcp_config.json에 원자적으로 저장됩니다.',
-        '설정 화면과 팝업에서 바로 편집하려면 Named-Scope Config Bridge(안 A)를 지원하는 antigravity-native-addon-host 버전을 적용하세요.',
+        '설정 화면과 팝업에서 바로 편집하려면 Named-Scope Config Bridge(안 A)를 지원하는 antigravity-addons(구 antigravity-native-addon-host) v2.3.0+ 버전을 적용하세요.',
         '호스트 브리지 또는 loopback URL이 연결되면 이 화면이 자동으로 실제 MCP 매니저 UI로 전환됩니다.',
       ]),
       configLabel: '설정 파일',
@@ -2112,6 +2115,18 @@
       return detach;
     }
 
+    function getSurfaceBounds(surfaceIdOrOpts) {
+      return typeof host.getSurfaceBounds === 'function' ? host.getSurfaceBounds(surfaceIdOrOpts) : null;
+    }
+
+    function getActiveSurface() {
+      return typeof host.getActiveSurface === 'function' ? host.getActiveSurface() : null;
+    }
+
+    function listSurfaces() {
+      return typeof host.listSurfaces === 'function' ? host.listSurfaces() : [];
+    }
+
     return Object.freeze({
       pluginId,
       trustLevel,
@@ -2132,6 +2147,9 @@
       mountSlot,
       unmountSlot: (slotId) => host.unmountSlot(slotId),
       openModal: (slotId, opts) => host.openModal(slotId, opts || {}),
+      getSurfaceBounds,
+      getActiveSurface,
+      listSurfaces,
       injectStyle,
       removeStyle: (styleId) => host.removeStyle(styleId),
       addManagedListener,
@@ -2322,6 +2340,7 @@
     let rawDraftDirty = false;
     let snapshotRequestSeq = 0;
     let busy = false;
+    let mutating = false;
 
     function getLang() {
       const resolved =
@@ -2630,135 +2649,160 @@
       }
     }
 
+    async function runMutation(fallbackErrorKey, task) {
+      if (mutating || disposed) return;
+      mutating = true;
+      try {
+        const reloadMode = await task();
+        if (disposed) return;
+        if (reloadMode) {
+          await loadSnapshot(reloadMode === 'raw');
+        }
+      } catch (err) {
+        if (disposed) return;
+        setBanner('error', err?.message || t(fallbackErrorKey));
+      } finally {
+        mutating = false;
+      }
+    }
+
     async function submitEditor(confirmStdio = false) {
       if (!editorState || !snapshot || disposed) return;
-      const spec = buildSpecFromEditor();
-      const payload = {
-        name: editorState.name.trim(),
-        originalName: editorState.originalName,
-        spec,
-        expectedSha256: snapshot.globalConfig.sha256,
-        confirmStdio,
-      };
-      const data = await service.upsertServer(payload);
-      if (disposed) return;
-      if (data.code === 'CONFIRMATION_REQUIRED') {
-        pendingStdioConfirm = {
-          kind: 'upsert',
-          payload,
-          preview: data.confirmationPreview || { name: payload.name, command: spec.command, args: spec.args || [] },
+      await runMutation('saveFailed', async () => {
+        const spec = buildSpecFromEditor();
+        const payload = {
+          name: editorState.name.trim(),
+          originalName: editorState.originalName,
+          spec,
+          expectedSha256: snapshot.globalConfig.sha256,
+          confirmStdio,
         };
-        renderAll();
-        return;
-      }
-      if (data.code === 'CONFLICT') {
-        handleConflictBanner();
-        return;
-      }
-      if (!data.ok) {
-        setBanner('error', (data.errors || [t('saveFailed')]).join(' '));
-        return;
-      }
-      scrubSensitiveState({ keepRawIfMalformed: true });
-      clearBanner();
-      await loadSnapshot(activeTab === 'raw');
+        const data = await service.upsertServer(payload);
+        if (disposed) return false;
+        if (data.code === 'CONFIRMATION_REQUIRED') {
+          pendingStdioConfirm = {
+            kind: 'upsert',
+            payload,
+            preview: data.confirmationPreview || { name: payload.name, command: spec.command, args: spec.args || [] },
+          };
+          renderAll();
+          return false;
+        }
+        if (data.code === 'CONFLICT') {
+          handleConflictBanner();
+          return false;
+        }
+        if (!data.ok) {
+          setBanner('error', (data.errors || [t('saveFailed')]).join(' '));
+          return false;
+        }
+        scrubSensitiveState({ keepRawIfMalformed: true });
+        clearBanner();
+        return activeTab === 'raw' ? 'raw' : 'list';
+      });
     }
 
     async function submitClonePlugin(ps, confirmStdio = false) {
       if (!snapshot || disposed) return;
-      const targetName = `${ps.name}-copy`;
-      const payload = {
-        pluginId: ps.pluginId || null,
-        pluginDir: ps.pluginDir,
-        serverName: ps.name,
-        targetName,
-        expectedSha256: snapshot.globalConfig.sha256,
-        confirmStdio,
-      };
-      const data = await service.clonePluginServer(payload);
-      if (disposed) return;
-      if (data.code === 'CONFIRMATION_REQUIRED') {
-        pendingStdioConfirm = {
-          kind: 'clone',
-          payload,
-          preview: data.confirmationPreview || { name: targetName, command: ps.spec?.command || '', args: ps.spec?.args || [] },
+      await runMutation('cloneFailed', async () => {
+        const targetName = `${ps.name}-copy`;
+        const payload = {
+          pluginId: ps.pluginId || null,
+          pluginDir: ps.pluginDir,
+          serverName: ps.name,
+          targetName,
+          expectedSha256: snapshot.globalConfig.sha256,
+          confirmStdio,
         };
-        renderAll();
-        return;
-      }
-      if (data.code === 'CONFLICT') {
-        handleConflictBanner();
-        return;
-      }
-      if (!data.ok) {
-        setBanner('error', (data.errors || [t('cloneFailed')]).join(' '));
-        return;
-      }
-      pendingStdioConfirm = null;
-      clearBanner();
-      await loadSnapshot(false);
+        const data = await service.clonePluginServer(payload);
+        if (disposed) return false;
+        if (data.code === 'CONFIRMATION_REQUIRED') {
+          pendingStdioConfirm = {
+            kind: 'clone',
+            payload,
+            preview: data.confirmationPreview || { name: targetName, command: ps.spec?.command || '', args: ps.spec?.args || [] },
+          };
+          renderAll();
+          return false;
+        }
+        if (data.code === 'CONFLICT') {
+          handleConflictBanner();
+          return false;
+        }
+        if (!data.ok) {
+          setBanner('error', (data.errors || [t('cloneFailed')]).join(' '));
+          return false;
+        }
+        pendingStdioConfirm = null;
+        clearBanner();
+        return 'list';
+      });
     }
 
     async function submitImportLegacy(ls, confirmStdio = false) {
       if (!snapshot || disposed) return;
-      const payload = {
-        serverName: ls.name,
-        expectedSha256: snapshot.globalConfig.sha256,
-        confirmStdio,
-      };
-      const data = await service.importLegacyServer(payload);
-      if (disposed) return;
-      if (data.code === 'CONFIRMATION_REQUIRED') {
-        pendingStdioConfirm = {
-          kind: 'legacy',
-          payload,
-          preview: data.confirmationPreview || { name: ls.name, command: ls.spec?.command || '', args: ls.spec?.args || [] },
+      await runMutation('importFailed', async () => {
+        const payload = {
+          serverName: ls.name,
+          expectedSha256: snapshot.globalConfig.sha256,
+          confirmStdio,
         };
-        renderAll();
-        return;
-      }
-      if (data.code === 'CONFLICT') {
-        handleConflictBanner();
-        return;
-      }
-      if (!data.ok) {
-        setBanner('error', (data.errors || [t('importFailed')]).join(' '));
-        return;
-      }
-      pendingStdioConfirm = null;
-      clearBanner();
-      await loadSnapshot(false);
+        const data = await service.importLegacyServer(payload);
+        if (disposed) return false;
+        if (data.code === 'CONFIRMATION_REQUIRED') {
+          pendingStdioConfirm = {
+            kind: 'legacy',
+            payload,
+            preview: data.confirmationPreview || { name: ls.name, command: ls.spec?.command || '', args: ls.spec?.args || [] },
+          };
+          renderAll();
+          return false;
+        }
+        if (data.code === 'CONFLICT') {
+          handleConflictBanner();
+          return false;
+        }
+        if (!data.ok) {
+          setBanner('error', (data.errors || [t('importFailed')]).join(' '));
+          return false;
+        }
+        pendingStdioConfirm = null;
+        clearBanner();
+        return 'list';
+      });
     }
 
     async function submitRawJson(confirmStdio = false) {
       if (!snapshot || disposed) return;
-      const payload = {
-        rawText: rawDraft,
-        expectedSha256: snapshot.globalConfig.sha256,
-        confirmStdio,
-      };
-      const data = await service.saveRawJson(payload);
-      if (disposed) return;
-      if (data.code === 'CONFIRMATION_REQUIRED') {
-        pendingStdioConfirm = {
-          kind: 'raw',
-          payload,
-          preview: { name: t('rawStdioPreviewName'), command: t('rawStdioPreviewCmd'), args: [] },
+      await runMutation('rawSaveFailed', async () => {
+        const payload = {
+          rawText: rawDraft,
+          expectedSha256: snapshot.globalConfig.sha256,
+          confirmStdio,
         };
-        renderAll();
-        return;
-      }
-      if (data.code === 'CONFLICT') {
-        handleConflictBanner();
-        return;
-      }
-      if (!data.ok) {
-        setBanner('error', (data.errors || [t('rawSaveFailed')]).join(' '));
-        return;
-      }
-      pendingStdioConfirm = null;
-      clearBanner();
-      await loadSnapshot(true);
+        const data = await service.saveRawJson(payload);
+        if (disposed) return false;
+        if (data.code === 'CONFIRMATION_REQUIRED') {
+          pendingStdioConfirm = {
+            kind: 'raw',
+            payload,
+            preview: { name: t('rawStdioPreviewName'), command: t('rawStdioPreviewCmd'), args: [] },
+          };
+          renderAll();
+          return false;
+        }
+        if (data.code === 'CONFLICT') {
+          handleConflictBanner();
+          return false;
+        }
+        if (!data.ok) {
+          setBanner('error', (data.errors || [t('rawSaveFailed')]).join(' '));
+          return false;
+        }
+        pendingStdioConfirm = null;
+        clearBanner();
+        return 'raw';
+      });
     }
 
     async function confirmPendingStdio() {
@@ -2784,41 +2828,65 @@
 
     async function handleToggleDisabled(server) {
       if (!snapshot || disposed) return;
-      const data = await service.toggleServerDisabled({
-        name: server.name,
-        disabled: !server.disabled,
-        expectedSha256: snapshot.globalConfig.sha256,
+      await runMutation('toggleFailed', async () => {
+        const data = await service.toggleServerDisabled({
+          name: server.name,
+          disabled: !server.disabled,
+          expectedSha256: snapshot.globalConfig.sha256,
+        });
+        if (disposed) return false;
+        if (data.code === 'CONFLICT') {
+          handleConflictBanner();
+          return false;
+        }
+        if (!data.ok) {
+          setBanner('error', (data.errors || [t('toggleFailed')]).join(' '));
+          return false;
+        }
+        clearBanner();
+        return 'list';
       });
-      if (disposed) return;
-      if (data.code === 'CONFLICT') {
-        handleConflictBanner();
-        return;
-      }
-      if (!data.ok) {
-        setBanner('error', (data.errors || [t('toggleFailed')]).join(' '));
-        return;
-      }
-      clearBanner();
-      await loadSnapshot(false);
     }
 
     async function handleDelete(server) {
       if (!snapshot || disposed) return;
-      const data = await service.deleteServer({
-        name: server.name,
-        expectedSha256: snapshot.globalConfig.sha256,
+      await runMutation('deleteFailed', async () => {
+        const data = await service.deleteServer({
+          name: server.name,
+          expectedSha256: snapshot.globalConfig.sha256,
+        });
+        if (disposed) return false;
+        if (data.code === 'CONFLICT') {
+          handleConflictBanner();
+          return false;
+        }
+        if (!data.ok) {
+          setBanner('error', (data.errors || [t('deleteFailed')]).join(' '));
+          return false;
+        }
+        clearBanner();
+        return 'list';
       });
-      if (disposed) return;
-      if (data.code === 'CONFLICT') {
-        handleConflictBanner();
-        return;
-      }
-      if (!data.ok) {
-        setBanner('error', (data.errors || [t('deleteFailed')]).join(' '));
-        return;
-      }
-      clearBanner();
-      await loadSnapshot(false);
+    }
+
+    async function handleRestoreBackup() {
+      if (!snapshot || disposed) return;
+      await runMutation('restoreFailed', async () => {
+        const data = await service.restoreBackup({
+          expectedSha256: snapshot.globalConfig.sha256,
+        });
+        if (disposed) return false;
+        if (data.code === 'CONFLICT') {
+          handleConflictBanner();
+          return false;
+        }
+        if (!data.ok) {
+          setBanner('error', (data.errors || [t('restoreFailed')]).join(' '));
+          return false;
+        }
+        clearBanner();
+        return 'raw';
+      });
     }
 
     function renderStdioConfirmPanel() {
@@ -2881,17 +2949,7 @@
                       type: 'button',
                       className: 'mcp-btn mcp-btn-sm',
                       dataset: { testid: 'btn-restore-backup' },
-                      onClick: async () => {
-                        const data = await service.restoreBackup({
-                          expectedSha256: snapshot.globalConfig.sha256,
-                        });
-                        if (data.code === 'CONFLICT') handleConflictBanner();
-                        else if (!data.ok) setBanner('error', (data.errors || [t('restoreFailed')]).join(' '));
-                        else {
-                          clearBanner();
-                          await loadSnapshot(true);
-                        }
-                      },
+                      onClick: () => void handleRestoreBackup(),
                     },
                     t('restoreBackup')
                   )
@@ -5009,6 +5067,9 @@
       lastTriggerBtn = triggerBtn || btnEl || null;
 
       if (activeModalHandle && activeModalHandle.element && activeModalHandle.element.isConnected) {
+        if (typeof activeModalHandle.reposition === 'function') {
+          activeModalHandle.reposition('customizations-page');
+        }
         renderModalContent();
         syncLabels();
         return;
@@ -5022,6 +5083,7 @@
 
       const modalHandle = runtime.openModal(SLOT_IDS.CUSTOMIZATIONS_OVERLAY, {
         shadow: true,
+        surface: 'customizations-page',
         onClose: handleModalClosed,
       });
       if (!modalHandle || !modalHandle.bodyEl) return;
@@ -5031,15 +5093,25 @@
       if (dlg) {
         dlg.setAttribute(CUSTOMIZATIONS_OVERLAY_ATTR, 'true');
         dlg.setAttribute('aria-label', getButtonLabel());
-        // Centered popup modal window: preserve host-managed titlebar safe inset (`top`/`marginTop`), `margin: auto`, and `zIndex`
+        // Centered popup modal window:
+        // - On antigravity-addons v2.4.0+, preserve host-managed surface insets (`left`/`top`/`right`/`bottom`, `margin: auto`)
+        //   and dynamic resize-tracked `maxWidth`/`maxHeight` when `data-addon-host-modal-surface` is active.
+        // - On legacy Host v2.3.0, preserve titlebar safe inset (`marginTop`/`top`) and viewport-clamped centering.
         if (dlg.style) {
-          dlg.style.width = 'min(820px, calc(100vw - 48px))';
-          dlg.style.maxWidth = 'calc(100vw - 48px)';
-          dlg.style.height = 'min(660px, calc(100vh - 88px))';
-          dlg.style.maxHeight = 'calc(100vh - 88px)';
-          if (dlg.style.margin !== 'auto') {
-            dlg.style.marginLeft = 'auto';
-            dlg.style.marginRight = 'auto';
+          const hostManagedSurface = Boolean(dlg.getAttribute?.('data-addon-host-modal-surface'));
+          dlg.style.boxSizing = 'border-box';
+          if (hostManagedSurface) {
+            dlg.style.width = '820px';
+            dlg.style.height = '660px';
+          } else {
+            dlg.style.width = 'min(820px, calc(100vw - 48px))';
+            dlg.style.maxWidth = 'calc(100vw - 48px)';
+            dlg.style.height = 'min(660px, calc(100vh - 88px))';
+            dlg.style.maxHeight = 'calc(100vh - 88px)';
+            if (dlg.style.margin !== 'auto') {
+              dlg.style.marginLeft = 'auto';
+              dlg.style.marginRight = 'auto';
+            }
           }
           dlg.style.padding = '0';
           dlg.style.border = '1px solid rgba(128, 128, 128, 0.28)';

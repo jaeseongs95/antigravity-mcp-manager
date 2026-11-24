@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "pluginId": "antigravity-mcp-manager",
   "displayName": "Antigravity MCP Manager",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "trustLevel": "trusted",
   "compatibility": {
     "hostProfile": "antigravity-desktop",

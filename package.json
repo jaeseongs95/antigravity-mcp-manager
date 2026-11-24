@@ -1,6 +1,6 @@
 {
   "name": "antigravity-mcp-manager",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "type": "module",
   "description": "Vendor-independent MCP Server Manager with Antigravity 2.0 Plugin and AddonManifest.v2 native host integration (Settings sidebar & Customizations popup).",
   "license": "MIT",
