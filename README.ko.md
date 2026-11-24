@@ -1,43 +1,52 @@
-# Antigravity MCP Manager (`v2.1.0`)
+# Antigravity MCP Manager (`v3.0.0`)
 
 [English Documentation (README.md)](./README.md)
 
-**Antigravity 2.0 네이티브 데스크톱 앱**을 위한 벤더 독립형 MCP 서버 관리자입니다. 공식 **Plugin + `AUX_PANE` UI Sidecar** 구조와 함께, 검증된 `v2.0.0` 코어·로컬 보안 서버를 그대로 재사용하는 **Settings 좌측 사이드바(`Browser` 아래) `MCP Manager` 직접 메뉴 연동**을 제공합니다.
+**Antigravity 2.0 네이티브 데스크톱 앱**을 위한 벤더 독립형 MCP 서버 관리자입니다. 공용 네이티브 애드온 호스트([`antigravity-native-addon-host`](https://github.com/jaeseongs95/antigravity-native-addon-host) `v2.3.0+`)의 **`AddonManifest.v2`** (`trustLevel: "trusted"`, `capabilities: ["renderer"]`, Option A **Named-Scope Config Bridge**) 기반으로 동작하며, 별도의 `AUX_PANE` 사이드카 없이 설정 화면과 Customizations 팝업에서 즉시 전체 CRUD를 수행합니다.
 
-> **안전 분리 구조**: `statusbar_autoinject.js` 편승, React/Angular 내부 상태 스크래핑, LLM 호출형 설정 쓰기 도구를 일절 사용하지 않습니다. Settings 사이드바 연동 시에도 공식 `@electron/asar` 기반 독립 마커와 `.orig` 원본 백업 보존으로 안전하게 설치·제거할 수 있습니다. (웹 원격 제어 지원은 별도 프로젝트 `antigravity-remote-plugin`으로 분리되었습니다.)
+> **`app.asar` 직접 패치 0건 · `mainHook` 미사용 · `AUX_PANE` 사이드카 제거 · 외부 런타임 의존성 0개**: `antigravity-mcp-manager`는 `app.asar`를 직접 패치·백업하지 않으며 `@electron/asar` 의존성 없이 동작합니다. 모든 네이티브 UI 및 MCP 설정 관리는 `antigravity-native-addon-host` `v2.3.0+`의 Isolated World `998` Shadow DOM과 Option A **Named-Scope Config Bridge**(`trustLevel: "trusted"` + `trust-policy.json` SHA-256 피닝)로만 수행합니다.
 
 ## 주요 기능
-- **Settings 좌측 사이드바 통합 및 내장 `EN | 한국어` 전환**: Antigravity Settings의 **Browser**(한국어 **브라우저**) 바로 아래에 0px 레이아웃 시프트로 자연스럽게 붙으며, 우상단 `X` 닫기 버튼과 호스트 폰트/테마를 유지하고 UI 내장 한영 전환(재시작 후에도 유지)을 제공합니다.
-- **단일 정본 쓰기 경계**: `~/.gemini/config/mcp_config.json`만 원자적으로 읽기/쓰기합니다 (필수 `baseSha256` CAS `409 Conflict` 감지, 잠금, `plugins/` 외부의 사설 백업 `~/.gemini/config/.mcp-manager-backups/`·복원, 상위 경로 symlink/junction 탈출 차단, 동일 파일시스템 `fsync`+`rename`).
-- **플러그인 MCP 읽기 전용 현황**: `~/.gemini/config/plugins/*/mcp_config.json` 및 워크스페이스 `.agents/plugins/` 서버를 플러그인 비활성화 상태·이름 충돌 경고와 함께 표시하며, 마스킹된 비밀값 유실 없이 서버 측에서 **전역으로 복사(Clone)**를 지원합니다.
-- **읽기 전용 실시간 상태 조회**: 루프백 로컬 Language Server(`GetMcpServerStates`, `GetAllPlugins`)에서 연결 상태·도구 수·레드액션된 오류 요약을 표시합니다.
-- **선언적 스마트 붙여넣기**: `mcpServers` JSON 조각 및 Streamable HTTP URL 파싱, 레거시 `serverUrl` → `url` 정규화, 레거시 `/sse` 감지 시 편집 가능한 `mcp-remote` Stdio 템플릿 미리보기(원시 셸 문자열 실행 차단).
-- **보안 및 깨진 JSON 복구**: 위험 환경변수(`NODE_OPTIONS`, `LD_PRELOAD` 등) 및 비-루프백 평문 `http://` 인증 헤더·민감 쿼리 토큰 차단, Stdio 저장 전(Raw JSON 저장 포함) 명시적 확인, 비밀 입력 기본 마스킹, 파손 JSON fail-closed Raw 복구 및 직전 정상 백업 복원.
+- **Settings 좌측 사이드바 및 Customizations 중앙 팝업 네이티브 Shadow DOM CRUD (`AddonManifest.v2`, World `998`)**:
+  - 별도 **플러그인 > MCP Manager** (`AUX_PANE`) 사이드카를 제거하고, **Settings → MCP Manager**와 **Customizations → MCP Servers → MCP 매니저** 중앙 팝업 모달 내부에서 바로 전체 MCP 서버 조회·추가·수정·비활성화·삭제·복제·Raw JSON 복구를 수행합니다.
+  - **Settings** 좌측 사이드바 **Browser**(한국어 **브라우저**) 바로 아래에 0px 레이아웃 시프트로 **MCP Manager** 메뉴를 마운트하고(`settings-nav`는 네이티브 Tailwind 상속을 위해 `shadow: false`), 우측 `pane`은 Shadow DOM Option B2로 격리하며 우상단 `✕` 닫기 버튼을 보존합니다.
+  - **Customizations → MCP Servers** 헤더 우측 아이콘(`[]`, `+`) 바로 앞에 Shadow DOM **MCP Manager**(`MCP 매니저`) 버튼을 배치해 클릭 시 호스트 `addonHost.openModal` 기반 중앙 `<dialog>.showModal()` 팝업(`PortalArbiter` 연동, 타이틀바 안전 `marginTop`·`zIndex` 보존, `✕`, IME 안전 캡처 단계 `Esc` 포커스 복원)을 엽니다.
+  - `antigravity-native-addon-host` `v2.3.0+` **Option A Named-Scope Config Bridge**의 최소 권한 3개 스코프만 선언·사용합니다:
+    - `antigravity:mcp-config` (`rw`): `~/.gemini/config/mcp_config.json` (단일 정본 쓰기 대상)
+    - `antigravity:plugin-mcp-configs` (`ro`): 플러그인 MCP 읽기 전용 현황
+    - `antigravity:mcp-config-legacy` (`ro`): 레거시 설정 1회 가져오기 미리보기(읽기 전용)
+  - 플러그인 비활성화 또는 등록 해제 시 `dispose()`로 모든 슬롯·모달·스타일·리스너를 즉시 정리합니다.
+- **호스트 언어 자동 감지 및 `EN | 한국어` 전환**: 최초 진입 시 Antigravity 호스트 UI 언어(한국어/영어)를 자동 감지하며, 사용자가 직접 전환한 언어는 `storageNamespace` 키(`antigravity-mcp-manager:lang`)에 저장됩니다(기존 v2.1의 `agy-mcp-manager-lang`은 최초 실행 시 1회 자동 이전).
+- **단일 정본 쓰기 경계 및 디스크 원본 SHA-256 CAS**: `~/.gemini/config/mcp_config.json`만 원자적으로 읽기/쓰기하며, CRLF·비정규 들여쓰기 파일에서도 호스트가 반환한 디스크 원본 `sha256`을 그대로 보존해 `ERR_CONFIG_CAS_CONFLICT` 없이 안전하게 갱신합니다(잠금, `plugins/` 외부 사설 백업, 상위·백업 경로 심볼릭 링크 차단 포함).
+- **플러그인 MCP 읽기 전용 현황 및 선언적 스마트 붙여넣기**: 플러그인 서버 현황, 충돌 경고, 비밀값 보존 **전역으로 복제(Clone)**, `mcpServers` JSON / Streamable HTTP URL 파싱, `serverUrl` → `url` 정규화, `/sse` 감지 시 `mcp-remote` Stdio 미리보기, 위험 환경변수·평문 자격증명 차단, Stdio 명시 확인, 파손 JSON fail-closed Raw JSON 복구를 지원합니다.
 
-## 설치 및 사용 (Antigravity 2.0 네이티브 앱)
-1. 본 저장소를 `~/.gemini/config/plugins/antigravity-mcp-manager/`에 배치하고 `npm ci --omit=dev`를 실행합니다.
-2. **Settings 좌측 사이드바 직접 메뉴 활성화 (권장 UX)**:
-   - 공식 `@electron/asar`를 사용해 독립 1줄 로더 훅을 설치합니다(원본 `app.asar.*.orig` 백업 보존, `statusbar_autoinject.js` 미접촉):
-     ```bash
-     npm run install:settings
-     ```
-   - Antigravity 앱을 재시작한 뒤 **Settings → MCP Manager (`Browser` 바로 아래)** 에서 바로 사용할 수 있습니다.
-   - 제거는 `npm run uninstall:settings`로 언제든 깔끔하게 되돌릴 수 있습니다.
-3. **공식 플러그인 관리**: Antigravity **Customizations** 화면에서 활성화/비활성화할 수 있습니다.
+## 설치, 등록 및 신뢰 승인 (`antigravity-native-addon-host` v2.3.0+)
+1. [`antigravity-native-addon-host`](https://github.com/jaeseongs95/antigravity-native-addon-host) **`v2.3.0+`**가 Antigravity Desktop에 설치·업그레이드되어 있어야 합니다(`addon-host --install` 또는 `addon-host --upgrade`).
+2. Antigravity Desktop을 종료한 뒤 본 저장소를 `~/.gemini/config/plugins/antigravity-mcp-manager/`에 배치합니다(`.git`, `node_modules` 제외 — 외부 런타임 의존성 없음).
+3. 공용 애드온 호스트로 매니페스트 검증 → 등록 → SHA-256 신뢰 승인(`trust approve`) → 상태 진단을 순서대로 실행합니다:
+   ```bash
+   addon-host --validate ~/.gemini/config/plugins/antigravity-mcp-manager/addon-manifest.json
+   addon-host --register ~/.gemini/config/plugins/antigravity-mcp-manager/addon-manifest.json
+   addon-host trust approve antigravity-mcp-manager
+   addon-host --doctor
+   ```
+   > **안내**: 업데이트나 재빌드로 `src/adapters/antigravity/addon-renderer.js`가 변경되면 `~/.gemini/antigravity/trust-policy.json`의 SHA-256 피닝을 갱신하기 위해 `addon-host trust approve antigravity-mcp-manager`를 다시 실행해야 합니다.
+4. Antigravity Desktop을 시작한 뒤 **Settings → MCP Manager** 또는 **Customizations → MCP Servers → MCP 매니저**에서 사용합니다.
+5. 신뢰 해제 및 등록 해제:
+   ```bash
+   addon-host trust revoke antigravity-mcp-manager
+   addon-host --unregister antigravity-mcp-manager
+   ```
 
-## v1.x 사용자 정리 및 전환(Migration)
-기존 `v1.x`(`mcp_manager_autoinject.js` 주입 방식)가 설치되어 있었다면 `v2.0.0` 활성화 전에 아래 정리 절차를 먼저 수행합니다.
-1. `v1.x` 체크아웃이 남아 있다면 `node scripts/install.js --uninstall`을 실행합니다.
-2. 또는 `~/.gemini/antigravity/mcp_manager_autoinject.js`를 삭제하고, `~/.gemini/antigravity/statusbar_autoinject.js` 및 `~/.gemini/antigravity/app_storage.json`에 남아 있는 `MCP_MANAGER` 주입 블록을 제거합니다.
-3. 기존 `~/.gemini/antigravity/mcp_config.json`은 자동으로 수정되지 않습니다. v2.0.0 UI의 **Legacy Import** 미리보기로 필요한 서버만 `~/.gemini/config/mcp_config.json`에 복사할 수 있습니다.
+## v2.x / v1 호스트 사용자 전환 안내
+`v3.0.0`에서는 `sidecars/`(`AUX_PANE`), `scripts/install-settings-menu.mjs`, `scripts/electron-hook.cjs`, `@electron/asar` 의존성이 완전히 제거되었습니다.
+1. [`antigravity-native-addon-host`](https://github.com/jaeseongs95/antigravity-native-addon-host)를 **`v2.3.0+`**로 업그레이드합니다(`addon-host --upgrade`, 이전 `v2.1.x`의 직접 `app.asar` 패치가 남아 있다면 `addon-host --install --replace-legacy` 사용).
+2. Antigravity Desktop을 종료하고 `~/.gemini/config/plugins/antigravity-mcp-manager/`를 `v3.0.0`으로 미러링(기존 `node_modules/`, `sidecars/` 제거)한 뒤 `addon-host --register` 및 `addon-host trust approve antigravity-mcp-manager`를 실행합니다.
+3. 기존 `agy-mcp-manager-lang` 언어 설정은 `antigravity-mcp-manager:lang`으로 자동 이전됩니다.
 
-## 롤백 절차 (`v2.0.0` → `v1.4.18`)
-1. Antigravity **Customizations** 또는 `agy plugin disable antigravity-mcp-manager`로 플러그인을 비활성화한 뒤 `~/.gemini/config/plugins/antigravity-mcp-manager/` 폴더를 삭제합니다.
-2. `~/.gemini/config/mcp_config.json`을 직전 정상 상태로 되돌려야 하면 `~/.gemini/config/.mcp-manager-backups/mcp_config.last-good.json` 파일을 복사해 복원합니다.
-3. 구버전 `v1.4.18`이 꼭 필요한 경우 별도 경로에 `v1.4.18` 태그를 체크아웃하여 해당 버전의 README 절차에 따라 설치합니다.
-
-## 시험 실행
+## 개발 및 시험 실행
 ```bash
+npm run build:renderer
 npm test
 ```
-Node 22+ 환경에서 코어 순수성·FS 쓰기 감옥/symlink·junction 방어/CAS·Sidecar 및 Desktop HTTP 보안·`@electron/asar` 설치/복원·한영 `I18N` 키 패리티·실 Headless Chromium/Edge CDP UI 안전성 테스트 전체 26건(`NMCP-TC-001`~`NMCP-TC-026`, `NMCP-TC-015B`, `NMCP-TC-020B`, `NMCP-TC-020C`)을 실행합니다.
+Node 22+ 환경에서 코어 순수성·`AddonManifest.v2` 계약/SOLID 조립 일관성·Named-Scope Config Bridge(`status: 'ok'` 시 `rawText: null` + CRLF 디스크 원본 `sha256` CAS + `corrupt` 복구)·FS 쓰기 감옥/CAS·HTTP 보안·한영 `I18N` 패리티·실 Headless Chromium/Edge CDP E2E 테스트 전체 30건(`NMCP-TC-001`~`NMCP-TC-032`)을 실행합니다.

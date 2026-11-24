@@ -1,9 +1,10 @@
 :root {
   --bg: var(--background, #0a0a0c);
   --fg: var(--foreground, #e5e7eb);
-  --muted: var(--muted-foreground, #9ca3af);
+  /* Explicit WCAG AA high-contrast muted tone: avoid inheriting incompatible host Tailwind HSL-triplet --muted-foreground */
+  --muted: #9ca3af;
   --surface: var(--card, #141518);
-  --border-color: var(--border, rgba(255, 255, 255, 0.09));
+  --border-color: var(--border, rgba(255, 255, 255, 0.12));
   --accent: var(--primary, #3b82f6);
   --accent-fg: var(--primary-foreground, #ffffff);
   --danger: #ef4444;
@@ -163,7 +164,7 @@ body.host-settings-mode .server-name {
 
 body.host-settings-mode .server-meta {
   font-size: 11.5px;
-  color: rgba(255, 255, 255, 0.48);
+  color: rgba(229, 231, 235, 0.72);
   overflow: hidden;
   text-overflow: ellipsis;
 }
