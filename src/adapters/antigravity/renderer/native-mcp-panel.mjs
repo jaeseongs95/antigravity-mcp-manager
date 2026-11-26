@@ -184,6 +184,7 @@ export function createNativeMcpPanel({
   service,
   mode = null,
   surface = 'settings',
+  inline = false,
   onLangChange = () => {},
   onSnapshotChange = () => {},
   doc = document,
@@ -323,6 +324,7 @@ export function createNativeMcpPanel({
     [NATIVE_PANEL_ATTR]: 'true',
     'data-agy-mcp-surface': surface,
     'data-agy-mcp-mode': panelMode,
+    ...(inline ? { 'data-agy-mcp-inline': 'true' } : {}),
   });
   const shell = el('div', { className: 'mcp-shell' });
   const headerEl = el('header', { className: 'mcp-header' });

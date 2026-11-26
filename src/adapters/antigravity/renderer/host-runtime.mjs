@@ -18,8 +18,8 @@ export const LANG_STORAGE_KEY = 'lang';
 
 export function normalizeLangCode(raw) {
   const val = String(raw || '').trim().toLowerCase();
-  if (val === 'ko' || val.startsWith('ko-')) return 'ko';
-  if (val === 'en' || val.startsWith('en-')) return 'en';
+  if (val === 'ko' || val.startsWith('ko-') || val.startsWith('ko_')) return 'ko';
+  if (val === 'en' || val.startsWith('en-') || val.startsWith('en_')) return 'en';
   return '';
 }
 
@@ -55,7 +55,7 @@ export function createHostRuntime({ ctx, doc = typeof document !== 'undefined' ?
   const v3 = assertAddonContextV3(ctx);
   const pluginId = String(v3.meta.pluginId || 'antigravity-mcp-manager');
   const displayName = String(v3.meta.displayName || 'Antigravity MCP Manager');
-  const version = String(v3.meta.version || '4.0.0');
+  const version = String(v3.meta.version || '4.0.1');
   const trustLevel = String(v3.meta.trustLevel || 'restricted');
   const surface = v3.env.surface === 'remote-web' ? 'remote-web' : 'desktop';
 
@@ -82,8 +82,7 @@ export function createHostRuntime({ ctx, doc = typeof document !== 'undefined' ?
   async function loadSavedLang() {
     try {
       const stored = await v3.storage.get(LANG_STORAGE_KEY);
-      const norm = normalizeLangCode(stored);
-      if (norm) savedLang = norm;
+      savedLang = normalizeLangCode(stored);
     } catch {
       // Ignore storage read errors; fall back to host locale
     }
@@ -157,8 +156,7 @@ export function createHostRuntime({ ctx, doc = typeof document !== 'undefined' ?
     if (typeof cb !== 'function') return () => {};
     return v3.storage.onDidChange((ev) => {
       if (ev && ev.key === LANG_STORAGE_KEY) {
-        const norm = normalizeLangCode(ev.newValue);
-        if (norm) savedLang = norm;
+        savedLang = normalizeLangCode(ev.newValue);
       }
       cb(ev);
     });

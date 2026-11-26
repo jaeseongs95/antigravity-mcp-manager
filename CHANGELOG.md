@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.0.1 — `antigravity-addons` `v3.0.3` Inline Desktop Settings Alignment, Surface-Scoped Status Item & Locale Default
+- **Surface-Scoped `registerStatusItem()` (`src/adapters/antigravity/renderer/mcp-v3-shell.mjs`)**:
+  - Stopped calling `ctx.ui.registerStatusItem()` on Desktop (`ctx.env.surface === 'desktop'`) so native Antigravity Desktop uses the inline Settings page (`ctx.ui.registerSettingsPage()`) exclusively without rendering an unwanted MCP button even when `host.statusbar` v3 service is registered.
+  - Preserved `ctx.ui.registerStatusItem()` on Remote Web (`ctx.env.surface === 'remote-web'`) as the bottom-right quick entry point above the `Addons` drawer button.
+- **Inline Settings Pane Layout & Locale Alignment**:
+  - Detected host v3.0.3 inline Settings mount (`handle.kind === 'inline-settings'`) in `mcp-v3-shell.mjs` / `native-mcp-panel.mjs` (`data-agy-mcp-inline="true"`) and updated `addon-styles.mjs` to remove nested scrollbars (`height: auto; overflow: visible`) and modal-centered margins (`margin: 0; padding: 0 0 12px; max-width: 860px`) so the panel aligns cleanly flush-left inside `.ag-inline-page--canvas`.
+  - Updated `host-runtime.mjs` (`normalizeLangCode`, `loadSavedLang`, `onStorageChange`) so first-run language defaults strictly to `ctx.i18n.getLocale()` (`ko`/`ko-KR`/`ko_KR` → `ko`, otherwise `en`), while any saved user preference in `ctx.storage` takes precedence and clearing storage reverts cleanly to host locale.
+  - Bumped `addon-manifest.json`, `package.json`, and `plugin.json` to `4.0.1` (`minHostVersion: "3.0.3"`).
+- **Tests**:
+  - Added standalone unit suite `NMCP-TC-039` (`test/adapters/v40-addon-v3-sdk-parity.test.mjs`) verifying Desktop `registerStatusItem` non-call, inline `registerSettingsPage` mount + `onClose` disposal, Remote Web `registerStatusItem` registration, and `ctx.i18n.getLocale()` default vs saved preference precedence, and synced `NMCP-TC-021`, `NMCP-TC-022`, `NMCP-TC-024`, `NMCP-TC-027/033`, `NMCP-TC-036`, and `NMCP-TC-037`.
+
 ## 4.0.0 — `AddonManifest.v3` + `AddonContextV3` API-First Architecture (`antigravity-addons` `v3.0.0+`)
 - **BREAKING — Migrated to `AddonManifest.v3` (`schemaVersion: 3`, `apiVersion: 3`, `minHostVersion: "3.0.0"`) & `AddonContextV3`**:
   - Replaced legacy v2 manifest (`uiSlots`, top-level `settingsBridge`, top-level `configBridge`) with minimal-privilege `permissions` declaring ONLY `ui`, `storage` (`262144` bytes), and `configBridge.scopes` (`antigravity:mcp-config` `rw`, `antigravity:plugin-mcp-configs` `ro`, `antigravity:mcp-config-legacy` `ro`). Strictly omitted `net`, `dom`, `events`, and `services` (`ctx.net === undefined`, `ctx.dom === undefined`).

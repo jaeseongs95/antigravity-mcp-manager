@@ -341,6 +341,7 @@ export function createMcpV3Shell({
       service,
       mode,
       surface: panelSurface,
+      inline: overlayHandle?.kind === 'inline-settings',
       doc,
       win,
       onLangChange: () => syncAllUi(),
@@ -507,16 +508,21 @@ export function createMcpV3Shell({
     if (disposed) return;
     const d = dict();
 
-    statusItemHandle = runtime.registerStatusItem({
-      id: V3_IDS.STATUS_ITEM,
-      label: d.statusLabel,
-      tooltip: d.statusTooltip(mode, 0),
-      align: 'right',
-      priority: 60,
-      onClick: (ev) => {
-        openQuickPanel(ev?.anchorEl || null);
-      },
-    });
+    // Host v3.0.3 contract:
+    // - Desktop renders inline inside Settings via registerSettingsPage() only (no status item).
+    // - Remote Web registers registerStatusItem() for the bottom-right entry point.
+    if (surface === 'remote-web') {
+      statusItemHandle = runtime.registerStatusItem({
+        id: V3_IDS.STATUS_ITEM,
+        label: d.statusLabel,
+        tooltip: d.statusTooltip(mode, 0),
+        align: 'right',
+        priority: 60,
+        onClick: (ev) => {
+          openQuickPanel(ev?.anchorEl || null);
+        },
+      });
+    }
 
     settingsPageHandle = runtime.registerSettingsPage({
       id: V3_IDS.SETTINGS_PAGE,

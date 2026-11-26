@@ -1809,8 +1809,8 @@
   const LANG_STORAGE_KEY = 'lang';
   function normalizeLangCode(raw) {
     const val = String(raw || '').trim().toLowerCase();
-    if (val === 'ko' || val.startsWith('ko-')) return 'ko';
-    if (val === 'en' || val.startsWith('en-')) return 'en';
+    if (val === 'ko' || val.startsWith('ko-') || val.startsWith('ko_')) return 'ko';
+    if (val === 'en' || val.startsWith('en-') || val.startsWith('en_')) return 'en';
     return '';
   }
   function assertAddonContextV3(ctx) {
@@ -1844,7 +1844,7 @@
     const v3 = assertAddonContextV3(ctx);
     const pluginId = String(v3.meta.pluginId || 'antigravity-mcp-manager');
     const displayName = String(v3.meta.displayName || 'Antigravity MCP Manager');
-    const version = String(v3.meta.version || '4.0.0');
+    const version = String(v3.meta.version || '4.0.1');
     const trustLevel = String(v3.meta.trustLevel || 'restricted');
     const surface = v3.env.surface === 'remote-web' ? 'remote-web' : 'desktop';
 
@@ -1871,8 +1871,7 @@
     async function loadSavedLang() {
       try {
         const stored = await v3.storage.get(LANG_STORAGE_KEY);
-        const norm = normalizeLangCode(stored);
-        if (norm) savedLang = norm;
+        savedLang = normalizeLangCode(stored);
       } catch {
         // Ignore storage read errors; fall back to host locale
       }
@@ -1946,8 +1945,7 @@
       if (typeof cb !== 'function') return () => {};
       return v3.storage.onDidChange((ev) => {
         if (ev && ev.key === LANG_STORAGE_KEY) {
-          const norm = normalizeLangCode(ev.newValue);
-          if (norm) savedLang = norm;
+          savedLang = normalizeLangCode(ev.newValue);
         }
         cb(ev);
       });
@@ -2180,6 +2178,7 @@
     service,
     mode = null,
     surface = 'settings',
+    inline = false,
     onLangChange = () => {},
     onSnapshotChange = () => {},
     doc = document,
@@ -2319,6 +2318,7 @@
       [NATIVE_PANEL_ATTR]: 'true',
       'data-agy-mcp-surface': surface,
       'data-agy-mcp-mode': panelMode,
+      ...(inline ? { 'data-agy-mcp-inline': 'true' } : {}),
     });
     const shell = el('div', { className: 'mcp-shell' });
     const headerEl = el('header', { className: 'mcp-header' });
@@ -3746,6 +3746,15 @@
       '  flex-direction: column;',
       '  gap: 12px;',
       '}',
+      '[data-agy-mcp-native-panel="true"][data-agy-mcp-inline="true"] {',
+      '  height: auto;',
+      '  overflow: visible;',
+      '}',
+      '[data-agy-mcp-native-panel="true"][data-agy-mcp-inline="true"] .mcp-shell {',
+      '  max-width: 860px;',
+      '  margin: 0;',
+      '  padding: 0 0 12px;',
+      '}',
       '.mcp-header {',
       '  display: flex;',
       '  align-items: center;',
@@ -4431,6 +4440,7 @@
         service,
         mode,
         surface: panelSurface,
+        inline: overlayHandle?.kind === 'inline-settings',
         doc,
         win,
         onLangChange: () => syncAllUi(),
@@ -4597,16 +4607,21 @@
       if (disposed) return;
       const d = dict();
 
-      statusItemHandle = runtime.registerStatusItem({
-        id: V3_IDS.STATUS_ITEM,
-        label: d.statusLabel,
-        tooltip: d.statusTooltip(mode, 0),
-        align: 'right',
-        priority: 60,
-        onClick: (ev) => {
-          openQuickPanel(ev?.anchorEl || null);
-        },
-      });
+      // Host v3.0.3 contract:
+      // - Desktop renders inline inside Settings via registerSettingsPage() only (no status item).
+      // - Remote Web registers registerStatusItem() for the bottom-right entry point.
+      if (surface === 'remote-web') {
+        statusItemHandle = runtime.registerStatusItem({
+          id: V3_IDS.STATUS_ITEM,
+          label: d.statusLabel,
+          tooltip: d.statusTooltip(mode, 0),
+          align: 'right',
+          priority: 60,
+          onClick: (ev) => {
+            openQuickPanel(ev?.anchorEl || null);
+          },
+        });
+      }
 
       settingsPageHandle = runtime.registerSettingsPage({
         id: V3_IDS.SETTINGS_PAGE,

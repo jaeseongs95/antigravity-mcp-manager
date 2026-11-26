@@ -32,14 +32,14 @@ test('NMCP-TC-022 (Contract & SOLID Parity): addon-manifest.json satisfies Addon
   assert.equal(manifest.schemaVersion, 3);
   assert.equal(manifest.apiVersion, 3);
   assert.equal(manifest.pluginId, 'antigravity-mcp-manager');
-  assert.equal(manifest.version, '4.0.0');
+  assert.equal(manifest.version, '4.0.1');
   assert.equal(manifest.version, pkg.version);
   assert.equal(pluginJson.version, pkg.version);
   assert.equal(manifest.trustLevel, 'trusted');
   assert.deepEqual(manifest.compatibility, {
     surfaces: ['desktop', 'remote-web'],
     hostProfiles: ['antigravity-desktop', 'antigravity-remote-web'],
-    minHostVersion: '3.0.0',
+    minHostVersion: '3.0.3',
   });
   assert.deepEqual(manifest.capabilities, ['renderer']);
   assert.equal(manifest.entry.rendererScript, 'src/adapters/antigravity/addon-renderer.js');
@@ -196,6 +196,19 @@ test('NMCP-TC-024 (Unit): host-runtime enforces AddonContextV3 contract, branche
   assert.equal(rtNoBridge.writeSavedLang('en'), true);
   assert.equal(kv.get(LANG_STORAGE_KEY), 'en');
   assert.equal(rtNoBridge.writeSavedLang('fr'), false);
+
+  // 2b. Korean locale defaults (ko / ko-KR / ko_KR) when storage is empty, overridden by saved preference
+  kv.clear();
+  const rtKoDefault = createHostRuntime({
+    ctx: makeCtx({ i18n: { getLocale: () => 'ko_KR', t: (k) => k } }),
+    doc: null,
+  });
+  assert.equal(rtKoDefault.resolveEffectiveLang(), 'ko', 'Korean locale must default to ko on first run');
+  assert.equal(await rtKoDefault.loadSavedLang(), 'ko');
+  kv.set(LANG_STORAGE_KEY, 'en');
+  assert.equal(await rtKoDefault.loadSavedLang(), 'en', 'Saved user preference must override host locale');
+  kv.delete(LANG_STORAGE_KEY);
+  assert.equal(await rtKoDefault.loadSavedLang(), 'ko', 'Clearing saved preference must revert to host locale');
 
   // 3. Desktop with hasConfigBridge: true + rw antigravity:mcp-config -> host-bridge mode
   const rtBridge = createHostRuntime({

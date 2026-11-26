@@ -7,7 +7,8 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 import { RENDERER_OUTPUT_PATH } from '../../scripts/build-renderer.mjs';
-import { V3_IDS } from '../../src/adapters/antigravity/renderer/mcp-v3-shell.mjs';
+import { createHostRuntime, LANG_STORAGE_KEY } from '../../src/adapters/antigravity/renderer/host-runtime.mjs';
+import { V3_IDS, createMcpV3Shell } from '../../src/adapters/antigravity/renderer/mcp-v3-shell.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '../..');
@@ -97,16 +98,15 @@ test('NMCP-TC-037 (@antigravity-addons/sdk Desktop Parity): real createTestHost(
   assert.ok(ctx.configBridge && typeof ctx.configBridge.read === 'function');
   assert.equal(ctx.configBridge.scopes.length, 3);
 
-  // 2. Tier 1: Status Item, Settings Page, and Commands registered
+  // 2. Tier 1: Desktop uses Settings Page + Commands ONLY (no Status Item on Desktop per host v3.0.3 contract)
   const statusItems = host.getStatusItems();
-  assert.equal(statusItems.length, 1);
-  assert.equal(statusItems[0].id, V3_IDS.STATUS_ITEM);
-  assert.equal(statusItems[0].badge, '1');
+  assert.equal(statusItems.length, 0, 'Desktop surface must not register a status item');
 
   const settingsPages = host.getSettingsPages();
   assert.equal(settingsPages.length, 1);
   assert.equal(settingsPages[0].id, V3_IDS.SETTINGS_PAGE);
   assert.equal(settingsPages[0].kind, 'canvas');
+  assert.equal(settingsPages[0].title, 'MCP 매니저', 'Korean locale must set Korean Settings Page title on first run');
 
   const commands = ctx.ui.listCommands().map((c) => c.actionId);
   assert.ok(commands.includes(V3_IDS.CMD_OPEN_MANAGER));
@@ -155,7 +155,7 @@ test('NMCP-TC-037 (@antigravity-addons/sdk Desktop Parity): real createTestHost(
 
   const afterRead = await ctx.configBridge.read('antigravity:mcp-config');
   assert.equal(afterRead.data.mcpServers['sdk-desktop-srv'].url, 'https://sdk-desktop.example/mcp');
-  assert.equal(host.getStatusItems()[0].badge, '2', 'Status item badge must update live after CRUD save');
+  assert.equal(host.getStatusItems().length, 0, 'Desktop must remain free of status items after CRUD save');
 
   // 5. Clean disposal via host.disposePlugin()
   assert.equal(ctx.lifecycle.signal.aborted, false);
@@ -239,4 +239,258 @@ test('NMCP-TC-038 (@antigravity-addons/sdk Remote Web Parity): real createTestHo
   assert.equal(ctx.lifecycle.signal.aborted, true);
   assert.equal(host.getStatusItems().length, 0);
   assert.equal(host.getSettingsPages().length, 0);
+});
+
+function createMinimalMockDoc() {
+  const makeNode = (tag) => {
+    const attrs = new Map();
+    const listeners = new Map();
+    const childNodes = [];
+    let textContentValue = '';
+    const el = {
+      tagName: String(tag || 'div').toUpperCase(),
+      nodeType: 1,
+      parentNode: null,
+      childNodes,
+      style: {},
+      className: '',
+      value: '',
+      checked: false,
+      disabled: false,
+      get firstChild() {
+        return childNodes[0] || null;
+      },
+      get textContent() {
+        if (childNodes.length === 0) return textContentValue;
+        return textContentValue + childNodes.map((c) => c.textContent || '').join('');
+      },
+      set textContent(v) {
+        textContentValue = String(v ?? '');
+        childNodes.length = 0;
+      },
+      setAttribute(k, v) {
+        attrs.set(String(k), String(v));
+      },
+      getAttribute(k) {
+        return attrs.has(String(k)) ? attrs.get(String(k)) : null;
+      },
+      appendChild(child) {
+        if (!child) return child;
+        child.parentNode = el;
+        childNodes.push(child);
+        return child;
+      },
+      removeChild(child) {
+        const idx = childNodes.indexOf(child);
+        if (idx !== -1) {
+          childNodes.splice(idx, 1);
+          child.parentNode = null;
+        }
+        return child;
+      },
+      addEventListener(type, fn) {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type).add(fn);
+      },
+      removeEventListener(type, fn) {
+        listeners.get(type)?.delete(fn);
+      },
+      querySelector(selector) {
+        const match = String(selector || '').match(/^\[([^=\]]+)(?:="([^"]*)")?\]$/);
+        const walk = (n) => {
+          for (const c of n.childNodes || []) {
+            if (!c || c.nodeType !== 1) continue;
+            if (match) {
+              const val = c.getAttribute(match[1]);
+              if (val !== null && (match[2] === undefined || val === match[2])) return c;
+            } else if (c.tagName.toLowerCase() === String(selector).toLowerCase()) {
+              return c;
+            }
+            const nested = walk(c);
+            if (nested) return nested;
+          }
+          return null;
+        };
+        return walk(el);
+      },
+    };
+    return el;
+  };
+  return {
+    createElement: (tag) => makeNode(tag),
+  };
+}
+
+function createStandaloneMockContext({ surface = 'desktop', locale = 'ko-KR', initialStorage = {} } = {}) {
+  const kv = new Map(Object.entries(initialStorage));
+  const storageListeners = new Set();
+  const statusItemCalls = [];
+  const settingsPageCalls = [];
+  const openPanelCalls = [];
+  const commandCalls = [];
+  const abortController = new AbortController();
+  const disposers = [];
+
+  const ctx = {
+    apiVersion: 3,
+    meta: {
+      pluginId: 'antigravity-mcp-manager',
+      displayName: 'Antigravity MCP Manager',
+      version: '4.0.1',
+      trustLevel: surface === 'desktop' ? 'trusted' : 'restricted',
+      sourceSchemaVersion: 3,
+    },
+    env: {
+      surface,
+      layoutMode: 'desktop',
+      capabilities: {
+        hasLocalLoopback: false,
+        hasNetHttps: false,
+        hasConfigBridge: surface === 'desktop',
+        hasSettingsBridge: false,
+        hasDocumentTransform: false,
+      },
+    },
+    i18n: {
+      getLocale: () => locale,
+      t: (k) => k,
+    },
+    theme: {
+      getMode: () => 'dark',
+      getTokens: () => ({}),
+      getTokenCss: () => '',
+      onDidChange: () => () => {},
+    },
+    ui: {
+      showToast: () => ({ id: 'toast', dismiss() {} }),
+      confirm: async () => true,
+      prompt: async () => null,
+      registerCommand: (id, spec) => {
+        commandCalls.push({ id, spec });
+        return { unregister() {}, dispose() {} };
+      },
+      registerStatusItem: (spec) => {
+        statusItemCalls.push(spec);
+        return { id: spec.id, update() {}, dispose() {} };
+      },
+      registerSettingsPage: (spec) => {
+        settingsPageCalls.push(spec);
+        return { id: spec.id, open: () => null, update() {}, dispose() {} };
+      },
+      openPanel: (opts) => {
+        openPanelCalls.push(opts);
+        return { kind: 'panel', update() {}, close() {} };
+      },
+      openModal: () => ({ kind: 'modal', bodyEl: null, close() {} }),
+      openPopup: () => ({ kind: 'popup', close() {} }),
+      createStyleElementSafe: (cssText) => {
+        const styleEl = createMinimalMockDoc().createElement('style');
+        styleEl.textContent = String(cssText || '');
+        return styleEl;
+      },
+    },
+    storage: {
+      get: async (k) => (kv.has(k) ? kv.get(k) : undefined),
+      set: async (k, v) => {
+        const oldValue = kv.get(k);
+        kv.set(k, v);
+        for (const fn of storageListeners) fn({ key: k, oldValue, newValue: v });
+        return true;
+      },
+      onDidChange: (fn) => {
+        storageListeners.add(fn);
+        return () => storageListeners.delete(fn);
+      },
+    },
+    lifecycle: {
+      signal: abortController.signal,
+      onDispose: (fn) => disposers.push(fn),
+      addManagedListener: () => () => {},
+      runSafe: (fn) => fn(),
+    },
+  };
+
+  if (surface === 'desktop') {
+    ctx.configBridge = {
+      scopes: [
+        { scopeId: 'antigravity:mcp-config', access: 'rw', maxBytes: 262144 },
+        { scopeId: 'antigravity:plugin-mcp-configs', access: 'ro', maxBytes: 262144 },
+        { scopeId: 'antigravity:mcp-config-legacy', access: 'ro', maxBytes: 262144 },
+      ],
+      read: async (scopeId) =>
+        scopeId === 'antigravity:mcp-config'
+          ? { ok: true, scopeId, status: 'ok', data: { mcpServers: {} }, rawText: null, sha256: 'sha-0' }
+          : { ok: true, scopeId, status: 'missing', data: null, rawText: null, sha256: null },
+      write: async () => ({ ok: true, currentSha256: 'sha-1' }),
+    };
+  }
+
+  return { ctx, statusItemCalls, settingsPageCalls, openPanelCalls, commandCalls, kv, disposers };
+}
+
+test('NMCP-TC-039 (Unit): Host v3.0.3 contract — Desktop omits registerStatusItem and mounts inline Settings Page with onClose cleanup, Remote Web registers registerStatusItem, and initial language follows ctx.i18n.getLocale() with saved preference override', async () => {
+  // 1. Desktop (ko-KR, no saved preference): NO registerStatusItem, inline registerSettingsPage + onClose cleanup, Korean default
+  const docDesktop = createMinimalMockDoc();
+  const desktop = createStandaloneMockContext({ surface: 'desktop', locale: 'ko-KR' });
+  const desktopRuntime = createHostRuntime({ ctx: desktop.ctx, doc: docDesktop });
+  const desktopShell = createMcpV3Shell({ runtime: desktopRuntime, doc: docDesktop, win: null });
+  desktopShell.start();
+  await flushMicrotasks(20);
+
+  assert.equal(desktop.statusItemCalls.length, 0, 'Desktop surface must NOT call registerStatusItem()');
+  assert.equal(desktop.settingsPageCalls.length, 1, 'Desktop surface must register exactly 1 Settings Page');
+  const pageSpec = desktop.settingsPageCalls[0];
+  assert.equal(pageSpec.id, V3_IDS.SETTINGS_PAGE);
+  assert.equal(pageSpec.title, 'MCP 매니저', 'Initial Korean locale must not default to English');
+
+  // Simulate host v3.0.3 inline mount inside mountedContentPane
+  const canvasRoot = docDesktop.createElement('div');
+  const inlineHandle = { kind: 'inline-settings', bodyEl: canvasRoot, close() {} };
+  pageSpec.render(canvasRoot, inlineHandle);
+  await flushMicrotasks(20);
+
+  const styleNode = canvasRoot.querySelector('style');
+  const panelNode = canvasRoot.querySelector('[data-agy-mcp-native-panel="true"]');
+  assert.ok(styleNode && styleNode.textContent.includes('[data-agy-mcp-inline="true"]'), 'Inline Settings CSS rules must be injected');
+  assert.ok(panelNode, 'NativeMcpPanel must mount inside inline Settings canvasRoot');
+  assert.equal(panelNode.getAttribute('data-agy-mcp-inline'), 'true', 'Inline handle must set data-agy-mcp-inline="true"');
+  assert.equal(panelNode.getAttribute('data-agy-mcp-lang'), 'ko', 'Mounted panel must use Korean default from ctx.i18n.getLocale()');
+  assert.ok(panelNode.childNodes.length > 0, 'Mounted panel must have rendered DOM children');
+
+  // Simulate Settings tab switch / close -> host invokes spec.onClose()
+  pageSpec.onClose();
+  assert.equal(panelNode.childNodes.length, 0, 'onClose() must dispose and clear inline settingsCanvasPanel DOM');
+  desktopShell.dispose();
+
+  // 2. Desktop with Korean locale + saved user preference "en" -> saved preference takes precedence
+  const docPref = createMinimalMockDoc();
+  const prefDesktop = createStandaloneMockContext({
+    surface: 'desktop',
+    locale: 'ko-KR',
+    initialStorage: { [LANG_STORAGE_KEY]: 'en' },
+  });
+  const prefRuntime = createHostRuntime({ ctx: prefDesktop.ctx, doc: docPref });
+  const prefShell = createMcpV3Shell({ runtime: prefRuntime, doc: docPref, win: null });
+  prefShell.start();
+  await flushMicrotasks(20);
+  assert.equal(prefRuntime.resolveEffectiveLang(), 'en', 'Saved user preference in ctx.storage must override host locale');
+  prefShell.dispose();
+
+  // 3. Remote Web (en-US): DOES call registerStatusItem() aligned right, clicking it opens Tier-2 Quick Panel
+  const docRemote = createMinimalMockDoc();
+  const remote = createStandaloneMockContext({ surface: 'remote-web', locale: 'en-US' });
+  const remoteRuntime = createHostRuntime({ ctx: remote.ctx, doc: docRemote });
+  const remoteShell = createMcpV3Shell({ runtime: remoteRuntime, doc: docRemote, win: null });
+  remoteShell.start();
+  await flushMicrotasks(20);
+
+  assert.equal(remote.statusItemCalls.length, 1, 'Remote Web must call registerStatusItem()');
+  assert.equal(remote.statusItemCalls[0].id, V3_IDS.STATUS_ITEM);
+  assert.equal(remote.statusItemCalls[0].align, 'right');
+  assert.equal(remote.settingsPageCalls.length, 1, 'Remote Web must also register Settings Page');
+  assert.equal(remote.settingsPageCalls[0].title, 'MCP Manager');
+
+  remote.statusItemCalls[0].onClick({});
+  assert.equal(remote.openPanelCalls.length, 1, 'Clicking Remote Web status item must open Tier-2 Quick Panel');
+  remoteShell.dispose();
 });
