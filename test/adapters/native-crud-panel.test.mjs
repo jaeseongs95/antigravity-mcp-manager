@@ -280,6 +280,10 @@ test('NMCP-TC-032 (Real Chromium CDP E2E): Desktop AddonContextV3 Settings Page 
   try {
     const { cdp, evalMain, exceptions } = session;
     await cdp('Page.navigate', { url: `http://localhost:${parentPort}/` });
+    assert.equal(
+      await waitUntil(() => evalMain(`Boolean(window.__TEST_V3_DIAG__ && window.__TEST_V3_DIAG__.getSettingsPages().length > 0)`), 8000, 30),
+      true
+    );
 
     // 1. Open unified Settings Page -> mounts NativeMcpPanel in Korean (host locale ko-KR)
     await evalMain(`window.__TEST_V3_DIAG__.openSettingsPage(${JSON.stringify(V3_IDS.SETTINGS_PAGE)})`);

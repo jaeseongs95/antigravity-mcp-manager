@@ -241,6 +241,10 @@ test('NMCP-TC-036 (Real Chromium CDP E2E): Remote Web AddonContextV3 opens unifi
   try {
     const { cdp, evalMain, exceptions } = session;
     await cdp('Page.navigate', { url: `http://localhost:${parentPort}/` });
+    assert.equal(
+      await waitUntil(() => evalMain(`Boolean(window.__TEST_V3_DIAG__ && window.__TEST_V3_DIAG__.getSettingsPages().length > 0)`), 8000, 30),
+      true
+    );
 
     // 1. Verify Remote Web AddonContextV3 omits configBridge/net/dom
     const ctxCheck = await evalMain(`({

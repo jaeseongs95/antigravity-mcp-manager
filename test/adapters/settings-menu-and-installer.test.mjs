@@ -66,6 +66,10 @@ test('NMCP-TC-021 (Real Chromium CDP E2E): AddonManifest.v3 registers Tier-1 Set
   try {
     const { cdp, evalMain, exceptions } = session;
     await cdp('Page.navigate', { url: `http://localhost:${parentPort}/` });
+    assert.equal(
+      await waitUntil(() => evalMain(`Boolean(window.__TEST_V3_DIAG__ && window.__TEST_V3_DIAG__.getStatusItems().length > 0)`), 8000, 30),
+      true
+    );
 
     // 1. Tier-1 registrations exist immediately without mutating #host-shell
     const reg = await evalMain(`({

@@ -262,6 +262,10 @@ test('NMCP-TC-026 (Real Chromium CDP): AddonContextV3 switches EN/KO live via ct
   try {
     const { cdp, evalMain, exceptions } = session;
     await cdp('Page.navigate', { url: `http://localhost:${parentPort}/` });
+    assert.equal(
+      await waitUntil(() => evalMain(`Boolean(window.__TEST_V3_DIAG__ && window.__TEST_V3_DIAG__.getSettingsPages().length > 0)`), 8000, 30),
+      true
+    );
 
     await evalMain(`window.__TEST_V3_DIAG__.openSettingsPage(${JSON.stringify(V3_IDS.SETTINGS_PAGE)})`);
     assert.equal(

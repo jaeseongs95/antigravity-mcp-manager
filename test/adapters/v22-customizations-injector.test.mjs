@@ -75,7 +75,7 @@ test('NMCP-TC-027 & NMCP-TC-033 (Real Chromium CDP E2E): Tier-2 declarative open
 
     // 1. Click Tier-1 Status Item -> opens Tier-2 declarative drawer panel
     assert.equal(
-      await waitUntil(() => evalMain(`window.__TEST_V3_DIAG__.getStatusItems()[0]?.badge === '1'`)),
+      await waitUntil(() => evalMain(`window.__TEST_V3_DIAG__?.getStatusItems?.()?.[0]?.badge === '1'`), 8000, 30),
       true
     );
     await evalMain(`window.__TEST_V3_DIAG__.clickStatusItem(${JSON.stringify(V3_IDS.STATUS_ITEM)})`);
