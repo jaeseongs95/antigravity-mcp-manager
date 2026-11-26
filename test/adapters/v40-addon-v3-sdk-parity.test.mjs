@@ -100,9 +100,30 @@ test('NMCP-TC-037 (@extenra/sdk v3.2.1 Desktop Parity): real createTestHost({ su
   assert.ok(ctx.configBridge && typeof ctx.configBridge.read === 'function');
   assert.equal(ctx.configBridge.scopes.length, 3);
 
-  // 2. Tier 1: Desktop uses Settings Page + Commands ONLY (no Status Item on Desktop per host v3.0.3 contract)
+  // 2. Tier 1: Desktop uses Settings Page + Section Action + Commands (no Status Item on Desktop)
   const statusItems = host.getStatusItems();
   assert.equal(statusItems.length, 0, 'Desktop surface must not register a status item');
+
+  const sectionActions = host.getSectionActions();
+  assert.equal(sectionActions.length, 1, 'Desktop must register Customizations MCP Servers header section action');
+  assert.equal(sectionActions[0].id, V3_IDS.SECTION_ACTION);
+  assert.equal(sectionActions[0].target, V3_IDS.SECTION_TARGET);
+  assert.equal(sectionActions[0].label, 'MCP 매니저', 'Korean locale must set Korean section action label');
+
+  // Extenra v3.3.0 global locale sync (ctx.i18n.onDidChange) updates section action label live
+  host.setLocale('en-US');
+  await flushMicrotasks(20);
+  assert.equal(host.getSectionActions()[0].label, 'MCP Manager', 'Host locale switch must update section action label via ctx.i18n.onDidChange');
+  host.setLocale('ko-KR');
+  await flushMicrotasks(20);
+  assert.equal(host.getSectionActions()[0].label, 'MCP 매니저');
+
+  // Invoking the Customizations MCP Servers header section action opens the Tier-3 Full Editor modal
+  const invokeRes = host.invokeSectionAction(manifest.pluginId, V3_IDS.SECTION_ACTION);
+  assert.equal(invokeRes.ok, true, 'Invoking section action must succeed');
+  await flushMicrotasks(40);
+  const dialogEl = host.doc.body.querySelector('dialog[data-addon-host-v3-overlay="modal"]');
+  assert.ok(dialogEl, 'Clicking Customizations MCP Servers header action must open Full Editor modal');
 
   const settingsPages = host.getSettingsPages();
   assert.equal(settingsPages.length, 1);
@@ -171,6 +192,7 @@ test('NMCP-TC-037 (@extenra/sdk v3.2.1 Desktop Parity): real createTestHost({ su
   assert.equal(host.disposePlugin(manifest.pluginId), true);
   assert.equal(ctx.lifecycle.signal.aborted, true);
   assert.equal(host.getStatusItems().length, 0);
+  assert.equal(host.getSectionActions().length, 0);
   assert.equal(host.getSettingsPages().length, 0);
 });
 
@@ -205,9 +227,12 @@ test('NMCP-TC-038 (@extenra/sdk v3.2.1 Remote Web Parity — Disconnected): real
   assert.equal(ctx.net, undefined);
   assert.equal(ctx.dom, undefined);
 
-  // 2. Tier-1 Status Item & Settings Page parity
+  // 2. Tier-1 Status Item, Section Action & Settings Page parity
   assert.equal(host.getStatusItems().length, 1);
   assert.equal(host.getStatusItems()[0].badge, '0');
+  assert.equal(host.getSectionActions().length, 1);
+  assert.equal(host.getSectionActions()[0].target, V3_IDS.SECTION_TARGET);
+  assert.equal(host.invokeSectionAction(manifest.pluginId, V3_IDS.SECTION_ACTION).ok, true);
   assert.equal(host.getSettingsPages().length, 1);
 
   // 3. Open unified Settings Page -> mounts NativeMcpPanel in remote-draft mode with Host Bridge notice + Import/Copy/Download bar
@@ -255,6 +280,7 @@ test('NMCP-TC-038 (@extenra/sdk v3.2.1 Remote Web Parity — Disconnected): real
   assert.equal(host.disposePlugin(manifest.pluginId), true);
   assert.equal(ctx.lifecycle.signal.aborted, true);
   assert.equal(host.getStatusItems().length, 0);
+  assert.equal(host.getSectionActions().length, 0);
   assert.equal(host.getSettingsPages().length, 0);
 });
 
@@ -299,9 +325,13 @@ test('NMCP-TC-040 (@extenra/sdk v3.2.1 Remote Web Connected): real createTestHos
   assert.equal(ctx.net, undefined);
   assert.equal(ctx.dom, undefined);
 
-  // 2. Remote Web keeps Status Item with live Desktop server count
+  // 2. Remote Web keeps Status Item with live Desktop server count & registers Customizations MCP header action
   assert.equal(host.getStatusItems().length, 1);
   assert.equal(host.getStatusItems()[0].badge, '1');
+  assert.equal(host.getSectionActions().length, 1);
+  assert.equal(host.getSectionActions()[0].target, V3_IDS.SECTION_TARGET);
+  assert.equal(host.getSectionActions()[0].badge, null);
+  assert.equal(host.invokeSectionAction(manifest.pluginId, V3_IDS.SECTION_ACTION).ok, true);
 
   // 3. Tier-2 Quick Panel shows host-bridge mode and hides disconnected notice
   const quickPanel = ctx.ui.invokeCommand(manifest.pluginId, V3_IDS.CMD_OPEN_PANEL);
@@ -341,6 +371,7 @@ test('NMCP-TC-040 (@extenra/sdk v3.2.1 Remote Web Connected): real createTestHos
   assert.equal(host.disposePlugin(manifest.pluginId), true);
   assert.equal(ctx.lifecycle.signal.aborted, true);
   assert.equal(host.getStatusItems().length, 0);
+  assert.equal(host.getSectionActions().length, 0);
   assert.equal(host.getSettingsPages().length, 0);
 });
 
@@ -428,8 +459,10 @@ function createStandaloneMockContext({ surface = 'desktop', locale = 'ko-KR', in
   const kv = new Map(Object.entries(initialStorage));
   const storageListeners = new Set();
   const statusItemCalls = [];
+  const sectionActionCalls = [];
   const settingsPageCalls = [];
   const openPanelCalls = [];
+  const openModalCalls = [];
   const commandCalls = [];
   const abortController = new AbortController();
   const disposers = [];
@@ -476,6 +509,20 @@ function createStandaloneMockContext({ surface = 'desktop', locale = 'ko-KR', in
         statusItemCalls.push(spec);
         return { id: spec.id, update() {}, dispose() {} };
       },
+      registerSectionAction: (spec) => {
+        const rec = { ...spec, disposed: false };
+        sectionActionCalls.push(rec);
+        return {
+          id: spec.id,
+          target: spec.target,
+          update(patch) {
+            Object.assign(rec, patch);
+          },
+          dispose() {
+            rec.disposed = true;
+          },
+        };
+      },
       registerSettingsPage: (spec) => {
         settingsPageCalls.push(spec);
         return { id: spec.id, open: () => null, update() {}, dispose() {} };
@@ -484,7 +531,10 @@ function createStandaloneMockContext({ surface = 'desktop', locale = 'ko-KR', in
         openPanelCalls.push(opts);
         return { kind: 'panel', update() {}, close() {} };
       },
-      openModal: () => ({ kind: 'modal', bodyEl: null, close() {} }),
+      openModal: (opts) => {
+        openModalCalls.push(opts);
+        return { kind: 'modal', bodyEl: null, close() {} };
+      },
       openPopup: () => ({ kind: 'popup', close() {} }),
       createStyleElementSafe: (cssText) => {
         const styleEl = createMinimalMockDoc().createElement('style');
@@ -528,11 +578,11 @@ function createStandaloneMockContext({ surface = 'desktop', locale = 'ko-KR', in
     };
   }
 
-  return { ctx, statusItemCalls, settingsPageCalls, openPanelCalls, commandCalls, kv, disposers };
+  return { ctx, statusItemCalls, sectionActionCalls, settingsPageCalls, openPanelCalls, openModalCalls, commandCalls, kv, disposers };
 }
 
-test('NMCP-TC-039 (Unit): Host v3.0.3 contract — Desktop omits registerStatusItem and mounts inline Settings Page with onClose cleanup, Remote Web registers registerStatusItem, and initial language follows ctx.i18n.getLocale() with saved preference override', async () => {
-  // 1. Desktop (ko-KR, no saved preference): NO registerStatusItem, inline registerSettingsPage + onClose cleanup, Korean default
+test('NMCP-TC-039 (Unit): Host v3.0.3 & Extenra v3.3.0 contract — Desktop omits registerStatusItem, both surfaces register Customizations MCP header section action + inline Settings Page with onClose cleanup, Remote Web registers registerStatusItem, and initial language follows ctx.i18n.getLocale() with saved preference override', async () => {
+  // 1. Desktop (ko-KR, no saved preference): NO registerStatusItem, Customizations section action + inline registerSettingsPage + onClose cleanup, Korean default
   const docDesktop = createMinimalMockDoc();
   const desktop = createStandaloneMockContext({ surface: 'desktop', locale: 'ko-KR' });
   const desktopRuntime = createHostRuntime({ ctx: desktop.ctx, doc: docDesktop });
@@ -541,6 +591,11 @@ test('NMCP-TC-039 (Unit): Host v3.0.3 contract — Desktop omits registerStatusI
   await flushMicrotasks(20);
 
   assert.equal(desktop.statusItemCalls.length, 0, 'Desktop surface must NOT call registerStatusItem()');
+  assert.equal(desktop.sectionActionCalls.length, 1, 'Desktop must register Customizations MCP Servers header action');
+  assert.equal(desktop.sectionActionCalls[0].target, V3_IDS.SECTION_TARGET);
+  assert.equal(desktop.sectionActionCalls[0].label, 'MCP 매니저');
+  desktop.sectionActionCalls[0].onClick({});
+  assert.equal(desktop.openModalCalls.length, 1, 'Clicking section action must open Full Editor modal');
   assert.equal(desktop.settingsPageCalls.length, 1, 'Desktop surface must register exactly 1 Settings Page');
   const pageSpec = desktop.settingsPageCalls[0];
   assert.equal(pageSpec.id, V3_IDS.SETTINGS_PAGE);
@@ -564,6 +619,7 @@ test('NMCP-TC-039 (Unit): Host v3.0.3 contract — Desktop omits registerStatusI
   pageSpec.onClose();
   assert.equal(panelNode.childNodes.length, 0, 'onClose() must dispose and clear inline settingsCanvasPanel DOM');
   desktopShell.dispose();
+  assert.equal(desktop.sectionActionCalls[0].disposed, true, 'dispose() must clean up registered section action');
 
   // 2. Desktop with Korean locale + saved user preference "en" -> saved preference takes precedence
   const docPref = createMinimalMockDoc();
