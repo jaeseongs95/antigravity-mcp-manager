@@ -18,10 +18,21 @@ const NATIVE_PANEL_I18N = Object.freeze({
     langAria: 'Language',
     loading: 'Loading…',
     bridgeConnected: 'Host Bridge Connected',
+    remoteDraftBadge: 'Remote Draft (Browser)',
     refresh: 'Refresh',
     addServer: '+ Add Server',
     tabServers: 'Servers',
     tabRaw: 'Raw JSON',
+    remoteDraftHint: 'Browser-local draft (ctx.storage). Import or export mcp_config.json to sync with Desktop.',
+    importJsonFile: 'Import JSON',
+    copyJson: 'Copy JSON',
+    downloadJson: 'Download JSON',
+    copiedJsonNotice: 'Copied mcp_config.json to clipboard.',
+    downloadedJsonNotice: 'Downloaded mcp_config.json.',
+    importedJsonNotice: 'Imported mcp_config.json into browser draft.',
+    importJsonFailed: 'Failed to import JSON file.',
+    copyJsonFailed: 'Clipboard copy unavailable. Use Raw JSON or Download JSON.',
+    downloadJsonFailed: 'Failed to download mcp_config.json.',
     loadFailed: 'Failed to load MCP configuration.',
     saveFailed: 'Save failed.',
     cloneFailed: 'Clone failed.',
@@ -89,10 +100,21 @@ const NATIVE_PANEL_I18N = Object.freeze({
     langAria: '언어 선택',
     loading: '불러오는 중…',
     bridgeConnected: '호스트 브리지 연결됨',
+    remoteDraftBadge: '원격 초안 (브라우저 저장)',
     refresh: '새로고침',
     addServer: '+ 서버 추가',
     tabServers: '서버 목록',
     tabRaw: '원본 JSON',
+    remoteDraftHint: '브라우저 저장소(ctx.storage) 기반 원격 초안입니다. PC와 동기화하려면 mcp_config.json을 가져오거나 내보내세요.',
+    importJsonFile: 'JSON 가져오기',
+    copyJson: 'JSON 복사',
+    downloadJson: 'JSON 다운로드',
+    copiedJsonNotice: 'mcp_config.json을 클립보드에 복사했습니다.',
+    downloadedJsonNotice: 'mcp_config.json 파일을 다운로드했습니다.',
+    importedJsonNotice: 'JSON 파일을 브라우저 초안으로 가져왔습니다.',
+    importJsonFailed: 'JSON 파일 가져오기에 실패했습니다.',
+    copyJsonFailed: '클립보드 복사를 사용할 수 없습니다. 원본 JSON 또는 다운로드를 이용해 주세요.',
+    downloadJsonFailed: 'mcp_config.json 다운로드에 실패했습니다.',
     loadFailed: 'MCP 설정을 불러오지 못했습니다.',
     saveFailed: '저장에 실패했습니다.',
     cloneFailed: '복제에 실패했습니다.',
@@ -160,13 +182,25 @@ const NATIVE_PANEL_I18N = Object.freeze({
 export function createNativeMcpPanel({
   runtime,
   service,
+  mode = null,
   surface = 'settings',
   onLangChange = () => {},
+  onSnapshotChange = () => {},
   doc = document,
+  win: winOverride = null,
 }) {
   if (!service) {
     throw new Error('ERR_MISSING_MCP_MANAGER_SERVICE');
   }
+
+  const panelMode =
+    mode === 'remote-draft' || mode === 'host-bridge'
+      ? mode
+      : typeof runtime.getConfigStoreMode === 'function' && runtime.getConfigStoreMode() === 'remote-draft'
+        ? 'remote-draft'
+        : 'host-bridge';
+  const isRemoteDraft = panelMode === 'remote-draft';
+  const win = winOverride || doc?.defaultView || (typeof window !== 'undefined' ? window : null);
 
   let disposed = false;
   let activeTab = 'servers';
@@ -209,6 +243,35 @@ export function createNativeMcpPanel({
     }
   }
 
+  function createTextChild(text) {
+    const str = String(text);
+    if (typeof doc.createTextNode === 'function') {
+      return doc.createTextNode(str);
+    }
+    const span = doc.createElement('span');
+    span.textContent = str;
+    return span;
+  }
+
+  function setClassFlag(node, token, enabled) {
+    if (!node) return;
+    if (node.classList && typeof node.classList.toggle === 'function') {
+      node.classList.toggle(token, Boolean(enabled));
+      return;
+    }
+    const parts = String(node.className || '')
+      .split(/\s+/)
+      .filter(Boolean);
+    const has = parts.includes(token);
+    if (enabled && !has) parts.push(token);
+    else if (!enabled && has) parts.splice(parts.indexOf(token), 1);
+    node.className = parts.join(' ');
+  }
+
+  function toDataAttrName(camelKey) {
+    return `data-${String(camelKey).replace(/[A-Z]/g, (ch) => `-${ch.toLowerCase()}`)}`;
+  }
+
   function el(tag, props, ...children) {
     const node = doc.createElement(tag);
     let deferredValue;
@@ -221,7 +284,9 @@ export function createNativeMcpPanel({
         else if (k === 'disabled') node.disabled = Boolean(v);
         else if (k === 'dataset' && typeof v === 'object') {
           for (const [dk, dv] of Object.entries(v)) {
-            if (dv !== undefined && dv !== null) node.dataset[dk] = String(dv);
+            if (dv !== undefined && dv !== null) {
+              node.setAttribute(toDataAttrName(dk), String(dv));
+            }
           }
         } else if (k.startsWith('on') && typeof v === 'function') {
           node.addEventListener(k.slice(2).toLowerCase(), v);
@@ -230,16 +295,22 @@ export function createNativeMcpPanel({
         }
       }
     }
+    const flatChildren = [];
     for (const child of children) {
       if (child === null || child === undefined || child === false) continue;
       if (Array.isArray(child)) {
         for (const c of child) {
-          if (c !== null && c !== undefined && c !== false) {
-            node.appendChild(typeof c === 'string' ? doc.createTextNode(c) : c);
-          }
+          if (c !== null && c !== undefined && c !== false) flatChildren.push(c);
         }
       } else {
-        node.appendChild(typeof child === 'string' ? doc.createTextNode(child) : child);
+        flatChildren.push(child);
+      }
+    }
+    if (flatChildren.length === 1 && typeof flatChildren[0] === 'string' && typeof doc.createTextNode !== 'function') {
+      node.textContent = flatChildren[0];
+    } else {
+      for (const c of flatChildren) {
+        node.appendChild(typeof c === 'string' ? createTextChild(c) : c);
       }
     }
     if (deferredValue !== undefined) {
@@ -251,12 +322,16 @@ export function createNativeMcpPanel({
   const root = el('section', {
     [NATIVE_PANEL_ATTR]: 'true',
     'data-agy-mcp-surface': surface,
+    'data-agy-mcp-mode': panelMode,
   });
   const shell = el('div', { className: 'mcp-shell' });
   const headerEl = el('header', { className: 'mcp-header' });
   const titleGroup = el('div', { className: 'mcp-title-group' });
   const titleEl = surface === 'settings' ? el('h1', { className: 'mcp-title' }) : null;
-  const statusBadge = el('span', { className: 'mcp-badge mcp-badge-ok', dataset: { testid: 'bridge-status-badge' } });
+  const statusBadge = el('span', {
+    className: isRemoteDraft ? 'mcp-badge mcp-badge-info' : 'mcp-badge mcp-badge-ok',
+    dataset: { testid: 'bridge-status-badge' },
+  });
   if (titleEl) titleGroup.appendChild(titleEl);
   titleGroup.appendChild(statusBadge);
 
@@ -481,6 +556,11 @@ export function createNativeMcpPanel({
       if (data.globalConfig?.malformed) {
         activeTab = 'raw';
       }
+      if (typeof onSnapshotChange === 'function') {
+        try {
+          onSnapshotChange(data);
+        } catch {}
+      }
       syncStaticLabels();
       renderAll();
     } catch (err) {
@@ -614,11 +694,12 @@ export function createNativeMcpPanel({
     });
   }
 
-  async function submitRawJson(confirmStdio = false) {
+  async function submitRawJson(confirmStdio = false, rawTextOverride = null, successNoticeKey = null) {
     if (!snapshot || disposed) return;
     await runMutation('rawSaveFailed', async () => {
+      const nextRawText = typeof rawTextOverride === 'string' ? rawTextOverride : rawDraft;
       const payload = {
-        rawText: rawDraft,
+        rawText: nextRawText,
         expectedSha256: snapshot.globalConfig.sha256,
         confirmStdio,
       };
@@ -628,6 +709,7 @@ export function createNativeMcpPanel({
         pendingStdioConfirm = {
           kind: 'raw',
           payload,
+          successNoticeKey,
           preview: { name: t('rawStdioPreviewName'), command: t('rawStdioPreviewCmd'), args: [] },
         };
         renderAll();
@@ -642,9 +724,173 @@ export function createNativeMcpPanel({
         return false;
       }
       pendingStdioConfirm = null;
-      clearBanner();
-      return 'raw';
+      if (successNoticeKey) {
+        setBanner('info', t(successNoticeKey));
+      } else {
+        clearBanner();
+      }
+      return activeTab === 'raw' ? 'raw' : 'list';
     });
+  }
+
+  async function resolveExportRawText() {
+    if (activeTab === 'raw' && rawDraftDirty && typeof rawDraft === 'string' && rawDraft.trim()) {
+      return rawDraft;
+    }
+    if (typeof snapshot?.globalConfig?.rawText === 'string' && snapshot.globalConfig.rawText.trim()) {
+      return snapshot.globalConfig.rawText;
+    }
+    const fresh = await service.getSnapshot({ includeRawText: true });
+    if (fresh?.ok && typeof fresh.globalConfig?.rawText === 'string' && fresh.globalConfig.rawText.trim()) {
+      return fresh.globalConfig.rawText;
+    }
+    return '{\n  "mcpServers": {}\n}\n';
+  }
+
+  async function handleImportJsonText(rawText) {
+    if (disposed) return;
+    if (!snapshot) {
+      await loadSnapshot(true);
+      if (!snapshot || disposed) return;
+    }
+    rawDraft = String(rawText ?? '');
+    rawDraftDirty = true;
+    await submitRawJson(false, rawDraft, 'importedJsonNotice');
+  }
+
+  async function handleCopyJson() {
+    if (disposed) return;
+    try {
+      const text = await resolveExportRawText();
+      const clipboard = win?.navigator?.clipboard;
+      if (!clipboard || typeof clipboard.writeText !== 'function') {
+        setBanner('warn', t('copyJsonFailed'));
+        return;
+      }
+      await clipboard.writeText(text);
+      if (!disposed) {
+        setBanner('info', t('copiedJsonNotice'));
+        if (typeof runtime.showToast === 'function') {
+          runtime.showToast({ message: t('copiedJsonNotice'), variant: 'success' });
+        }
+      }
+    } catch {
+      if (!disposed) setBanner('warn', t('copyJsonFailed'));
+    }
+  }
+
+  async function handleDownloadJson() {
+    if (disposed) return;
+    try {
+      const text = await resolveExportRawText();
+      const BlobCtor = win?.Blob || (typeof Blob !== 'undefined' ? Blob : null);
+      const UrlApi = win?.URL || (typeof URL !== 'undefined' ? URL : null);
+      if (!BlobCtor || !UrlApi || typeof UrlApi.createObjectURL !== 'function') {
+        setBanner('warn', t('downloadJsonFailed'));
+        return;
+      }
+      const blob = new BlobCtor([text], { type: 'application/json;charset=utf-8' });
+      const href = UrlApi.createObjectURL(blob);
+      const link = doc.createElement('a');
+      link.setAttribute('href', href);
+      link.setAttribute('download', 'mcp_config.json');
+      link.style.display = 'none';
+      const parent = doc.body || root;
+      parent.appendChild(link);
+      try {
+        link.click();
+      } finally {
+        if (link.parentNode) link.parentNode.removeChild(link);
+        if (typeof UrlApi.revokeObjectURL === 'function') {
+          UrlApi.revokeObjectURL(href);
+        }
+      }
+      if (!disposed) {
+        setBanner('info', t('downloadedJsonNotice'));
+        if (typeof runtime.showToast === 'function') {
+          runtime.showToast({ message: t('downloadedJsonNotice'), variant: 'success' });
+        }
+      }
+    } catch {
+      if (!disposed) setBanner('error', t('downloadJsonFailed'));
+    }
+  }
+
+  function renderRemoteIoBar() {
+    const fileInput = el('input', {
+      type: 'file',
+      accept: '.json,application/json',
+      className: 'mcp-file-input-hidden',
+      dataset: { testid: 'input-import-json-file' },
+      onChange: (ev) => {
+        const inputEl = ev.target;
+        const file = inputEl?.files?.[0];
+        if (!file) return;
+        Promise.resolve()
+          .then(() => {
+            if (typeof file.text === 'function') return file.text();
+            return new Promise((resolve, reject) => {
+              const ReaderCtor = win?.FileReader || (typeof FileReader !== 'undefined' ? FileReader : null);
+              if (!ReaderCtor) {
+                reject(new Error('FileReader unavailable'));
+                return;
+              }
+              const reader = new ReaderCtor();
+              reader.onload = () => resolve(String(reader.result || ''));
+              reader.onerror = () => reject(reader.error || new Error('File read failed'));
+              reader.readAsText(file);
+            });
+          })
+          .then((text) => handleImportJsonText(text))
+          .catch(() => {
+            if (!disposed) setBanner('error', t('importJsonFailed'));
+          })
+          .finally(() => {
+            if (inputEl) inputEl.value = '';
+          });
+      },
+    });
+
+    return el(
+      'div',
+      { className: 'mcp-remote-io-bar', dataset: { testid: 'remote-io-bar' } },
+      el('span', { className: 'mcp-remote-io-hint' }, t('remoteDraftHint')),
+      fileInput,
+      el(
+        'div',
+        { className: 'mcp-row-actions' },
+        el(
+          'button',
+          {
+            type: 'button',
+            className: 'mcp-btn mcp-btn-sm',
+            dataset: { testid: 'btn-import-json-file' },
+            onClick: () => fileInput.click(),
+          },
+          t('importJsonFile')
+        ),
+        el(
+          'button',
+          {
+            type: 'button',
+            className: 'mcp-btn mcp-btn-sm',
+            dataset: { testid: 'btn-copy-json' },
+            onClick: () => void handleCopyJson(),
+          },
+          t('copyJson')
+        ),
+        el(
+          'button',
+          {
+            type: 'button',
+            className: 'mcp-btn mcp-btn-sm',
+            dataset: { testid: 'btn-download-json' },
+            onClick: () => void handleDownloadJson(),
+          },
+          t('downloadJson')
+        )
+      )
+    );
   }
 
   async function confirmPendingStdio() {
@@ -664,7 +910,7 @@ export function createNativeMcpPanel({
     } else if (pending.kind === 'legacy') {
       await submitImportLegacy({ name: pending.payload.serverName }, true);
     } else if (pending.kind === 'raw') {
-      await submitRawJson(true);
+      await submitRawJson(true, pending.payload?.rawText ?? null, pending.successNoticeKey || null);
     }
   }
 
@@ -806,7 +1052,13 @@ export function createNativeMcpPanel({
         el(
           'div',
           {
-            className: `mcp-banner ${bannerState.kind === 'error' ? 'mcp-banner-error' : 'mcp-banner-warn'}`,
+            className: `mcp-banner ${
+              bannerState.kind === 'error'
+                ? 'mcp-banner-error'
+                : bannerState.kind === 'info'
+                  ? 'mcp-banner-info'
+                  : 'mcp-banner-warn'
+            }`,
             role: 'alert',
             dataset: { testid: 'status-banner' },
           },
@@ -1157,7 +1409,10 @@ export function createNativeMcpPanel({
 
   function renderServersTab() {
     const nodes = [];
-    if (pendingStdioConfirm && (pendingStdioConfirm.kind === 'clone' || pendingStdioConfirm.kind === 'legacy')) {
+    if (isRemoteDraft) {
+      nodes.push(renderRemoteIoBar());
+    }
+    if (pendingStdioConfirm && (pendingStdioConfirm.kind === 'clone' || pendingStdioConfirm.kind === 'legacy' || (isRemoteDraft && pendingStdioConfirm.kind === 'raw'))) {
       nodes.push(renderStdioConfirmPanel());
     }
 
@@ -1380,6 +1635,7 @@ export function createNativeMcpPanel({
       },
     });
     return [
+      isRemoteDraft ? renderRemoteIoBar() : null,
       el(
         'section',
         { className: 'mcp-card' },
@@ -1408,7 +1664,7 @@ export function createNativeMcpPanel({
     const lang = getLang();
     root.setAttribute('data-agy-mcp-lang', lang);
     if (titleEl) titleEl.textContent = t('appTitle');
-    statusBadge.textContent = busy && !snapshot ? t('loading') : t('bridgeConnected');
+    statusBadge.textContent = busy && !snapshot ? t('loading') : isRemoteDraft ? t('remoteDraftBadge') : t('bridgeConnected');
     langSwitch.setAttribute('aria-label', t('langAria'));
     btnLangEn.setAttribute('aria-pressed', lang === 'en' ? 'true' : 'false');
     btnLangKo.setAttribute('aria-pressed', lang === 'ko' ? 'true' : 'false');
@@ -1420,9 +1676,9 @@ export function createNativeMcpPanel({
 
   function renderAll() {
     if (disposed) return;
-    tabServers.classList.toggle('active', activeTab === 'servers');
+    setClassFlag(tabServers, 'active', activeTab === 'servers');
     tabServers.setAttribute('aria-selected', String(activeTab === 'servers'));
-    tabRaw.classList.toggle('active', activeTab === 'raw');
+    setClassFlag(tabRaw, 'active', activeTab === 'raw');
     tabRaw.setAttribute('aria-selected', String(activeTab === 'raw'));
     renderBanners();
     clearNode(mainRegion);

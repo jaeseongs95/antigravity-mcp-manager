@@ -1,5 +1,21 @@
 # Changelog
 
+## 4.0.0 — `AddonManifest.v3` + `AddonContextV3` API-First Architecture (`antigravity-addons` `v3.0.0+`)
+- **BREAKING — Migrated to `AddonManifest.v3` (`schemaVersion: 3`, `apiVersion: 3`, `minHostVersion: "3.0.0"`) & `AddonContextV3`**:
+  - Replaced legacy v2 manifest (`uiSlots`, top-level `settingsBridge`, top-level `configBridge`) with minimal-privilege `permissions` declaring ONLY `ui`, `storage` (`262144` bytes), and `configBridge.scopes` (`antigravity:mcp-config` `rw`, `antigravity:plugin-mcp-configs` `ro`, `antigravity:mcp-config-legacy` `ro`). Strictly omitted `net`, `dom`, `events`, and `services` (`ctx.net === undefined`, `ctx.dom === undefined`).
+  - Removed all 5 obsolete v2 manual DOM/placement/storage modules (`settings-sidebar-mount.mjs`, `customizations-mount.mjs`, `remote-drawer-mount.mjs`, `mount-coordinator.mjs`, `remote-draft-config-store.mjs`) and all `hostProfileId` / `window.localStorage` / manual DOM scraping code (~60 KB removed from assembled `addon-renderer.js`).
+- **Implemented 3-Tier API-First UI (`src/adapters/antigravity/renderer/mcp-v3-shell.mjs`)**:
+  - **Tier 1**: `ui.registerStatusItem` (`MCP` with live server-count badge), `ui.registerSettingsPage` (`mcp-manager`, Desktop + Remote Web unified), `ui.registerCommand` (`open-mcp-manager`, `open-mcp-panel`, `open-mcp-settings`), `ui.showToast`, and `ui.confirm`.
+  - **Tier 2**: `ui.openPanel` declarative 16-primitive quick drawer with `handle.update(nextTree, nextState)` ID-based in-place patching and host-managed mobile bottom-sheet auto-switching at `<= 640px`.
+  - **Tier 3**: `ui.openModal` (`surface-center`) & Settings Page `render(canvasRoot)` mounting `NativeMcpPanel` styled with `ctx.ui.createStyleElementSafe(buildNativePanelCss())` using `--ag-*` semantic theme tokens.
+- **Capability-Driven Config Store & Lifecycle**:
+  - Updated `host-config-store.mjs` to consume `ctx.configBridge.read/write/scopes` gated on `ctx.env.capabilities.hasConfigBridge`.
+  - Added `storage-draft-config-store.mjs` (`ConfigStorePort` over `ctx.storage` with UTF-8 SHA-256 CAS and byte-budget guards) for Remote Web and non-bridge surfaces.
+  - Wired `ctx.lifecycle.signal` (`AbortSignal`) + `ctx.lifecycle.onDispose` and `ctx.storage.onDidChange` / `ctx.theme.onDidChange` across all surfaces.
+  - Updated `scripts/build-userscript.mjs` to emit `AddonManifest.v3` (`schemaVersion: 3`, `apiVersion: 3`, fail-closed `trustLevel: "restricted"`, desktop-only `configBridge` stripped).
+- **Tests & SDK Parity**:
+  - Added `test/adapters/v40-addon-v3-sdk-parity.test.mjs` (`NMCP-TC-037`, `NMCP-TC-038`) running the real `@antigravity-addons/sdk` `createTestHost({ surface: 'desktop' })` and `createTestHost({ surface: 'remote-web' })` parity suite, and updated all adapter unit + Chromium CDP E2E tests for `AddonContextV3`.
+
 ## 3.0.1 — Surface-Centered Customizations Modal (`antigravity-addons` v2.4.0+/v2.5.1+), Mutation Guards (F1), Workspace Plugin Path (F2) & Host Rename Docs
 - **Fixed Customizations Popup Centering via `antigravity-addons` `v2.4.0+` Per-Surface Bounds API**:
   - Updated `src/adapters/antigravity/renderer/customizations-mount.mjs` to pass `{ shadow: true, surface: 'customizations-page', onClose }` to `runtime.openModal(...)`, call `modalHandle.reposition('customizations-page')` on re-open, and preserve host-managed surface insets (`left`/`top`/`right`/`bottom`, `margin: auto`) and dynamic resize-clamped `maxWidth`/`maxHeight` whenever `data-addon-host-modal-surface` is active (instead of overwriting with `100vw`/`100vh`), while preserving full viewport-centered backward compatibility on Host `v2.3.0`.

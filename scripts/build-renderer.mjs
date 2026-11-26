@@ -3,9 +3,9 @@
  * Zero-Dependency Deterministic Renderer Assembler (`scripts/build-renderer.mjs`).
  *
  * Assembles the modular SOLID renderer sources (`src/adapters/antigravity/renderer/*.mjs`)
- * into the single browser-executable `AddonManifest.v2` entry script
- * (`src/adapters/antigravity/addon-renderer.js`) executed by `antigravity-native-addon-host`
- * (`v2.0.0+`) inside `(function(addonHost){ ... })(__addonHandle)` in Isolated World `998`.
+ * into the single browser-executable `AddonManifest.v3` entry script
+ * (`src/adapters/antigravity/addon-renderer.js`) executed by `antigravity-addons` v3.0.0+
+ * (Desktop & Remote Web) inside `(function(addonHost){ ... })(__addonHandle)`.
  */
 
 import fs from 'node:fs';
@@ -32,21 +32,17 @@ export const CORE_MODULE_ORDER = Object.freeze([
 
 export const MODULE_ORDER = Object.freeze([
   'host-config-store.mjs',
+  'storage-draft-config-store.mjs',
   'host-runtime.mjs',
   'native-mcp-panel.mjs',
   'addon-styles.mjs',
-  'settings-sidebar-mount.mjs',
-  'customizations-mount.mjs',
-  'mount-coordinator.mjs',
+  'mcp-v3-shell.mjs',
 ]);
 
 function stripModuleSyntax(sourceText) {
   const normalized = sourceText.replace(/\r\n/g, '\n');
-  // Remove single-line and multi-line relative ESM imports between our internal modules
   const withoutImports = normalized.replace(/^\s*import\s+[\s\S]*?\s+from\s+['"][^'"]+['"];?\s*\n?/gm, '');
-  // Remove bare re-export blocks such as `export { isLegacySseUrl };`
   const withoutReExports = withoutImports.replace(/^\s*export\s*\{[^}]*\};?\s*\n?/gm, '');
-  // Convert `export const|let|var|function|async function|class` to local declarations inside the IIFE
   return withoutReExports.replace(/^\s*export\s+(?=(?:const|let|var|async\s+function|function|class)\b)/gm, '').trim();
 }
 
@@ -67,39 +63,29 @@ export function assembleRendererSource() {
 
   return [
     '/**',
-    ' * AUTO-GENERATED AddonManifest.v2 Renderer Entry (`src/adapters/antigravity/addon-renderer.js`).',
+    ' * AUTO-GENERATED AddonManifest.v3 Renderer Entry (`src/adapters/antigravity/addon-renderer.js`).',
     ' * Source of truth: `src/adapters/antigravity/renderer/*.mjs` (run `npm run build:renderer`).',
     ' *',
-    ' * Executed by `antigravity-native-addon-host` v2.0.0+ in Isolated World `998` as',
-    ' * `(function(addonHost){ ... })(__addonHandle)` under `trustLevel: "restricted"`.',
-    ' * ZERO unsafe DOM sinks, ZERO direct `app.asar` hooks, 100% owner/Shadow DOM scoped APIs.',
+    ' * Executed by `antigravity-addons` v3.0.0+ (Desktop & Remote Web) as',
+    ' * `(function(addonHost){ ... })(__addonHandle)` with `AddonContextV3` (`apiVersion: 3`).',
+    ' * ZERO unsafe DOM sinks, ZERO direct DOM scraping, 100% 3-Tier API-First.',
     ' */',
     '',
     '(function (addonHost) {',
     "  'use strict';",
     '',
-    '  if (!addonHost || typeof addonHost.mountSlot !== "function" || typeof addonHost.openModal !== "function") {',
+    '  if (!addonHost || addonHost.apiVersion !== 3 || !addonHost.ui || !addonHost.storage || !addonHost.lifecycle) {',
     '    return;',
     '  }',
     '',
     sections.join('\n\n'),
     '',
-    '  // --- composition root ---',
-    '  const runtime = createHostRuntime({ addonHost, win: window, doc: document });',
-    '  let coordinator = null;',
-    '  const onLangChange = () => {',
-    '    if (coordinator) coordinator.syncAllLabels();',
-    '  };',
-    '  coordinator = createMountCoordinator({',
-    '    runtime,',
-    '    adapters: [',
-    '      createSettingsSidebarMount({ runtime, onLangChange, win: window, doc: document }),',
-    '      createCustomizationsMount({ runtime, onLangChange, win: window, doc: document }),',
-    '    ],',
-    '    win: window,',
-    '    doc: document,',
-    '  });',
-    '  coordinator.start();',
+    '  // --- composition root (AddonContextV3 API-First) ---',
+    '  const doc = typeof document !== "undefined" ? document : null;',
+    '  const win = typeof window !== "undefined" ? window : null;',
+    '  const runtime = createHostRuntime({ ctx: addonHost, doc });',
+    '  const shell = createMcpV3Shell({ runtime, doc, win });',
+    '  shell.start();',
     '})(typeof addonHost !== "undefined" ? addonHost : undefined);',
     '',
   ].join('\n');
