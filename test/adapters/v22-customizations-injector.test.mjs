@@ -73,21 +73,22 @@ test('NMCP-TC-027 & NMCP-TC-033 (Real Chromium CDP E2E): Tier-2 declarative open
     await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
     await cdp('Page.navigate', { url: `http://localhost:${parentPort}/` });
 
-    // 1. Click Tier-1 Status Item -> opens Tier-2 declarative drawer panel
+    // 1. Desktop omits Status Item; open Tier-2 declarative drawer panel via Command
     assert.equal(
-      await waitUntil(() => evalMain(`window.__TEST_V3_DIAG__?.getStatusItems?.()?.[0]?.badge === '1'`), 8000, 30),
+      await waitUntil(() => evalMain(`Boolean(window.__TEST_V3_DIAG__ && window.__TEST_V3_DIAG__.getCommands().includes(${JSON.stringify(V3_IDS.CMD_OPEN_PANEL)}))`), 8000, 30),
       true
     );
-    await evalMain(`window.__TEST_V3_DIAG__.clickStatusItem(${JSON.stringify(V3_IDS.STATUS_ITEM)})`);
+    assert.equal(await evalMain(`window.__TEST_V3_DIAG__.getStatusItems().length`), 0, 'Desktop must not register status item');
+    await evalMain(`window.__TEST_ADDON_CTX_V3__.ui.invokeCommand(${JSON.stringify(manifest.pluginId)}, ${JSON.stringify(V3_IDS.CMD_OPEN_PANEL)})`);
     assert.equal(
       await waitUntil(() =>
         evalMain(`(() => {
           const panel = document.querySelector('[data-addon-host-v3-overlay="panel"]');
-          return Boolean(panel && panel.getAttribute('data-addon-host-zone') === 'drawer' && panel.shadowRoot?.querySelector('[data-ag-node-id="mcp-server-list"]'));
+          return Boolean(panel && panel.getAttribute('data-addon-host-zone') === 'drawer' && panel.shadowRoot?.querySelector('[data-ag-list-action="srv-custSrv"]'));
         })()`)
       ),
       true,
-      'Clicking status item must open Tier-2 declarative drawer panel'
+      'Invoking open-mcp-panel must open Tier-2 declarative drawer panel with loaded server list'
     );
 
     // 2. Toggle server directly from Tier-2 declarative list action -> persists + emits Tier-1 Toast

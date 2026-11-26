@@ -18,6 +18,29 @@ export const HOST_CONFIG_SCOPES = Object.freeze({
   LEGACY_MCP: 'antigravity:mcp-config-legacy',
 });
 
+export const REMOTE_HOST_NOT_CONNECTED_CODE = 'ERR_REMOTE_HOST_NOT_CONNECTED';
+
+const REMOTE_BRIDGE_DISCONNECTED_REASONS = Object.freeze([
+  'ERR_REMOTE_HOST_NOT_CONNECTED',
+  'ERR_REMOTE_CONFIG_BRIDGE_OFFLINE',
+  'ERR_REMOTE_CONFIG_BRIDGE_READ_ONLY',
+  'ERR_REMOTE_TRANSPORT_UNAVAILABLE',
+]);
+
+export function isRemoteBridgeDisconnectedReason(reasonOrError) {
+  if (!reasonOrError) return false;
+  const code = typeof reasonOrError === 'object' ? String(reasonOrError.code || '') : '';
+  const msg = typeof reasonOrError === 'object' ? String(reasonOrError.message || reasonOrError.reason || '') : String(reasonOrError);
+  const haystack = `${code} ${msg}`;
+  return REMOTE_BRIDGE_DISCONNECTED_REASONS.some((token) => haystack.includes(token));
+}
+
+function createRemoteDisconnectedError(rawReason) {
+  const err = new Error(String(rawReason || REMOTE_HOST_NOT_CONNECTED_CODE));
+  err.code = REMOTE_HOST_NOT_CONNECTED_CODE;
+  return err;
+}
+
 const DEFAULT_DISPLAY_PATHS = Object.freeze({
   [HOST_CONFIG_SCOPES.GLOBAL_MCP]: '~/.gemini/config/mcp_config.json',
   [HOST_CONFIG_SCOPES.LEGACY_MCP]: '~/.gemini/antigravity/mcp_config.json',
@@ -43,6 +66,9 @@ function hasDeclaredScope(configBridge, scopeId, requiredAccess = null) {
 function mapHostBridgeReasonToErrorCode(reason) {
   const code = String(reason || '').trim();
   if (!code) return ERROR_CODES.IO_ERROR;
+  if (isRemoteBridgeDisconnectedReason(code)) {
+    return REMOTE_HOST_NOT_CONNECTED_CODE;
+  }
   if (code === 'ERR_CONFIG_CAS_CONFLICT' || code === ERROR_CODES.CONFLICT) {
     return ERROR_CODES.CONFLICT;
   }
@@ -106,6 +132,9 @@ export function createHostBridgeConfigStore(ctx) {
         sha256: null,
         displayPath: DEFAULT_DISPLAY_PATHS[HOST_CONFIG_SCOPES.GLOBAL_MCP],
       };
+    }
+    if (res.status === 'unavailable' || isRemoteBridgeDisconnectedReason(res.reason)) {
+      throw createRemoteDisconnectedError(res.reason);
     }
     if (res.ok === false || res.status === 'error') {
       throw new Error(String(res.reason || 'ERR_CONFIG_READ_FAILED'));
@@ -172,6 +201,9 @@ export function createHostBridgeConfigStore(ctx) {
     }
     if (res.status === 'missing') {
       return [];
+    }
+    if (res.status === 'unavailable' || isRemoteBridgeDisconnectedReason(res.reason)) {
+      throw createRemoteDisconnectedError(res.reason);
     }
     if (res.ok === false || res.status === 'error') {
       throw new Error(String(res.reason || 'ERR_CONFIG_PLUGIN_READ_FAILED'));

@@ -1,5 +1,25 @@
 # Changelog
 
+## 4.1.0 — Native Host `v3.1.1` Unified Remote Host Bridge Integration
+- **Transparent Remote Web Host Bridge Integration (`antigravity-addons` `v3.1.0` / `v3.1.1+`)**:
+  - Declared minimal `permissions.events.subscribe: ["host:remote-bridge-changed"]` in `addon-manifest.json` (`version: "4.1.0"`, `minHostVersion: "3.1.0"`), keeping `compatibility.surfaces: ["desktop", "remote-web"]` and `compatibility.hostProfiles: ["antigravity-desktop", "antigravity-remote-web"]` cleanly compatible with `v3.1.1` `remote-dist` packing (`hasConfigBridge: true`, 3 scopes, zero rejections).
+  - Updated `src/adapters/antigravity/renderer/host-runtime.mjs` to expose dynamic `hasRemoteHostBridge()` (`ctx.env.capabilities.hasRemoteHostBridge`), `onRemoteBridgeChange()` (`ctx.events.on('host:remote-bridge-changed', ...)`), and live 3-state config mode resolution (`host-bridge` / `remote-bridge-disconnected` / `remote-draft`).
+  - Updated `src/adapters/antigravity/renderer/host-config-store.mjs` to map `ERR_REMOTE_HOST_NOT_CONNECTED` and `ERR_REMOTE_CONFIG_BRIDGE_OFFLINE` / `ERR_REMOTE_CONFIG_BRIDGE_READ_ONLY` to a dedicated non-crashing disconnected error code.
+  - Updated `src/adapters/antigravity/renderer/mcp-v3-shell.mjs` and `src/adapters/antigravity/renderer/native-mcp-panel.mjs` to auto-refresh MCP server lists, status badges, Tier-2 Quick Panel, and Tier-3 Settings/Modal views whenever `host:remote-bridge-changed` fires, and to show a clean KO/EN guidance notice (*"원격 웹 우측 하단 Addons → Host Bridge 탭에서 데스크톱 호스트를 연결하세요"*) when disconnected — with zero plugin-owned URL/token inputs or standalone remote servers.
+- **Regression Tests**:
+  - Added `NMCP-TC-040` (real `@antigravity-addons/sdk v3.1.1` `createTestHost({ surface: 'remote-web', remoteBridgeConnected: true })` live Desktop `mcp_config.json` CRUD), enhanced `NMCP-TC-038` (`remoteBridgeConnected: false` disconnected notice + zero URL/token inputs), and added standalone `NMCP-TC-041` (`ERR_REMOTE_HOST_NOT_CONNECTED` + live `host:remote-bridge-changed` connect/disconnect auto-reload).
+
+## 4.0.1 — `antigravity-addons` `v3.0.3` Inline Desktop Settings Alignment, Surface-Scoped Status Item & Locale Default
+- **Surface-Scoped `registerStatusItem()` (`src/adapters/antigravity/renderer/mcp-v3-shell.mjs`)**:
+  - Stopped calling `ctx.ui.registerStatusItem()` on Desktop (`ctx.env.surface === 'desktop'`) so native Antigravity Desktop uses the inline Settings page (`ctx.ui.registerSettingsPage()`) exclusively without rendering an unwanted MCP button even when `host.statusbar` v3 service is registered.
+  - Preserved `ctx.ui.registerStatusItem()` on Remote Web (`ctx.env.surface === 'remote-web'`) as the bottom-right quick entry point above the `Addons` drawer button.
+- **Inline Settings Pane Layout & Locale Alignment**:
+  - Detected host v3.0.3 inline Settings mount (`handle.kind === 'inline-settings'`) in `mcp-v3-shell.mjs` / `native-mcp-panel.mjs` (`data-agy-mcp-inline="true"`) and updated `addon-styles.mjs` to remove nested scrollbars (`height: auto; overflow: visible`) and modal-centered margins (`margin: 0; padding: 0 0 12px; max-width: 860px`) so the panel aligns cleanly flush-left inside `.ag-inline-page--canvas`.
+  - Updated `host-runtime.mjs` (`normalizeLangCode`, `loadSavedLang`, `onStorageChange`) so first-run language defaults strictly to `ctx.i18n.getLocale()` (`ko`/`ko-KR`/`ko_KR` → `ko`, otherwise `en`), while any saved user preference in `ctx.storage` takes precedence and clearing storage reverts cleanly to host locale.
+  - Bumped `addon-manifest.json`, `package.json`, and `plugin.json` to `4.0.1` (`minHostVersion: "3.0.3"`).
+- **Tests**:
+  - Added standalone unit suite `NMCP-TC-039` (`test/adapters/v40-addon-v3-sdk-parity.test.mjs`) verifying Desktop `registerStatusItem` non-call, inline `registerSettingsPage` mount + `onClose` disposal, Remote Web `registerStatusItem` registration, and `ctx.i18n.getLocale()` default vs saved preference precedence, and synced `NMCP-TC-021`, `NMCP-TC-022`, `NMCP-TC-024`, `NMCP-TC-027/033`, `NMCP-TC-036`, and `NMCP-TC-037`.
+
 ## 4.0.0 — `AddonManifest.v3` + `AddonContextV3` API-First Architecture (`antigravity-addons` `v3.0.0+`)
 - **BREAKING — Migrated to `AddonManifest.v3` (`schemaVersion: 3`, `apiVersion: 3`, `minHostVersion: "3.0.0"`) & `AddonContextV3`**:
   - Replaced legacy v2 manifest (`uiSlots`, top-level `settingsBridge`, top-level `configBridge`) with minimal-privilege `permissions` declaring ONLY `ui`, `storage` (`262144` bytes), and `configBridge.scopes` (`antigravity:mcp-config` `rw`, `antigravity:plugin-mcp-configs` `ro`, `antigravity:mcp-config-legacy` `ro`). Strictly omitted `net`, `dom`, `events`, and `services` (`ctx.net === undefined`, `ctx.dom === undefined`).
