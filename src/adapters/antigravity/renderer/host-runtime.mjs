@@ -56,7 +56,7 @@ export function createHostRuntime({ ctx, doc = typeof document !== 'undefined' ?
   const v3 = assertAddonContextV3(ctx);
   const pluginId = String(v3.meta.pluginId || 'antigravity-mcp-manager');
   const displayName = String(v3.meta.displayName || 'Antigravity MCP Manager');
-  const version = String(v3.meta.version || '4.3.0');
+  const version = String(v3.meta.version || '4.3.1');
   const trustLevel = String(v3.meta.trustLevel || 'restricted');
   const surface = v3.env.surface === 'remote-web' ? 'remote-web' : 'desktop';
 
@@ -189,7 +189,18 @@ export function createHostRuntime({ ctx, doc = typeof document !== 'undefined' ?
 
   function onLocaleChange(cb) {
     if (typeof cb !== 'function' || !v3.i18n || typeof v3.i18n.onDidChange !== 'function') return () => {};
-    return v3.i18n.onDidChange(cb);
+    return v3.i18n.onDidChange((nextLocale) => {
+      const norm = normalizeLangCode(nextLocale);
+      if (norm && savedLang && savedLang !== norm) {
+        savedLang = norm;
+        try {
+          Promise.resolve(v3.storage.set(LANG_STORAGE_KEY, norm)).catch(() => {});
+        } catch {
+          // Ignore storage sync errors on central locale change
+        }
+      }
+      cb(norm || nextLocale);
+    });
   }
 
   function registerSectionAction(spec) {
