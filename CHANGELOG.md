@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.3.0 — Extenra `v3.3.0` Customizations `MCP Servers` Header Action (`registerSectionAction`) & Global Locale Sync
+- **Tier-1 Zero-DOM Customizations Header Action (`ctx.ui.registerSectionAction`)**:
+  - Declared `permissions.ui.sectionActions: true` and bumped `addon-manifest.json` (`version: "4.3.0"`, `minHostVersion: "3.3.0"`), `package.json`, and `plugin.json`.
+  - Updated `src/adapters/antigravity/renderer/host-runtime.mjs` and `src/adapters/antigravity/renderer/mcp-v3-shell.mjs` to register a host-managed section action on `target: "customizations.mcp-servers.header"` (`id: "mcp-manager"`, localized `MCP 매니저` / `MCP Manager`, live tooltip, `!` badge on disconnected Remote Host Bridge) across both Desktop and Remote Web, opening the Tier-3 Full Editor Modal on click and disposing cleanly on plugin teardown — with zero plugin-side DOM scraping.
+- **Host Global i18n Synchronization (`ctx.i18n.onDidChange`)**:
+  - Subscribed to Extenra `v3.3.0` `ctx.i18n.onDidChange` in `host-runtime.mjs` / `mcp-v3-shell.mjs` so switching the host global language updates the section action label and open UI live whenever no plugin-specific language override is saved.
+- **Tests**:
+  - Extended `@extenra/sdk v3.3.0` parity suites (`NMCP-TC-037`, `NMCP-TC-038`, `NMCP-TC-040`), standalone unit tests (`NMCP-TC-022`, `NMCP-TC-039`), and `test/helpers/cdp-browser.mjs` to verify `host.getSectionActions()`, `host.invokeSectionAction()`, `host.setLocale()` live updates, and `disposePlugin()` cleanup.
+
 ## 4.2.0 — Extenra (`v3.2.0` / `v3.2.1`) Specification, Userscript & UI Token Alignment
 - **Extenra Manifest & Userscript Contract Alignment**:
   - Added canonical `"$schema": "https://github.com/jaeseongs95/extenra/schemas/addon-manifest.v3.schema.json"` to `addon-manifest.json` (`version: "4.2.0"`, preserving `minHostVersion: "3.1.0"` compatibility across Extenra `v3.1.x`–`v3.2.x`).

@@ -1,27 +1,30 @@
-# Antigravity MCP Manager (`v4.2.0`)
+# Antigravity MCP Manager (`v4.3.0`)
 
 [한국어 문서 (README.ko.md)](./README.ko.md)
 
-A safe, vendor-independent **MCP Server Manager** built on the [**Extenra**](https://github.com/jaeseongs95/extenra) (`extenra`, formerly `antigravity-addons`) **`v3.1.0+` / `v3.2.1`** API-First framework (`AddonManifest.v3` + `AddonContextV3`, minimal ISP `permissions`, 3-Tier host UI, zero runtime dependencies):
-- **Antigravity Desktop (`ctx.env.surface === 'desktop'`)**: Inline Desktop Settings Page (`ui.registerSettingsPage`, no extra Desktop statusbar button) with live `~/.gemini/config/mcp_config.json` CRUD via `permissions.configBridge.scopes` + `ctx.configBridge`.
+A safe, vendor-independent **MCP Server Manager** built on the [**Extenra**](https://github.com/jaeseongs95/extenra) (`extenra`, formerly `antigravity-addons`) **`v3.3.0+`** API-First framework (`AddonManifest.v3` + `AddonContextV3`, minimal ISP `permissions`, 3-Tier host UI, zero runtime dependencies):
+- **Antigravity Desktop (`ctx.env.surface === 'desktop'`)**:
+  - **Customizations → MCP Servers Header Button**: Zero-DOM `ui.registerSectionAction({ target: 'customizations.mcp-servers.header' })` places an `MCP Manager` / `MCP 매니저` action button directly beside the native header icons (auto-reattaching across SPA navigation).
+  - **Inline Desktop Settings Page**: `ui.registerSettingsPage` (no extra Desktop statusbar button) with live `~/.gemini/config/mcp_config.json` CRUD via `permissions.configBridge.scopes` + `ctx.configBridge`.
 - **Antigravity Remote Web (`ctx.env.surface === 'remote-web'`)**:
-  - **Unified Remote Host Bridge (`Extenra v3.1.0+`)**: Pair once in the Remote Web `Addons → Host Bridge` tab (`ag-bridge-v1:...`) to transparently route `ctx.configBridge` to your Desktop `mcp_config.json` with automatic reload on `host:remote-bridge-changed` — zero plugin-owned URL/token inputs or standalone remote servers.
+  - **Customizations Header Action + Bottom-Right Status Item + Unified Remote Host Bridge**: Pair once in `Addons → Host Bridge` (`ag-bridge-v1:...`) to transparently route `ctx.configBridge` to your Desktop `mcp_config.json` with automatic reload on `host:remote-bridge-changed` — zero plugin-owned URL/token inputs or standalone remote servers.
   - **Offline Remote Draft (`ctx.storage`)**: 1-click public HTTPS modular `@require` Userscript (`antigravity-mcp-manager.user.js`, `@require https://github.com/jaeseongs95/extenra/releases/latest/download/antigravity-remote-host.lib.js`) with browser-local `ctx.storage` draft persistence (`remote-draft:v1`) + **Import JSON / Copy JSON / Download `mcp_config.json`**.
 
-> **API-First 3-Tier Architecture · Extenra `v3.2.1` Alignment**: All UI runs strictly through host-managed `AddonContextV3` surfaces (`ui.registerSettingsPage`, Remote-Web-scoped `ui.registerStatusItem`, `ui.registerCommand`, `ui.showToast`, `ui.openPanel`, `ui.openModal`, `ui.createStyleElementSafe`) using Extenra `v3.2.1` `--ag-*` design tokens (`--ag-primary`, `--ag-input-bg`, `--ag-surface-hover`, `--ag-border-strong`, `--ag-focus-ring`, `--ag-scrollbar-thumb`) and custom rounded scrollbars.
+> **API-First 3-Tier Architecture · Extenra `v3.3.0` Alignment**: All UI runs strictly through host-managed `AddonContextV3` surfaces (`ui.registerSectionAction`, `ui.registerSettingsPage`, Remote-Web-scoped `ui.registerStatusItem`, `ui.registerCommand`, `ui.showToast`, `ui.openPanel`, `ui.openModal`, `ui.createStyleElementSafe`, `i18n.onDidChange`) using Extenra `v3.2.1+` `--ag-*` design tokens and custom rounded scrollbars.
 
 ## 3-Tier UI & Minimal Permissions
 - **Declared `permissions` (Least Privilege)**:
   - `$schema`: `https://github.com/jaeseongs95/extenra/schemas/addon-manifest.v3.schema.json`
-  - `permissions.ui`: `toasts`, `dialogs`, `overlays`, `commands`, `statusItems`, `settingsPages`, `canvas`
+  - `permissions.ui`: `toasts`, `dialogs`, `overlays`, `commands`, `statusItems`, `sectionActions`, `settingsPages`, `canvas`
   - `permissions.storage`: `namespace: "antigravity-mcp-manager"`, `maxBytes: 262144`
   - `permissions.events`: `subscribe: ["host:remote-bridge-changed"]`
   - `permissions.configBridge.scopes`:
     - `antigravity:mcp-config` (`rw`, `262144` bytes) — sole canonical write target (`~/.gemini/config/mcp_config.json`)
     - `antigravity:plugin-mcp-configs` (`ro`, `262144` bytes) — read-only plugin MCP inventory
     - `antigravity:mcp-config-legacy` (`ro`, `262144` bytes) — read-only 1-time legacy import preview
-  - **Strictly Omitted**: `net`, `dom`, `services`, `uiSlots` (`ctx.net === undefined`, `ctx.dom === undefined` at runtime).
+  - **Strictly Omitted**: `net`, `dom`, `secrets`, `services`, `uiSlots` (`ctx.net === undefined`, `ctx.dom === undefined` at runtime).
 - **Tier 1 (Zero-DOM Host Surfaces)**:
+  - `ui.registerSectionAction`: Mounts `MCP Manager` / `MCP 매니저` on `customizations.mcp-servers.header` (Customizations → MCP Servers header bar) opening the Full Editor Modal, synced live with `ctx.i18n.onDidChange`.
   - `ui.registerSettingsPage`: Inline Desktop Settings Page (`id: "mcp-manager"`) and Remote Web Settings Page, with `ctx.i18n.getLocale()` default language (`ko` on Korean locale) and saved `ctx.storage` override.
   - `ui.registerStatusItem`: Registered on Remote Web (`surface === 'remote-web'`) only, showing live server count or `!` when Host Bridge is disconnected.
   - `ui.registerCommand`: `open-mcp-manager`, `open-mcp-panel`, `open-mcp-settings`.

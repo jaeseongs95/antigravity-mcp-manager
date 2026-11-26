@@ -33,27 +33,29 @@ test('NMCP-TC-022 (Contract & SOLID Parity): addon-manifest.json satisfies Addon
   assert.equal(manifest.schemaVersion, 3);
   assert.equal(manifest.apiVersion, 3);
   assert.equal(manifest.pluginId, 'antigravity-mcp-manager');
-  assert.equal(manifest.version, '4.2.0');
+  assert.equal(manifest.version, '4.3.0');
   assert.equal(manifest.version, pkg.version);
   assert.equal(pluginJson.version, pkg.version);
   assert.equal(manifest.trustLevel, 'trusted');
   assert.deepEqual(manifest.compatibility, {
     surfaces: ['desktop', 'remote-web'],
     hostProfiles: ['antigravity-desktop', 'antigravity-remote-web'],
-    minHostVersion: '3.1.0',
+    minHostVersion: '3.3.0',
   });
   assert.deepEqual(manifest.capabilities, ['renderer']);
   assert.equal(manifest.entry.rendererScript, 'src/adapters/antigravity/addon-renderer.js');
   assert.equal(manifest.entry.mainHookScript, undefined);
   assert.equal(fs.existsSync(path.join(ROOT_DIR, manifest.entry.rendererScript)), true);
 
-  // Minimal permissions: ONLY ui, storage, events (remote-bridge subscribe), configBridge (net, dom, services omitted)
+  // Minimal permissions: ONLY ui, storage, events (remote-bridge subscribe), configBridge (net, dom, secrets, services omitted)
   assert.deepEqual(Object.keys(manifest.permissions).sort(), ['configBridge', 'events', 'storage', 'ui']);
+  assert.equal(manifest.permissions.ui.sectionActions, true, 'permissions.ui.sectionActions must be explicitly declared');
   assert.deepEqual(manifest.permissions.events, {
     subscribe: ['host:remote-bridge-changed'],
   });
   assert.equal(manifest.permissions.net, undefined, 'permissions.net must be omitted');
   assert.equal(manifest.permissions.dom, undefined, 'permissions.dom must be omitted');
+  assert.equal(manifest.permissions.secrets, undefined, 'permissions.secrets must be omitted');
   assert.equal(manifest.permissions.services, undefined, 'permissions.services must be omitted');
   assert.equal(manifest.uiSlots, undefined, 'Legacy v2 uiSlots must be omitted');
   assert.equal(manifest.settingsBridge, undefined, 'Legacy v2 top-level settingsBridge must be omitted');

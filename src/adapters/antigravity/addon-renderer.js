@@ -1875,7 +1875,7 @@
     const v3 = assertAddonContextV3(ctx);
     const pluginId = String(v3.meta.pluginId || 'antigravity-mcp-manager');
     const displayName = String(v3.meta.displayName || 'Antigravity MCP Manager');
-    const version = String(v3.meta.version || '4.2.0');
+    const version = String(v3.meta.version || '4.3.0');
     const trustLevel = String(v3.meta.trustLevel || 'restricted');
     const surface = v3.env.surface === 'remote-web' ? 'remote-web' : 'desktop';
 
@@ -2006,6 +2006,16 @@
       return v3.theme.onDidChange(cb);
     }
 
+    function onLocaleChange(cb) {
+      if (typeof cb !== 'function' || !v3.i18n || typeof v3.i18n.onDidChange !== 'function') return () => {};
+      return v3.i18n.onDidChange(cb);
+    }
+
+    function registerSectionAction(spec) {
+      if (typeof v3.ui.registerSectionAction !== 'function') return null;
+      return v3.ui.registerSectionAction(spec);
+    }
+
     return Object.freeze({
       apiVersion: 3,
       pluginId,
@@ -2026,6 +2036,7 @@
       confirm,
       registerCommand: (commandId, spec) => v3.ui.registerCommand(commandId, spec),
       registerStatusItem: (spec) => v3.ui.registerStatusItem(spec),
+      registerSectionAction,
       registerSettingsPage: (spec) => v3.ui.registerSettingsPage(spec),
       openPanel: (opts) => v3.ui.openPanel(opts),
       openModal: (opts) => v3.ui.openModal(opts),
@@ -2033,6 +2044,7 @@
       createStyleElementSafe,
       getThemeMode: () => (typeof v3.theme.getMode === 'function' ? v3.theme.getMode() : 'dark'),
       onThemeChange,
+      onLocaleChange,
       onStorageChange,
       onRemoteBridgeChange,
       signal: v3.lifecycle.signal || null,
@@ -4349,6 +4361,8 @@
    */
   const V3_IDS = Object.freeze({
     STATUS_ITEM: 'mcp-manager',
+    SECTION_ACTION: 'mcp-manager',
+    SECTION_TARGET: 'customizations.mcp-servers.header',
     SETTINGS_PAGE: 'mcp-manager',
     CMD_OPEN_MANAGER: 'open-mcp-manager',
     CMD_OPEN_PANEL: 'open-mcp-panel',
@@ -4587,6 +4601,7 @@
     let latestError = '';
     let remoteBridgeDisconnected = false;
     let statusItemHandle = null;
+    let sectionActionHandle = null;
     let settingsPageHandle = null;
     let quickPanelHandle = null;
     let fullModalHandle = null;
@@ -4614,7 +4629,24 @@
       return SHELL_I18N[getLang()];
     }
 
+    function syncSectionAction() {
+      if (!sectionActionHandle || disposed) return;
+      const mode = getMode();
+      const count = latestSnapshot?.globalConfig?.servers?.length ?? 0;
+      const d = dict();
+      try {
+        sectionActionHandle.update({
+          label: d.title,
+          tooltip: d.statusTooltip(mode, count),
+          badge: mode === 'remote-bridge-disconnected' ? '!' : null,
+        });
+      } catch {
+        // Ignore updates during disposal
+      }
+    }
+
     function syncStatusItem() {
+      syncSectionAction();
       if (!statusItemHandle || disposed) return;
       const mode = getMode();
       const count = latestSnapshot?.globalConfig?.servers?.length ?? 0;
@@ -4914,6 +4946,12 @@
         } catch {}
         statusItemHandle = null;
       }
+      if (sectionActionHandle) {
+        try {
+          sectionActionHandle.dispose();
+        } catch {}
+        sectionActionHandle = null;
+      }
       if (settingsPageHandle) {
         try {
           settingsPageHandle.dispose();
@@ -4938,6 +4976,22 @@
           priority: 60,
           onClick: (ev) => {
             openQuickPanel(ev?.anchorEl || null);
+          },
+        });
+      }
+
+      // Extenra v3.3.0 Tier-1 Declarative Section Action:
+      // Mounts a host-styled action button on the Customizations -> MCP Servers section header
+      // (Desktop & Remote Web) with zero plugin-side DOM scraping.
+      if (typeof runtime.registerSectionAction === 'function') {
+        sectionActionHandle = runtime.registerSectionAction({
+          id: V3_IDS.SECTION_ACTION,
+          target: V3_IDS.SECTION_TARGET,
+          label: d.title,
+          tooltip: d.statusTooltip(getMode(), 0),
+          order: 60,
+          onClick: () => {
+            openFullModal();
           },
         });
       }
@@ -4989,6 +5043,11 @@
         runtime.onThemeChange(() => {
           syncQuickPanel();
         }),
+        typeof runtime.onLocaleChange === 'function'
+          ? runtime.onLocaleChange(() => {
+              if (!disposed) syncAllUi();
+            })
+          : () => {},
         typeof runtime.onRemoteBridgeChange === 'function'
           ? runtime.onRemoteBridgeChange(() => {
               if (disposed) return;
