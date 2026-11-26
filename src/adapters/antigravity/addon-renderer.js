@@ -1,16 +1,16 @@
 /**
- * AUTO-GENERATED AddonManifest.v2 Renderer Entry (`src/adapters/antigravity/addon-renderer.js`).
+ * AUTO-GENERATED AddonManifest.v3 Renderer Entry (`src/adapters/antigravity/addon-renderer.js`).
  * Source of truth: `src/adapters/antigravity/renderer/*.mjs` (run `npm run build:renderer`).
  *
- * Executed by `antigravity-native-addon-host` v2.0.0+ in Isolated World `998` as
- * `(function(addonHost){ ... })(__addonHandle)` under `trustLevel: "restricted"`.
- * ZERO unsafe DOM sinks, ZERO direct `app.asar` hooks, 100% owner/Shadow DOM scoped APIs.
+ * Executed by `antigravity-addons` v3.0.0+ (Desktop & Remote Web) as
+ * `(function(addonHost){ ... })(__addonHandle)` with `AddonContextV3` (`apiVersion: 3`).
+ * ZERO unsafe DOM sinks, ZERO direct DOM scraping, 100% 3-Tier API-First.
  */
 
 (function (addonHost) {
   'use strict';
 
-  if (!addonHost || typeof addonHost.mountSlot !== "function" || typeof addonHost.openModal !== "function") {
+  if (!addonHost || addonHost.apiVersion !== 3 || !addonHost.ui || !addonHost.storage || !addonHost.lifecycle) {
     return;
   }
 
@@ -1427,10 +1427,10 @@
    * Host Named-Scope Config Bridge Store Adapter (`src/adapters/antigravity/renderer/host-config-store.mjs`).
    *
    * SOLID Boundaries:
-   * - SRP: Translates `antigravity-native-addon-host` v2.3.0+ Option A Named-Scope Config Bridge
-   *   (`addonHost.hasConfigBridge`, `addonHost.configScopes`, `addonHost.readConfigScope`,
-   *   `addonHost.writeConfigScope`) into the vendor-independent `ConfigStorePort` contract
-   *   consumed by `src/core/manager-service.mjs`.
+   * - SRP: Translates `antigravity-addons` v3.0.0 `AddonContextV3` Named-Scope Config Bridge
+   *   (`ctx.env.capabilities.hasConfigBridge`, `ctx.configBridge.scopes`, `ctx.configBridge.read`,
+   *   `ctx.configBridge.write`) into the vendor-independent `ConfigStorePort` contract consumed by
+   *   `src/core/manager-service.mjs`.
    * - DIP: `McpManagerService` and `native-mcp-panel.mjs` depend solely on `ConfigStorePort`,
    *   never directly on Electron IPC or host-specific bridge methods.
    */
@@ -1453,9 +1453,9 @@
     return null;
   }
 
-  function hasDeclaredScope(addonHost, scopeId, requiredAccess = null) {
-    if (!Array.isArray(addonHost?.configScopes)) return true;
-    const entry = addonHost.configScopes.find((s) => s && s.scopeId === scopeId);
+  function hasDeclaredScope(configBridge, scopeId, requiredAccess = null) {
+    if (!Array.isArray(configBridge?.scopes)) return true;
+    const entry = configBridge.scopes.find((s) => s && s.scopeId === scopeId);
     if (!entry) return false;
     if (requiredAccess === 'rw') return entry.access === 'rw';
     if (requiredAccess === 'ro') return entry.access === 'ro' || entry.access === 'rw';
@@ -1493,47 +1493,44 @@
     }
     return code;
   }
-  function resolveHostConfigBridge(addonHost) {
-    if (!addonHost || typeof addonHost !== 'object') return null;
-    if (addonHost.hasConfigBridge !== true) return null;
-    if (
-      typeof addonHost.readConfigScope !== 'function' ||
-      typeof addonHost.writeConfigScope !== 'function'
-    ) {
+  function resolveHostConfigBridge(ctx) {
+    if (!ctx || typeof ctx !== 'object') return null;
+    if (ctx.env?.capabilities?.hasConfigBridge !== true) return null;
+    const bridge = ctx.configBridge;
+    if (!bridge || typeof bridge !== 'object') return null;
+    if (typeof bridge.read !== 'function' || typeof bridge.write !== 'function') {
       return null;
     }
-    if (!hasDeclaredScope(addonHost, HOST_CONFIG_SCOPES.GLOBAL_MCP, 'rw')) {
+    if (!hasDeclaredScope(bridge, HOST_CONFIG_SCOPES.GLOBAL_MCP, 'rw')) {
       return null;
     }
-    return addonHost;
+    return bridge;
   }
-  function createHostBridgeConfigStore(addonHost) {
-    const bridge = resolveHostConfigBridge(addonHost);
+  function createHostBridgeConfigStore(ctx) {
+    const bridge = resolveHostConfigBridge(ctx);
     if (!bridge) {
       throw new TypeError(
-        'Host Config Bridge requires addonHost.hasConfigBridge === true, readConfigScope(), writeConfigScope(), and rw access to antigravity:mcp-config'
+        'Host Config Bridge requires ctx.env.capabilities.hasConfigBridge === true, ctx.configBridge.read/write(), and rw access to antigravity:mcp-config'
       );
     }
 
     async function readGlobalConfig() {
-      const res = await bridge.readConfigScope(HOST_CONFIG_SCOPES.GLOBAL_MCP);
+      const res = await bridge.read(HOST_CONFIG_SCOPES.GLOBAL_MCP);
       if (!res || typeof res !== 'object') {
         throw new Error('Host Config Bridge returned an invalid response for global MCP config.');
       }
-      if (res.ok === false || res.status === 'error') {
-        throw new Error(String(res.reason || 'ERR_CONFIG_READ_FAILED'));
-      }
-      const displayPath = DEFAULT_DISPLAY_PATHS[HOST_CONFIG_SCOPES.GLOBAL_MCP];
       if (res.status === 'missing') {
         return {
           exists: false,
           rawText: '',
           sha256: null,
-          displayPath,
+          displayPath: DEFAULT_DISPLAY_PATHS[HOST_CONFIG_SCOPES.GLOBAL_MCP],
         };
       }
-      // Host v2.3.0 config-bridge.js returns `{ status: 'ok', data, rawText: null, sha256 }`
-      // for valid files and `{ status: 'corrupt', data: null, rawText, sha256 }` for malformed JSON.
+      if (res.ok === false || res.status === 'error') {
+        throw new Error(String(res.reason || 'ERR_CONFIG_READ_FAILED'));
+      }
+      const displayPath = DEFAULT_DISPLAY_PATHS[HOST_CONFIG_SCOPES.GLOBAL_MCP];
       const rawText = resolveSnapshotRawText(res);
       if (rawText === null) {
         throw new Error(String(res.reason || 'ERR_CONFIG_EMPTY_PAYLOAD'));
@@ -1548,7 +1545,7 @@
 
     async function writeGlobalConfig({ rawText, expectedSha256 }) {
       try {
-        const res = await bridge.writeConfigScope(
+        const res = await bridge.write(
           HOST_CONFIG_SCOPES.GLOBAL_MCP,
           String(rawText ?? ''),
           { expectedSha256: expectedSha256 ?? null }
@@ -1589,15 +1586,15 @@
       if (!hasDeclaredScope(bridge, HOST_CONFIG_SCOPES.PLUGIN_MCP, 'ro')) {
         return [];
       }
-      const res = await bridge.readConfigScope(HOST_CONFIG_SCOPES.PLUGIN_MCP);
+      const res = await bridge.read(HOST_CONFIG_SCOPES.PLUGIN_MCP);
       if (!res || typeof res !== 'object') {
         throw new Error('Host Config Bridge returned an invalid response for plugin MCP configs.');
       }
-      if (res.ok === false || res.status === 'error') {
-        throw new Error(String(res.reason || 'ERR_CONFIG_PLUGIN_READ_FAILED'));
-      }
       if (res.status === 'missing') {
         return [];
+      }
+      if (res.ok === false || res.status === 'error') {
+        throw new Error(String(res.reason || 'ERR_CONFIG_PLUGIN_READ_FAILED'));
       }
       const rawItems = Array.isArray(res.items) ? res.items : [];
       const normalized = [];
@@ -1633,7 +1630,7 @@
         return { exists: false, rawText: '', displayPath: '' };
       }
       try {
-        const res = await bridge.readConfigScope(HOST_CONFIG_SCOPES.LEGACY_MCP);
+        const res = await bridge.read(HOST_CONFIG_SCOPES.LEGACY_MCP);
         if (!res || typeof res !== 'object' || res.ok === false || res.status === 'missing' || res.status === 'error') {
           return { exists: false, rawText: '', displayPath: '' };
         }
@@ -1659,501 +1656,342 @@
     });
   }
 
-  // --- module: host-runtime.mjs ---
+  // --- module: storage-draft-config-store.mjs ---
   /**
-   * Host Capability Runtime Adapter (`src/adapters/antigravity/renderer/host-runtime.mjs`).
+   * AddonContextV3 Storage-Backed Draft Config Store (`src/adapters/antigravity/renderer/storage-draft-config-store.mjs`).
    *
    * SOLID Boundaries:
-   * - SRP: Owns `AddonManifest.v2` `addonHost` capability handle delegation (Shadow DOM
-   *   Option B2 `mountSlot({ container })`, `openModal`, slot-scoped `injectStyle`,
-   *   `addManagedListener`), loopback URL validation, namespaced language storage (with
-   *   1-time migration from legacy v2.1 key), theme URL building, origin/source-validated
-   *   iframe `postMessage` checks, and the zero-`innerHTML` EN/KO Native Sidecar launcher view.
-   * - DIP: Renderer mount adapters depend on this narrow capability port rather than
-   *   raw global `window.__ADDON_HOST_API__`, un-namespaced `localStorage`, or direct
-   *   `<style>` DOM injection.
+   * - SRP: Implements the vendor-independent `ConfigStorePort` contract over `ctx.storage`
+   *   (`get`/`set`/`onDidChange`) for surfaces where local filesystem Config Bridge is unavailable
+   *   (e.g., Remote Web or restricted Desktop). Enforces UTF-8 SHA-256 CAS guards and byte budgets.
+   * - LSP / DIP: Drop-in substitute for `HostBridgeConfigStore` consumed by `McpManagerService`
+   *   and `native-mcp-panel.mjs` with zero direct `window.localStorage` or `settingsBridge` calls.
    */
-  const SLOT_IDS = Object.freeze({
-    SETTINGS_PANE: 'antigravity-mcp-manager.pane',
-    SETTINGS_NAV: 'antigravity-mcp-manager.settings-nav',
-    CUSTOMIZATIONS_BTN: 'antigravity-mcp-manager.customizations-btn',
-    CUSTOMIZATIONS_OVERLAY: 'antigravity-mcp-manager.customizations-overlay',
-  });
-  const FRAME_ATTR = 'data-agy-mcp-manager-frame';
-  const LAUNCHER_ATTR = 'data-agy-mcp-sidecar-launcher';
-  const LEGACY_LANG_STORAGE_KEY = 'agy-mcp-manager-lang';
+  const STORAGE_DRAFT_SCHEMA_VERSION = 1;
+  const STORAGE_DRAFT_MAX_BYTES = 240000;
+  const STORAGE_DRAFT_KEY = 'remote-draft:v1';
+  const STORAGE_DRAFT_DISPLAY_PATH = 'browser-draft://mcp_config.json (ctx.storage)';
 
-  const KO_HOST_UI_MARKERS = Object.freeze(
-    new Set([
-      'mcp 서버',
-      '설정',
-      '일반',
-      '브라우저',
-      '애플리케이션',
-      '단축키',
-      '알림',
-      '모델',
-      '사용자 정의',
-      '맞춤 설정',
-      '커스터마이징',
-    ])
-  );
-  const EN_HOST_UI_MARKERS = Object.freeze(
-    new Set([
-      'mcp servers',
-      'settings',
-      'general',
-      'browser',
-      'application',
-      'shortcuts',
-      'notifications',
-      'models',
-      'customizations',
-    ])
-  );
-
-  const LAUNCHER_COPY = Object.freeze({
-    en: Object.freeze({
-      title: 'MCP Manager',
-      badge: 'AddonManifest.v2 · Config Bridge',
-      status: 'Awaiting Host Config Bridge',
-      lead: 'Running in antigravity-addons (AddonManifest.v2) Shadow DOM isolation (AUX_PANE sidecar removed). Direct editing inside Settings & Customizations popup activates automatically once the host exposes Named-Scope Config Bridge or loopback URL.',
-      stepsHeading: 'How this panel connects',
-      steps: Object.freeze([
-        'All MCP edits target ~/.gemini/config/mcp_config.json atomically with CAS conflict guards and secret redaction.',
-        'Upgrade antigravity-addons (formerly antigravity-native-addon-host) to v2.3.0+ supporting Named-Scope Config Bridge (Option A) for direct in-Settings & popup management.',
-        'This view switches automatically to the live MCP Manager UI as soon as the host bridge or loopback URL is provided.',
-      ]),
-      configLabel: 'Config File',
-      configPath: '~/.gemini/config/mcp_config.json',
-      surfaceSettings: 'Settings Integration',
-      surfaceCustomizations: 'Customizations Popup',
-    }),
-    ko: Object.freeze({
-      title: 'MCP 매니저',
-      badge: 'AddonManifest.v2 · Config Bridge',
-      status: '호스트 설정 브리지 대기 중',
-      lead: 'antigravity-addons(AddonManifest.v2) Shadow DOM 격리 모드로 실행 중입니다(AUX_PANE 사이드카 제거 완료). 호스트가 Named-Scope Config Bridge 또는 loopback URL을 제공하면 설정 화면과 Customizations 팝업에서 즉시 실시간 편집이 활성화됩니다.',
-      stepsHeading: '연동 안내',
-      steps: Object.freeze([
-        '모든 MCP 설정 변경은 CAS 충돌 방지 및 시크릿 마스킹과 함께 ~/.gemini/config/mcp_config.json에 원자적으로 저장됩니다.',
-        '설정 화면과 팝업에서 바로 편집하려면 Named-Scope Config Bridge(안 A)를 지원하는 antigravity-addons(구 antigravity-native-addon-host) v2.3.0+ 버전을 적용하세요.',
-        '호스트 브리지 또는 loopback URL이 연결되면 이 화면이 자동으로 실제 MCP 매니저 UI로 전환됩니다.',
-      ]),
-      configLabel: '설정 파일',
-      configPath: '~/.gemini/config/mcp_config.json',
-      surfaceSettings: 'Settings 통합',
-      surfaceCustomizations: 'Customizations 팝업',
-    }),
-  });
-  function isSafeLoopbackIframeUrl(rawUrl) {
-    if (typeof rawUrl !== 'string' || !rawUrl.trim()) return false;
-    try {
-      const parsed = new URL(rawUrl);
-      return parsed.protocol === 'http:' && parsed.hostname === '127.0.0.1' && Boolean(parsed.port);
-    } catch {
-      return false;
+  function utf8ByteLength(text) {
+    const s = String(text ?? '');
+    if (typeof TextEncoder !== 'undefined') {
+      return new TextEncoder().encode(s).length;
     }
+    return s.length;
   }
-  function normalizedText(el) {
-    return String(el?.textContent || '').trim().toLowerCase();
+
+  function extractDraftRawText(record) {
+    if (!record || typeof record !== 'object' || Array.isArray(record)) return null;
+    if (typeof record.rawText === 'string') return record.rawText;
+    if (record.mcpServers && typeof record.mcpServers === 'object' && !Array.isArray(record.mcpServers)) {
+      return `${JSON.stringify({ mcpServers: record.mcpServers }, null, 2)}\n`;
+    }
+    return null;
   }
-  function detectHostLang(doc = document) {
-    try {
-      if (doc && typeof doc.querySelectorAll === 'function') {
-        const nodes = doc.querySelectorAll('h1, h2, h3, h4, button, span, div, a, li');
-        let hasEnMarker = false;
-        for (const el of nodes) {
-          if (!el || (el.children && el.children.length > 2)) continue;
-          if (
-            typeof el.closest === 'function' &&
-            (el.closest('[data-addon-host-owner="antigravity-mcp-manager"]') ||
-              el.closest('[data-agy-mcp-manager-nav="true"]'))
-          ) {
-            continue;
-          }
-          const txt = normalizedText(el);
-          if (!txt || txt.length > 32) continue;
-          const baseTxt = txt.replace(/[\s(]*\d+[\s)]*$/, '').trim();
-          if (KO_HOST_UI_MARKERS.has(baseTxt)) return 'ko';
-          if (EN_HOST_UI_MARKERS.has(baseTxt)) hasEnMarker = true;
+  function createStorageDraftConfigStore(storage, { key = STORAGE_DRAFT_KEY } = {}) {
+    if (!storage || typeof storage.get !== 'function' || typeof storage.set !== 'function') {
+      throw new TypeError('Storage draft config store requires ctx.storage.get() and ctx.storage.set()');
+    }
+
+    let cachedSha256 = null;
+
+    async function readCurrentState() {
+      const record = await storage.get(key);
+      const rawText = extractDraftRawText(record);
+      if (rawText === null) {
+        cachedSha256 = null;
+        return { exists: false, rawText: '', sha256: null };
+      }
+      const sha256 = await sha256Hex(rawText);
+      cachedSha256 = sha256;
+      return { exists: true, rawText, sha256 };
+    }
+
+    async function readGlobalConfig() {
+      const cur = await readCurrentState();
+      return {
+        exists: cur.exists,
+        rawText: cur.rawText,
+        sha256: cur.sha256,
+        displayPath: STORAGE_DRAFT_DISPLAY_PATH,
+      };
+    }
+
+    async function writeGlobalConfig({ rawText, expectedSha256 }) {
+      const nextText = String(rawText ?? '');
+      if (utf8ByteLength(nextText) > STORAGE_DRAFT_MAX_BYTES) {
+        return {
+          ok: false,
+          code: ERROR_CODES.VALIDATION_ERROR,
+          error: `Remote draft exceeds maximum size (${STORAGE_DRAFT_MAX_BYTES} bytes).`,
+          actualSha256: cachedSha256,
+        };
+      }
+
+      const cur = await readCurrentState();
+      const expected = expectedSha256 ?? null;
+      if (expected !== cur.sha256) {
+        return {
+          ok: false,
+          code: ERROR_CODES.CONFLICT,
+          error: 'MCP draft changed in another tab or session (CAS conflict). Reload latest before retrying.',
+          actualSha256: cur.sha256,
+        };
+      }
+
+      const nextSha256 = await sha256Hex(nextText);
+      const payload = {
+        schemaVersion: STORAGE_DRAFT_SCHEMA_VERSION,
+        rawText: nextText,
+        updatedAt: new Date().toISOString(),
+      };
+
+      try {
+        const saved = await storage.set(key, payload);
+        if (saved === false) {
+          return {
+            ok: false,
+            code: ERROR_CODES.IO_ERROR,
+            error: 'Failed to persist MCP draft to ctx.storage.',
+            actualSha256: cur.sha256,
+          };
         }
-        if (hasEnMarker) return 'en';
-      }
-      const docLang = String(doc?.documentElement?.lang || '').trim().toLowerCase();
-      if (docLang === 'ko' || docLang.startsWith('ko-')) return 'ko';
-    } catch {
-      // Fall back safely to English if host DOM is unavailable
-    }
-    return 'en';
-  }
-  function hasVisibleBg(el, win = window) {
-    const bg = win.getComputedStyle(el)?.backgroundColor || '';
-    return Boolean(bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent');
-  }
-  function replaceLeafText(root, nextText, doc = document) {
-    const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    const textNodes = [];
-    let current = walker.nextNode();
-    while (current) {
-      if (current.nodeValue && current.nodeValue.trim()) {
-        textNodes.push(current);
-      }
-      current = walker.nextNode();
-    }
-    if (textNodes.length > 0) {
-      textNodes[0].nodeValue = nextText;
-      for (let i = 1; i < textNodes.length; i += 1) {
-        textNodes[i].nodeValue = '';
-      }
-    } else {
-      root.textContent = nextText;
-    }
-  }
-  function sameFrameBaseAndTheme(currentSrc, nextSrc) {
-    try {
-      const a = new URL(currentSrc);
-      const b = new URL(nextSrc);
-      a.searchParams.delete('lang');
-      b.searchParams.delete('lang');
-      return a.toString() === b.toString();
-    } catch {
-      return currentSrc === nextSrc;
-    }
-  }
-  function getSlotHostElement(rootEl) {
-    if (!rootEl) return null;
-    const root = typeof rootEl.getRootNode === 'function' ? rootEl.getRootNode() : null;
-    return root && root.host ? root.host : rootEl;
-  }
-  function assertAddonHostHandle(addonHost) {
-    if (!addonHost || typeof addonHost !== 'object') {
-      throw new Error('ERR_MISSING_ADDON_HOST_HANDLE');
-    }
-    for (const method of ['mountSlot', 'unmountSlot', 'injectStyle', 'removeStyle', 'openModal', 'onDispose']) {
-      if (typeof addonHost[method] !== 'function') {
-        throw new Error(`ERR_INVALID_ADDON_HOST_HANDLE:${method}`);
+        cachedSha256 = nextSha256;
+        return {
+          ok: true,
+          sha256: nextSha256,
+          backupFileName: null,
+        };
+      } catch (err) {
+        const rawReason = String(err?.code || err?.message || '').trim();
+        const isValidation =
+          rawReason.includes('QUOTA') ||
+          rawReason.includes('TOO_LARGE') ||
+          rawReason.includes('INVALID') ||
+          rawReason.includes('PROTO');
+        return {
+          ok: false,
+          code: isValidation ? ERROR_CODES.VALIDATION_ERROR : ERROR_CODES.IO_ERROR,
+          error: rawReason || 'Failed to persist MCP draft to ctx.storage.',
+          actualSha256: cur.sha256,
+        };
       }
     }
-    return addonHost;
-  }
-  function createSidecarLauncherView({ runtime, surface = 'settings', onLangChange = () => {}, doc = document }) {
-    const container = doc.createElement('section');
-    container.setAttribute(LAUNCHER_ATTR, 'true');
-    container.setAttribute('data-agy-mcp-surface', surface);
 
-    const card = doc.createElement('div');
-    card.setAttribute('data-agy-mcp-launcher-card', 'true');
-
-    const header = doc.createElement('header');
-    header.setAttribute('data-agy-mcp-launcher-header', 'true');
-
-    const titleWrap = doc.createElement('div');
-    titleWrap.setAttribute('data-agy-mcp-launcher-title-wrap', 'true');
-
-    const titleEl = doc.createElement('h2');
-    titleEl.setAttribute('data-agy-mcp-launcher-title', 'true');
-
-    const badgeEl = doc.createElement('span');
-    badgeEl.setAttribute('data-agy-mcp-launcher-badge', 'true');
-
-    titleWrap.appendChild(titleEl);
-    titleWrap.appendChild(badgeEl);
-
-    const langGroup = doc.createElement('div');
-    langGroup.setAttribute('data-agy-mcp-lang-switch', 'true');
-    langGroup.setAttribute('role', 'group');
-    langGroup.setAttribute('aria-label', 'Language');
-
-    const enBtn = doc.createElement('button');
-    enBtn.type = 'button';
-    enBtn.setAttribute('data-agy-mcp-lang-btn', 'en');
-    enBtn.textContent = 'EN';
-
-    const koBtn = doc.createElement('button');
-    koBtn.type = 'button';
-    koBtn.setAttribute('data-agy-mcp-lang-btn', 'ko');
-    koBtn.textContent = '한국어';
-
-    const handleLangClick = (lang) => (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      runtime.writeSavedLang(lang);
-      syncLang();
-      onLangChange(lang);
-    };
-    enBtn.addEventListener('click', handleLangClick('en'));
-    koBtn.addEventListener('click', handleLangClick('ko'));
-
-    langGroup.appendChild(enBtn);
-    langGroup.appendChild(koBtn);
-
-    header.appendChild(titleWrap);
-    header.appendChild(langGroup);
-
-    const metaRow = doc.createElement('div');
-    metaRow.setAttribute('data-agy-mcp-launcher-meta', 'true');
-
-    const statusPill = doc.createElement('span');
-    statusPill.setAttribute('data-agy-mcp-launcher-status', 'true');
-
-    const surfaceTag = doc.createElement('span');
-    surfaceTag.setAttribute('data-agy-mcp-launcher-surface', 'true');
-
-    metaRow.appendChild(statusPill);
-    metaRow.appendChild(surfaceTag);
-
-    const leadEl = doc.createElement('p');
-    leadEl.setAttribute('data-agy-mcp-launcher-lead', 'true');
-
-    const stepsTitle = doc.createElement('h3');
-    stepsTitle.setAttribute('data-agy-mcp-launcher-steps-title', 'true');
-
-    const stepsList = doc.createElement('ol');
-    stepsList.setAttribute('data-agy-mcp-launcher-steps', 'true');
-    const stepItems = [doc.createElement('li'), doc.createElement('li'), doc.createElement('li')];
-    for (const li of stepItems) {
-      stepsList.appendChild(li);
+    async function readPluginConfigs() {
+      return [];
     }
 
-    const footer = doc.createElement('div');
-    footer.setAttribute('data-agy-mcp-launcher-footer', 'true');
-
-    const configLabelEl = doc.createElement('span');
-    configLabelEl.setAttribute('data-agy-mcp-launcher-config-label', 'true');
-
-    const configPathEl = doc.createElement('code');
-    configPathEl.setAttribute('data-agy-mcp-launcher-config-path', 'true');
-
-    footer.appendChild(configLabelEl);
-    footer.appendChild(configPathEl);
-
-    card.appendChild(header);
-    card.appendChild(metaRow);
-    card.appendChild(leadEl);
-    card.appendChild(stepsTitle);
-    card.appendChild(stepsList);
-    card.appendChild(footer);
-    container.appendChild(card);
-
-    function syncLang() {
-      const lang = (typeof runtime.resolveEffectiveLang === 'function' ? runtime.resolveEffectiveLang() : runtime.readSavedLang()) === 'ko' ? 'ko' : 'en';
-      const copy = LAUNCHER_COPY[lang];
-      container.setAttribute('data-agy-mcp-lang', lang);
-      titleEl.textContent = copy.title;
-      badgeEl.textContent = copy.badge;
-      statusPill.textContent = copy.status;
-      surfaceTag.textContent = surface === 'customizations' ? copy.surfaceCustomizations : copy.surfaceSettings;
-      leadEl.textContent = copy.lead;
-      stepsTitle.textContent = copy.stepsHeading;
-      for (let i = 0; i < stepItems.length; i += 1) {
-        stepItems[i].textContent = copy.steps[i] || '';
-      }
-      configLabelEl.textContent = copy.configLabel;
-      configPathEl.textContent = copy.configPath;
-      enBtn.setAttribute('aria-pressed', lang === 'en' ? 'true' : 'false');
-      koBtn.setAttribute('aria-pressed', lang === 'ko' ? 'true' : 'false');
+    async function readLegacyConfig() {
+      return { exists: false, rawText: '', displayPath: '' };
     }
-
-    syncLang();
 
     return Object.freeze({
-      element: container,
-      syncLang,
+      readGlobalConfig,
+      writeGlobalConfig,
+      readPluginConfigs,
+      readLegacyConfig,
     });
   }
-  function createHostRuntime({ addonHost, win = window, doc = document }) {
-    const host = assertAddonHostHandle(addonHost);
-    const pluginId = String(host.pluginId || 'antigravity-mcp-manager');
-    const trustLevel = String(host.trustLevel || 'restricted');
-    const schemaVersion = Number(host.schemaVersion || 2);
-    const storageNamespace = String(host.storageNamespace || pluginId);
-    const ipcChannelPrefix = host.ipcChannelPrefix ? String(host.ipcChannelPrefix) : 'mcp-manager:';
-    const langStorageKey = `${storageNamespace}:lang`;
+
+  // --- module: host-runtime.mjs ---
+  /**
+   * AddonContextV3 Runtime Adapter (`src/adapters/antigravity/renderer/host-runtime.mjs`).
+   *
+   * SOLID Boundaries:
+   * - SRP: Validates `AddonContextV3` (`apiVersion === 3`), branches strictly on abstract
+   *   `ctx.env.surface` / `ctx.env.layoutMode` / `ctx.env.capabilities.hasConfigBridge` (zero
+   *   `hostProfileId`, zero raw DOM scraping, zero `window.localStorage`), manages `ctx.storage`
+   *   language persistence, and exposes a narrow capability facade to UI adapters.
+   * - DIP: `mcp-v3-shell.mjs` and `native-mcp-panel.mjs` depend on this capability port rather
+   *   than host internals.
+   */
+  const LANG_STORAGE_KEY = 'lang';
+  function normalizeLangCode(raw) {
+    const val = String(raw || '').trim().toLowerCase();
+    if (val === 'ko' || val.startsWith('ko-')) return 'ko';
+    if (val === 'en' || val.startsWith('en-')) return 'en';
+    return '';
+  }
+  function assertAddonContextV3(ctx) {
+    if (!ctx || typeof ctx !== 'object') {
+      throw new Error('ERR_MISSING_ADDON_CONTEXT_V3');
+    }
+    if (ctx.apiVersion !== 3) {
+      throw new Error(`ERR_UNSUPPORTED_ADDON_API_VERSION:${String(ctx.apiVersion)}`);
+    }
+    for (const ns of ['meta', 'env', 'ui', 'storage', 'i18n', 'theme', 'lifecycle']) {
+      if (!ctx[ns] || typeof ctx[ns] !== 'object') {
+        throw new Error(`ERR_INVALID_ADDON_CONTEXT_V3:${ns}`);
+      }
+    }
+    for (const fn of ['openPanel', 'openModal', 'registerSettingsPage', 'registerStatusItem', 'registerCommand', 'showToast', 'confirm']) {
+      if (typeof ctx.ui[fn] !== 'function') {
+        throw new Error(`ERR_INVALID_ADDON_CONTEXT_V3:ui.${fn}`);
+      }
+    }
+    for (const fn of ['get', 'set', 'onDidChange']) {
+      if (typeof ctx.storage[fn] !== 'function') {
+        throw new Error(`ERR_INVALID_ADDON_CONTEXT_V3:storage.${fn}`);
+      }
+    }
+    if (typeof ctx.lifecycle.onDispose !== 'function') {
+      throw new Error('ERR_INVALID_ADDON_CONTEXT_V3:lifecycle.onDispose');
+    }
+    return ctx;
+  }
+  function createHostRuntime({ ctx, doc = typeof document !== 'undefined' ? document : null }) {
+    const v3 = assertAddonContextV3(ctx);
+    const pluginId = String(v3.meta.pluginId || 'antigravity-mcp-manager');
+    const displayName = String(v3.meta.displayName || 'Antigravity MCP Manager');
+    const version = String(v3.meta.version || '4.0.0');
+    const trustLevel = String(v3.meta.trustLevel || 'restricted');
+    const surface = v3.env.surface === 'remote-web' ? 'remote-web' : 'desktop';
+
+    let savedLang = '';
+
+    function detectDefaultLang() {
+      try {
+        const locale = typeof v3.i18n.getLocale === 'function' ? v3.i18n.getLocale() : 'en';
+        return normalizeLangCode(locale) || 'en';
+      } catch {
+        return 'en';
+      }
+    }
 
     function readSavedLang() {
+      return savedLang;
+    }
+
+    function resolveEffectiveLang() {
+      if (savedLang === 'ko' || savedLang === 'en') return savedLang;
+      return detectDefaultLang();
+    }
+
+    async function loadSavedLang() {
       try {
-        const storage = win.localStorage;
-        if (!storage) return '';
-        const namespaced = storage.getItem(langStorageKey);
-        if (namespaced === 'ko' || namespaced === 'en') return namespaced;
-        // One-time migration from legacy v2.1.0 un-namespaced key
-        const legacy = storage.getItem(LEGACY_LANG_STORAGE_KEY);
-        if (legacy === 'ko' || legacy === 'en') {
-          try {
-            storage.setItem(langStorageKey, legacy);
-          } catch {
-            // Ignore write errors during migration
-          }
-          return legacy;
-        }
-        return '';
+        const stored = await v3.storage.get(LANG_STORAGE_KEY);
+        const norm = normalizeLangCode(stored);
+        if (norm) savedLang = norm;
       } catch {
-        return '';
+        // Ignore storage read errors; fall back to host locale
       }
+      return resolveEffectiveLang();
     }
 
     function writeSavedLang(lang) {
-      if (lang !== 'ko' && lang !== 'en') return false;
+      const norm = normalizeLangCode(lang);
+      if (!norm) return false;
+      savedLang = norm;
       try {
-        win.localStorage?.setItem(langStorageKey, lang);
+        Promise.resolve(v3.storage.set(LANG_STORAGE_KEY, norm)).catch(() => {});
         return true;
       } catch {
         return false;
       }
     }
 
-    function resolveEffectiveLang() {
-      const saved = readSavedLang();
-      if (saved === 'ko' || saved === 'en') return saved;
-      return detectHostLang(doc);
+    function getSurface() {
+      return surface;
+    }
+
+    function getLayoutMode() {
+      return String(v3.env.layoutMode || 'desktop');
     }
 
     function hasConfigBridge() {
-      return Boolean(resolveHostConfigBridge(host));
+      return Boolean(resolveHostConfigBridge(v3));
+    }
+
+    function getConfigStoreMode() {
+      return hasConfigBridge() ? 'host-bridge' : 'remote-draft';
     }
 
     function createConfigService() {
-      const bridge = resolveHostConfigBridge(host);
-      if (!bridge) return null;
-      const configStore = createHostBridgeConfigStore(bridge);
+      if (hasConfigBridge()) {
+        const configStore = createHostBridgeConfigStore(v3);
+        return new McpManagerService({ configStore });
+      }
+      const configStore = createStorageDraftConfigStore(v3.storage, { key: STORAGE_DRAFT_KEY });
       return new McpManagerService({ configStore });
     }
 
-    function getServerUrl() {
-      const raw = win.__AGY_MCP_MANAGER_URL__;
-      return isSafeLoopbackIframeUrl(raw) ? raw : '';
+    function createStyleElementSafe(cssText) {
+      if (typeof v3.ui.createStyleElementSafe === 'function') {
+        return v3.ui.createStyleElementSafe(cssText);
+      }
+      if (!doc || typeof doc.createElement !== 'function') return null;
+      const styleEl = doc.createElement('style');
+      styleEl.textContent = String(cssText || '');
+      return styleEl;
     }
 
-    function bindServerUrlListener(callback) {
-      if (typeof callback !== 'function') return () => {};
-      const handler = (nextUrl) => {
-        callback(isSafeLoopbackIframeUrl(nextUrl) ? nextUrl : '');
-      };
-      win.__AGY_MCP_ON_SERVER_URL__ = handler;
-      return () => {
-        if (win.__AGY_MCP_ON_SERVER_URL__ === handler) {
-          try {
-            delete win.__AGY_MCP_ON_SERVER_URL__;
-          } catch {
-            win.__AGY_MCP_ON_SERVER_URL__ = undefined;
-          }
-        }
-      };
-    }
-
-    function buildThemedIframeUrl(baseUrl, contentPane) {
+    function showToast(opts) {
       try {
-        const url = new URL(baseUrl);
-        url.searchParams.set('hostMode', 'settings');
-        const effectiveLang = resolveEffectiveLang();
-        if (effectiveLang) {
-          url.searchParams.set('lang', effectiveLang);
-        }
-        const bodyCs = doc.body ? win.getComputedStyle(doc.body) : null;
-        if (bodyCs?.fontFamily) {
-          url.searchParams.set('hostFont', bodyCs.fontFamily);
-        }
-        if (bodyCs?.color) {
-          url.searchParams.set('hostFg', bodyCs.color);
-        }
-        const paneBg = contentPane ? win.getComputedStyle(contentPane)?.backgroundColor : '';
-        if (paneBg && paneBg !== 'rgba(0, 0, 0, 0)' && paneBg !== 'transparent') {
-          url.searchParams.set('hostBg', paneBg);
-        } else if (bodyCs?.backgroundColor && bodyCs.backgroundColor !== 'rgba(0, 0, 0, 0)') {
-          url.searchParams.set('hostBg', bodyCs.backgroundColor);
-        }
-        return url.toString();
+        return v3.ui.showToast(opts);
       } catch {
-        return baseUrl;
+        return { id: '', dismiss() {} };
       }
     }
 
-    function isTrustedIframeMessage(ev, frames) {
-      const baseUrl = getServerUrl();
-      if (!baseUrl) return false;
+    async function confirm(opts) {
       try {
-        const expectedOrigin = new URL(baseUrl).origin;
-        if (ev.origin !== expectedOrigin) return false;
+        return Boolean(await v3.ui.confirm(opts));
       } catch {
-        return false;
+        return true;
       }
-      if (!Array.isArray(frames) || frames.length === 0) return false;
-      return frames.some((frame) => frame && frame.contentWindow === ev.source);
     }
 
-    function mountSlot(slotId, containerOrOpts) {
-      const opts =
-        containerOrOpts && typeof containerOrOpts === 'object' && containerOrOpts.nodeType === 1
-          ? { container: containerOrOpts }
-          : containerOrOpts || {};
-      return host.mountSlot(slotId, opts);
-    }
-
-    function injectStyle(styleId, cssText, opts) {
-      return opts ? host.injectStyle(styleId, cssText, opts) : host.injectStyle(styleId, cssText);
-    }
-
-    function addManagedListener(target, type, listener, opts) {
-      if (!target || typeof target.addEventListener !== 'function') return () => {};
-      if (typeof host.addManagedListener === 'function') {
-        const detach = host.addManagedListener(target, type, listener, opts);
-        return typeof detach === 'function' ? detach : () => {};
-      }
-      target.addEventListener(type, listener, opts);
-      let active = true;
-      const detach = () => {
-        if (!active) return;
-        active = false;
-        try {
-          target.removeEventListener(type, listener, opts);
-        } catch {
-          // Ignore teardown errors
+    function onStorageChange(cb) {
+      if (typeof cb !== 'function') return () => {};
+      return v3.storage.onDidChange((ev) => {
+        if (ev && ev.key === LANG_STORAGE_KEY) {
+          const norm = normalizeLangCode(ev.newValue);
+          if (norm) savedLang = norm;
         }
-      };
-      host.onDispose(detach);
-      return detach;
+        cb(ev);
+      });
     }
 
-    function getSurfaceBounds(surfaceIdOrOpts) {
-      return typeof host.getSurfaceBounds === 'function' ? host.getSurfaceBounds(surfaceIdOrOpts) : null;
-    }
-
-    function getActiveSurface() {
-      return typeof host.getActiveSurface === 'function' ? host.getActiveSurface() : null;
-    }
-
-    function listSurfaces() {
-      return typeof host.listSurfaces === 'function' ? host.listSurfaces() : [];
+    function onThemeChange(cb) {
+      if (typeof cb !== 'function' || typeof v3.theme.onDidChange !== 'function') return () => {};
+      return v3.theme.onDidChange(cb);
     }
 
     return Object.freeze({
+      apiVersion: 3,
       pluginId,
+      displayName,
+      version,
       trustLevel,
-      schemaVersion,
-      storageNamespace,
-      ipcChannelPrefix,
-      langStorageKey,
+      getSurface,
+      getLayoutMode,
+      hasConfigBridge,
+      getConfigStoreMode,
+      createConfigService,
       readSavedLang,
+      loadSavedLang,
       writeSavedLang,
       resolveEffectiveLang,
-      hasConfigBridge,
-      createConfigService,
-      getServerUrl,
-      bindServerUrlListener,
-      buildThemedIframeUrl,
-      isTrustedIframeMessage,
-      getSlotHostElement,
-      mountSlot,
-      unmountSlot: (slotId) => host.unmountSlot(slotId),
-      openModal: (slotId, opts) => host.openModal(slotId, opts || {}),
-      getSurfaceBounds,
-      getActiveSurface,
-      listSurfaces,
-      injectStyle,
-      removeStyle: (styleId) => host.removeStyle(styleId),
-      addManagedListener,
-      onDispose: (fn) => host.onDispose(fn),
+      showToast,
+      confirm,
+      registerCommand: (commandId, spec) => v3.ui.registerCommand(commandId, spec),
+      registerStatusItem: (spec) => v3.ui.registerStatusItem(spec),
+      registerSettingsPage: (spec) => v3.ui.registerSettingsPage(spec),
+      openPanel: (opts) => v3.ui.openPanel(opts),
+      openModal: (opts) => v3.ui.openModal(opts),
+      openPopup: (opts) => v3.ui.openPopup(opts),
+      createStyleElementSafe,
+      getThemeMode: () => (typeof v3.theme.getMode === 'function' ? v3.theme.getMode() : 'dark'),
+      onThemeChange,
+      onStorageChange,
+      signal: v3.lifecycle.signal || null,
+      onDispose: (fn) => v3.lifecycle.onDispose(fn),
+      addManagedListener: (target, type, listener, opts) =>
+        typeof v3.lifecycle.addManagedListener === 'function'
+          ? v3.lifecycle.addManagedListener(target, type, listener, opts)
+          : () => {},
+      runSafe: (fn) => (typeof v3.lifecycle.runSafe === 'function' ? v3.lifecycle.runSafe(fn) : fn()),
     });
   }
 
@@ -2177,10 +2015,21 @@
       langAria: 'Language',
       loading: 'Loading…',
       bridgeConnected: 'Host Bridge Connected',
+      remoteDraftBadge: 'Remote Draft (Browser)',
       refresh: 'Refresh',
       addServer: '+ Add Server',
       tabServers: 'Servers',
       tabRaw: 'Raw JSON',
+      remoteDraftHint: 'Browser-local draft (ctx.storage). Import or export mcp_config.json to sync with Desktop.',
+      importJsonFile: 'Import JSON',
+      copyJson: 'Copy JSON',
+      downloadJson: 'Download JSON',
+      copiedJsonNotice: 'Copied mcp_config.json to clipboard.',
+      downloadedJsonNotice: 'Downloaded mcp_config.json.',
+      importedJsonNotice: 'Imported mcp_config.json into browser draft.',
+      importJsonFailed: 'Failed to import JSON file.',
+      copyJsonFailed: 'Clipboard copy unavailable. Use Raw JSON or Download JSON.',
+      downloadJsonFailed: 'Failed to download mcp_config.json.',
       loadFailed: 'Failed to load MCP configuration.',
       saveFailed: 'Save failed.',
       cloneFailed: 'Clone failed.',
@@ -2248,10 +2097,21 @@
       langAria: '언어 선택',
       loading: '불러오는 중…',
       bridgeConnected: '호스트 브리지 연결됨',
+      remoteDraftBadge: '원격 초안 (브라우저 저장)',
       refresh: '새로고침',
       addServer: '+ 서버 추가',
       tabServers: '서버 목록',
       tabRaw: '원본 JSON',
+      remoteDraftHint: '브라우저 저장소(ctx.storage) 기반 원격 초안입니다. PC와 동기화하려면 mcp_config.json을 가져오거나 내보내세요.',
+      importJsonFile: 'JSON 가져오기',
+      copyJson: 'JSON 복사',
+      downloadJson: 'JSON 다운로드',
+      copiedJsonNotice: 'mcp_config.json을 클립보드에 복사했습니다.',
+      downloadedJsonNotice: 'mcp_config.json 파일을 다운로드했습니다.',
+      importedJsonNotice: 'JSON 파일을 브라우저 초안으로 가져왔습니다.',
+      importJsonFailed: 'JSON 파일 가져오기에 실패했습니다.',
+      copyJsonFailed: '클립보드 복사를 사용할 수 없습니다. 원본 JSON 또는 다운로드를 이용해 주세요.',
+      downloadJsonFailed: 'mcp_config.json 다운로드에 실패했습니다.',
       loadFailed: 'MCP 설정을 불러오지 못했습니다.',
       saveFailed: '저장에 실패했습니다.',
       cloneFailed: '복제에 실패했습니다.',
@@ -2318,13 +2178,25 @@
   function createNativeMcpPanel({
     runtime,
     service,
+    mode = null,
     surface = 'settings',
     onLangChange = () => {},
+    onSnapshotChange = () => {},
     doc = document,
+    win: winOverride = null,
   }) {
     if (!service) {
       throw new Error('ERR_MISSING_MCP_MANAGER_SERVICE');
     }
+
+    const panelMode =
+      mode === 'remote-draft' || mode === 'host-bridge'
+        ? mode
+        : typeof runtime.getConfigStoreMode === 'function' && runtime.getConfigStoreMode() === 'remote-draft'
+          ? 'remote-draft'
+          : 'host-bridge';
+    const isRemoteDraft = panelMode === 'remote-draft';
+    const win = winOverride || doc?.defaultView || (typeof window !== 'undefined' ? window : null);
 
     let disposed = false;
     let activeTab = 'servers';
@@ -2367,6 +2239,35 @@
       }
     }
 
+    function createTextChild(text) {
+      const str = String(text);
+      if (typeof doc.createTextNode === 'function') {
+        return doc.createTextNode(str);
+      }
+      const span = doc.createElement('span');
+      span.textContent = str;
+      return span;
+    }
+
+    function setClassFlag(node, token, enabled) {
+      if (!node) return;
+      if (node.classList && typeof node.classList.toggle === 'function') {
+        node.classList.toggle(token, Boolean(enabled));
+        return;
+      }
+      const parts = String(node.className || '')
+        .split(/\s+/)
+        .filter(Boolean);
+      const has = parts.includes(token);
+      if (enabled && !has) parts.push(token);
+      else if (!enabled && has) parts.splice(parts.indexOf(token), 1);
+      node.className = parts.join(' ');
+    }
+
+    function toDataAttrName(camelKey) {
+      return `data-${String(camelKey).replace(/[A-Z]/g, (ch) => `-${ch.toLowerCase()}`)}`;
+    }
+
     function el(tag, props, ...children) {
       const node = doc.createElement(tag);
       let deferredValue;
@@ -2379,7 +2280,9 @@
           else if (k === 'disabled') node.disabled = Boolean(v);
           else if (k === 'dataset' && typeof v === 'object') {
             for (const [dk, dv] of Object.entries(v)) {
-              if (dv !== undefined && dv !== null) node.dataset[dk] = String(dv);
+              if (dv !== undefined && dv !== null) {
+                node.setAttribute(toDataAttrName(dk), String(dv));
+              }
             }
           } else if (k.startsWith('on') && typeof v === 'function') {
             node.addEventListener(k.slice(2).toLowerCase(), v);
@@ -2388,16 +2291,22 @@
           }
         }
       }
+      const flatChildren = [];
       for (const child of children) {
         if (child === null || child === undefined || child === false) continue;
         if (Array.isArray(child)) {
           for (const c of child) {
-            if (c !== null && c !== undefined && c !== false) {
-              node.appendChild(typeof c === 'string' ? doc.createTextNode(c) : c);
-            }
+            if (c !== null && c !== undefined && c !== false) flatChildren.push(c);
           }
         } else {
-          node.appendChild(typeof child === 'string' ? doc.createTextNode(child) : child);
+          flatChildren.push(child);
+        }
+      }
+      if (flatChildren.length === 1 && typeof flatChildren[0] === 'string' && typeof doc.createTextNode !== 'function') {
+        node.textContent = flatChildren[0];
+      } else {
+        for (const c of flatChildren) {
+          node.appendChild(typeof c === 'string' ? createTextChild(c) : c);
         }
       }
       if (deferredValue !== undefined) {
@@ -2409,12 +2318,16 @@
     const root = el('section', {
       [NATIVE_PANEL_ATTR]: 'true',
       'data-agy-mcp-surface': surface,
+      'data-agy-mcp-mode': panelMode,
     });
     const shell = el('div', { className: 'mcp-shell' });
     const headerEl = el('header', { className: 'mcp-header' });
     const titleGroup = el('div', { className: 'mcp-title-group' });
     const titleEl = surface === 'settings' ? el('h1', { className: 'mcp-title' }) : null;
-    const statusBadge = el('span', { className: 'mcp-badge mcp-badge-ok', dataset: { testid: 'bridge-status-badge' } });
+    const statusBadge = el('span', {
+      className: isRemoteDraft ? 'mcp-badge mcp-badge-info' : 'mcp-badge mcp-badge-ok',
+      dataset: { testid: 'bridge-status-badge' },
+    });
     if (titleEl) titleGroup.appendChild(titleEl);
     titleGroup.appendChild(statusBadge);
 
@@ -2639,6 +2552,11 @@
         if (data.globalConfig?.malformed) {
           activeTab = 'raw';
         }
+        if (typeof onSnapshotChange === 'function') {
+          try {
+            onSnapshotChange(data);
+          } catch {}
+        }
         syncStaticLabels();
         renderAll();
       } catch (err) {
@@ -2772,11 +2690,12 @@
       });
     }
 
-    async function submitRawJson(confirmStdio = false) {
+    async function submitRawJson(confirmStdio = false, rawTextOverride = null, successNoticeKey = null) {
       if (!snapshot || disposed) return;
       await runMutation('rawSaveFailed', async () => {
+        const nextRawText = typeof rawTextOverride === 'string' ? rawTextOverride : rawDraft;
         const payload = {
-          rawText: rawDraft,
+          rawText: nextRawText,
           expectedSha256: snapshot.globalConfig.sha256,
           confirmStdio,
         };
@@ -2786,6 +2705,7 @@
           pendingStdioConfirm = {
             kind: 'raw',
             payload,
+            successNoticeKey,
             preview: { name: t('rawStdioPreviewName'), command: t('rawStdioPreviewCmd'), args: [] },
           };
           renderAll();
@@ -2800,9 +2720,173 @@
           return false;
         }
         pendingStdioConfirm = null;
-        clearBanner();
-        return 'raw';
+        if (successNoticeKey) {
+          setBanner('info', t(successNoticeKey));
+        } else {
+          clearBanner();
+        }
+        return activeTab === 'raw' ? 'raw' : 'list';
       });
+    }
+
+    async function resolveExportRawText() {
+      if (activeTab === 'raw' && rawDraftDirty && typeof rawDraft === 'string' && rawDraft.trim()) {
+        return rawDraft;
+      }
+      if (typeof snapshot?.globalConfig?.rawText === 'string' && snapshot.globalConfig.rawText.trim()) {
+        return snapshot.globalConfig.rawText;
+      }
+      const fresh = await service.getSnapshot({ includeRawText: true });
+      if (fresh?.ok && typeof fresh.globalConfig?.rawText === 'string' && fresh.globalConfig.rawText.trim()) {
+        return fresh.globalConfig.rawText;
+      }
+      return '{\n  "mcpServers": {}\n}\n';
+    }
+
+    async function handleImportJsonText(rawText) {
+      if (disposed) return;
+      if (!snapshot) {
+        await loadSnapshot(true);
+        if (!snapshot || disposed) return;
+      }
+      rawDraft = String(rawText ?? '');
+      rawDraftDirty = true;
+      await submitRawJson(false, rawDraft, 'importedJsonNotice');
+    }
+
+    async function handleCopyJson() {
+      if (disposed) return;
+      try {
+        const text = await resolveExportRawText();
+        const clipboard = win?.navigator?.clipboard;
+        if (!clipboard || typeof clipboard.writeText !== 'function') {
+          setBanner('warn', t('copyJsonFailed'));
+          return;
+        }
+        await clipboard.writeText(text);
+        if (!disposed) {
+          setBanner('info', t('copiedJsonNotice'));
+          if (typeof runtime.showToast === 'function') {
+            runtime.showToast({ message: t('copiedJsonNotice'), variant: 'success' });
+          }
+        }
+      } catch {
+        if (!disposed) setBanner('warn', t('copyJsonFailed'));
+      }
+    }
+
+    async function handleDownloadJson() {
+      if (disposed) return;
+      try {
+        const text = await resolveExportRawText();
+        const BlobCtor = win?.Blob || (typeof Blob !== 'undefined' ? Blob : null);
+        const UrlApi = win?.URL || (typeof URL !== 'undefined' ? URL : null);
+        if (!BlobCtor || !UrlApi || typeof UrlApi.createObjectURL !== 'function') {
+          setBanner('warn', t('downloadJsonFailed'));
+          return;
+        }
+        const blob = new BlobCtor([text], { type: 'application/json;charset=utf-8' });
+        const href = UrlApi.createObjectURL(blob);
+        const link = doc.createElement('a');
+        link.setAttribute('href', href);
+        link.setAttribute('download', 'mcp_config.json');
+        link.style.display = 'none';
+        const parent = doc.body || root;
+        parent.appendChild(link);
+        try {
+          link.click();
+        } finally {
+          if (link.parentNode) link.parentNode.removeChild(link);
+          if (typeof UrlApi.revokeObjectURL === 'function') {
+            UrlApi.revokeObjectURL(href);
+          }
+        }
+        if (!disposed) {
+          setBanner('info', t('downloadedJsonNotice'));
+          if (typeof runtime.showToast === 'function') {
+            runtime.showToast({ message: t('downloadedJsonNotice'), variant: 'success' });
+          }
+        }
+      } catch {
+        if (!disposed) setBanner('error', t('downloadJsonFailed'));
+      }
+    }
+
+    function renderRemoteIoBar() {
+      const fileInput = el('input', {
+        type: 'file',
+        accept: '.json,application/json',
+        className: 'mcp-file-input-hidden',
+        dataset: { testid: 'input-import-json-file' },
+        onChange: (ev) => {
+          const inputEl = ev.target;
+          const file = inputEl?.files?.[0];
+          if (!file) return;
+          Promise.resolve()
+            .then(() => {
+              if (typeof file.text === 'function') return file.text();
+              return new Promise((resolve, reject) => {
+                const ReaderCtor = win?.FileReader || (typeof FileReader !== 'undefined' ? FileReader : null);
+                if (!ReaderCtor) {
+                  reject(new Error('FileReader unavailable'));
+                  return;
+                }
+                const reader = new ReaderCtor();
+                reader.onload = () => resolve(String(reader.result || ''));
+                reader.onerror = () => reject(reader.error || new Error('File read failed'));
+                reader.readAsText(file);
+              });
+            })
+            .then((text) => handleImportJsonText(text))
+            .catch(() => {
+              if (!disposed) setBanner('error', t('importJsonFailed'));
+            })
+            .finally(() => {
+              if (inputEl) inputEl.value = '';
+            });
+        },
+      });
+
+      return el(
+        'div',
+        { className: 'mcp-remote-io-bar', dataset: { testid: 'remote-io-bar' } },
+        el('span', { className: 'mcp-remote-io-hint' }, t('remoteDraftHint')),
+        fileInput,
+        el(
+          'div',
+          { className: 'mcp-row-actions' },
+          el(
+            'button',
+            {
+              type: 'button',
+              className: 'mcp-btn mcp-btn-sm',
+              dataset: { testid: 'btn-import-json-file' },
+              onClick: () => fileInput.click(),
+            },
+            t('importJsonFile')
+          ),
+          el(
+            'button',
+            {
+              type: 'button',
+              className: 'mcp-btn mcp-btn-sm',
+              dataset: { testid: 'btn-copy-json' },
+              onClick: () => void handleCopyJson(),
+            },
+            t('copyJson')
+          ),
+          el(
+            'button',
+            {
+              type: 'button',
+              className: 'mcp-btn mcp-btn-sm',
+              dataset: { testid: 'btn-download-json' },
+              onClick: () => void handleDownloadJson(),
+            },
+            t('downloadJson')
+          )
+        )
+      );
     }
 
     async function confirmPendingStdio() {
@@ -2822,7 +2906,7 @@
       } else if (pending.kind === 'legacy') {
         await submitImportLegacy({ name: pending.payload.serverName }, true);
       } else if (pending.kind === 'raw') {
-        await submitRawJson(true);
+        await submitRawJson(true, pending.payload?.rawText ?? null, pending.successNoticeKey || null);
       }
     }
 
@@ -2964,7 +3048,13 @@
           el(
             'div',
             {
-              className: `mcp-banner ${bannerState.kind === 'error' ? 'mcp-banner-error' : 'mcp-banner-warn'}`,
+              className: `mcp-banner ${
+                bannerState.kind === 'error'
+                  ? 'mcp-banner-error'
+                  : bannerState.kind === 'info'
+                    ? 'mcp-banner-info'
+                    : 'mcp-banner-warn'
+              }`,
               role: 'alert',
               dataset: { testid: 'status-banner' },
             },
@@ -3315,7 +3405,10 @@
 
     function renderServersTab() {
       const nodes = [];
-      if (pendingStdioConfirm && (pendingStdioConfirm.kind === 'clone' || pendingStdioConfirm.kind === 'legacy')) {
+      if (isRemoteDraft) {
+        nodes.push(renderRemoteIoBar());
+      }
+      if (pendingStdioConfirm && (pendingStdioConfirm.kind === 'clone' || pendingStdioConfirm.kind === 'legacy' || (isRemoteDraft && pendingStdioConfirm.kind === 'raw'))) {
         nodes.push(renderStdioConfirmPanel());
       }
 
@@ -3538,6 +3631,7 @@
         },
       });
       return [
+        isRemoteDraft ? renderRemoteIoBar() : null,
         el(
           'section',
           { className: 'mcp-card' },
@@ -3566,7 +3660,7 @@
       const lang = getLang();
       root.setAttribute('data-agy-mcp-lang', lang);
       if (titleEl) titleEl.textContent = t('appTitle');
-      statusBadge.textContent = busy && !snapshot ? t('loading') : t('bridgeConnected');
+      statusBadge.textContent = busy && !snapshot ? t('loading') : isRemoteDraft ? t('remoteDraftBadge') : t('bridgeConnected');
       langSwitch.setAttribute('aria-label', t('langAria'));
       btnLangEn.setAttribute('aria-pressed', lang === 'en' ? 'true' : 'false');
       btnLangKo.setAttribute('aria-pressed', lang === 'ko' ? 'true' : 'false');
@@ -3578,9 +3672,9 @@
 
     function renderAll() {
       if (disposed) return;
-      tabServers.classList.toggle('active', activeTab === 'servers');
+      setClassFlag(tabServers, 'active', activeTab === 'servers');
       tabServers.setAttribute('aria-selected', String(activeTab === 'servers'));
-      tabRaw.classList.toggle('active', activeTab === 'raw');
+      setClassFlag(tabRaw, 'active', activeTab === 'raw');
       tabRaw.setAttribute('aria-selected', String(activeTab === 'raw'));
       renderBanners();
       clearNode(mainRegion);
@@ -3617,158 +3711,15 @@
 
   // --- module: addon-styles.mjs ---
   /**
-   * ShadowRoot & Slot-Scoped CSS Definitions (`src/adapters/antigravity/renderer/addon-styles.mjs`).
+   * Tier-3 Canvas CSS Definitions (`src/adapters/antigravity/renderer/addon-styles.mjs`).
    *
    * SOLID Responsibility (SRP):
-   * - Declares strictly slot-scoped CSS injected via `addonHost.injectStyle(styleId, cssText, { slotId })`
-   *   for every Shadow DOM slot (`pane`, `customizations-btn`, `customizations-overlay`).
-   * - 100% compliant with `antigravity-native-addon-host` v2 `validateSafeCssText` and
-   *   `scopeCssToOwner` (zero `@import`, zero CSS nesting, zero sibling combinators, exact
-   *   `:host` and `[data-addon-host-owner="antigravity-mcp-manager"].addon-host-slot-root` rooting).
-   * - Light DOM `settings-nav` (`shadow: false`) sets inline `display: contents` directly on its
-   *   host wrapper so zero `<style>` tags pollute `document.head`.
+   * - Declares `--ag-*` semantic theme-tokenized CSS for the Tier-3 `NativeMcpPanel` mounted
+   *   inside host-managed Shadow DOM overlays (`ui.openModal` / `ui.registerSettingsPage`) via
+   *   `ctx.ui.createStyleElementSafe(buildNativePanelCss())`.
+   * - 100% compliant with `antigravity-addons` v3 `validateSafeCssText` (zero `@import`, zero
+   *   CSS nesting, zero `:has(`, zero unsafe URLs).
    */
-  const OWNER_ROOT = '[data-addon-host-owner="antigravity-mcp-manager"].addon-host-slot-root';
-  const STYLE_IDS = Object.freeze({
-    PANE: 'mcp-manager-pane',
-    CUSTOMIZATIONS_BTN: 'mcp-manager-customizations-btn',
-    CUSTOMIZATIONS_OVERLAY: 'mcp-manager-customizations-overlay',
-  });
-
-  function buildLauncherCss() {
-    return [
-      '[data-agy-mcp-sidecar-launcher="true"] {',
-      '  box-sizing: border-box;',
-      '  width: 100%;',
-      '  height: 100%;',
-      '  flex: 1 1 auto;',
-      '  min-height: 0;',
-      '  overflow: auto;',
-      '  padding: 24px;',
-      '  display: flex;',
-      '  align-items: flex-start;',
-      '  justify-content: center;',
-      '  color: inherit;',
-      '  font-family: inherit;',
-      '}',
-      '[data-agy-mcp-launcher-card="true"] {',
-      '  box-sizing: border-box;',
-      '  width: 100%;',
-      '  max-width: 680px;',
-      '  border: 1px solid rgba(128, 128, 128, 0.28);',
-      '  border-radius: 12px;',
-      '  padding: 20px 22px;',
-      '  background: rgba(128, 128, 128, 0.08);',
-      '  display: flex;',
-      '  flex-direction: column;',
-      '  gap: 14px;',
-      '}',
-      '[data-agy-mcp-launcher-header="true"] {',
-      '  display: flex;',
-      '  align-items: center;',
-      '  justify-content: space-between;',
-      '  gap: 12px;',
-      '  flex-wrap: wrap;',
-      '}',
-      '[data-agy-mcp-launcher-title-wrap="true"] {',
-      '  display: flex;',
-      '  align-items: center;',
-      '  gap: 10px;',
-      '  flex-wrap: wrap;',
-      '}',
-      '[data-agy-mcp-launcher-title="true"] {',
-      '  margin: 0;',
-      '  font-size: 18px;',
-      '  font-weight: 600;',
-      '  line-height: 1.3;',
-      '}',
-      '[data-agy-mcp-launcher-badge="true"] {',
-      '  font-size: 11px;',
-      '  font-weight: 500;',
-      '  padding: 2px 8px;',
-      '  border-radius: 999px;',
-      '  border: 1px solid rgba(128, 128, 128, 0.32);',
-      '  background: rgba(128, 128, 128, 0.14);',
-      '}',
-      '[data-agy-mcp-lang-switch="true"] {',
-      '  display: inline-flex;',
-      '  gap: 4px;',
-      '}',
-      '[data-agy-mcp-lang-btn] {',
-      '  background: transparent;',
-      '  border: 1px solid rgba(128, 128, 128, 0.32);',
-      '  border-radius: 6px;',
-      '  color: inherit;',
-      '  font-family: inherit;',
-      '  font-size: 12px;',
-      '  font-weight: 500;',
-      '  padding: 4px 9px;',
-      '  cursor: pointer;',
-      '}',
-      '[data-agy-mcp-lang-btn][aria-pressed="true"] {',
-      '  background: rgba(128, 128, 128, 0.24);',
-      '  border-color: rgba(128, 128, 128, 0.6);',
-      '}',
-      '[data-agy-mcp-launcher-meta="true"] {',
-      '  display: flex;',
-      '  align-items: center;',
-      '  gap: 8px;',
-      '  flex-wrap: wrap;',
-      '}',
-      '[data-agy-mcp-launcher-status="true"] {',
-      '  font-size: 12px;',
-      '  font-weight: 500;',
-      '  padding: 3px 9px;',
-      '  border-radius: 6px;',
-      '  background: rgba(34, 197, 94, 0.16);',
-      '  border: 1px solid rgba(34, 197, 94, 0.35);',
-      '}',
-      '[data-agy-mcp-launcher-surface="true"] {',
-      '  font-size: 12px;',
-      '  opacity: 0.78;',
-      '}',
-      '[data-agy-mcp-launcher-lead="true"] {',
-      '  margin: 0;',
-      '  font-size: 13px;',
-      '  line-height: 1.55;',
-      '  opacity: 0.9;',
-      '}',
-      '[data-agy-mcp-launcher-steps-title="true"] {',
-      '  margin: 4px 0 0 0;',
-      '  font-size: 13px;',
-      '  font-weight: 600;',
-      '}',
-      '[data-agy-mcp-launcher-steps="true"] {',
-      '  margin: 0;',
-      '  padding-left: 20px;',
-      '  display: flex;',
-      '  flex-direction: column;',
-      '  gap: 6px;',
-      '  font-size: 13px;',
-      '  line-height: 1.5;',
-      '}',
-      '[data-agy-mcp-launcher-footer="true"] {',
-      '  display: flex;',
-      '  align-items: center;',
-      '  gap: 8px;',
-      '  flex-wrap: wrap;',
-      '  padding-top: 10px;',
-      '  border-top: 1px solid rgba(128, 128, 128, 0.22);',
-      '  font-size: 12px;',
-      '}',
-      '[data-agy-mcp-launcher-config-label="true"] {',
-      '  opacity: 0.78;',
-      '}',
-      '[data-agy-mcp-launcher-config-path="true"] {',
-      '  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;',
-      '  font-size: 12px;',
-      '  padding: 2px 6px;',
-      '  border-radius: 4px;',
-      '  background: rgba(128, 128, 128, 0.16);',
-      '}',
-    ].join('\n');
-  }
-
   function buildNativePanelCss() {
     return [
       '[data-agy-mcp-native-panel="true"] {',
@@ -3778,25 +3729,19 @@
       '  flex: 1 1 auto;',
       '  min-height: 0;',
       '  overflow: auto;',
-      '  color: inherit;',
-      '  font-family: inherit;',
+      '  color: var(--ag-text, #f0f6fc);',
+      '  font-family: var(--ag-font, system-ui, -apple-system, sans-serif);',
       '  font-size: 13px;',
       '  line-height: 1.45;',
       '}',
       '[data-agy-mcp-native-panel="true"] * {',
       '  box-sizing: border-box;',
       '}',
-      '[data-agy-mcp-native-panel="true"][data-agy-mcp-surface="settings"] .mcp-shell {',
+      '[data-agy-mcp-native-panel="true"] .mcp-shell {',
+      '  width: 100%;',
       '  max-width: 780px;',
       '  margin: 0 auto;',
-      '  padding: 28px 44px 40px 36px;',
-      '  display: flex;',
-      '  flex-direction: column;',
-      '  gap: 14px;',
-      '}',
-      '[data-agy-mcp-native-panel="true"][data-agy-mcp-surface="customizations"] .mcp-shell {',
-      '  width: 100%;',
-      '  padding: 16px 20px 24px;',
+      '  padding: 6px 4px 16px;',
       '  display: flex;',
       '  flex-direction: column;',
       '  gap: 12px;',
@@ -3816,10 +3761,11 @@
       '}',
       '.mcp-title {',
       '  margin: 0;',
-      '  font-size: 20px;',
+      '  font-size: 18px;',
       '  font-weight: 600;',
       '  letter-spacing: -0.02em;',
       '  line-height: 1.3;',
+      '  color: var(--ag-text, #f0f6fc);',
       '}',
       '.mcp-header-actions {',
       '  display: flex;',
@@ -3832,13 +3778,13 @@
       '  align-items: center;',
       '  gap: 2px;',
       '  padding: 2px;',
-      '  border: 1px solid rgba(128, 128, 128, 0.28);',
+      '  border: 1px solid var(--ag-border, rgba(255, 255, 255, 0.16));',
       '  border-radius: 8px;',
-      '  background: rgba(128, 128, 128, 0.08);',
+      '  background: var(--ag-surface-elevated, rgba(255, 255, 255, 0.04));',
       '}',
       '.mcp-lang-btn {',
       '  background: transparent;',
-      '  color: inherit;',
+      '  color: var(--ag-text, #f0f6fc);',
       '  opacity: 0.78;',
       '  border: 0;',
       '  border-radius: 6px;',
@@ -3850,11 +3796,12 @@
       '  line-height: 1.3;',
       '}',
       '.mcp-lang-btn[aria-pressed="true"] {',
-      '  background: rgba(128, 128, 128, 0.24);',
+      '  background: var(--ag-accent, #38bdf8);',
+      '  color: var(--ag-accent-fg, #082f49);',
       '  opacity: 1;',
       '}',
       '.mcp-lang-btn:focus-visible {',
-      '  outline: 2px solid #3b82f6;',
+      '  outline: 2px solid var(--ag-accent, #38bdf8);',
       '  outline-offset: 1px;',
       '}',
       '.mcp-tabs {',
@@ -3862,13 +3809,13 @@
       '  align-self: flex-start;',
       '  gap: 2px;',
       '  padding: 3px;',
-      '  border: 1px solid rgba(128, 128, 128, 0.24);',
+      '  border: 1px solid var(--ag-border, rgba(255, 255, 255, 0.16));',
       '  border-radius: 9px;',
-      '  background: rgba(128, 128, 128, 0.08);',
+      '  background: var(--ag-surface-elevated, rgba(255, 255, 255, 0.04));',
       '}',
       '.mcp-tab {',
       '  background: transparent;',
-      '  color: inherit;',
+      '  color: var(--ag-text, #f0f6fc);',
       '  opacity: 0.78;',
       '  border: 0;',
       '  border-radius: 6px;',
@@ -3879,11 +3826,11 @@
       '  font-weight: 500;',
       '}',
       '.mcp-tab.active {',
-      '  background: rgba(128, 128, 128, 0.24);',
+      '  background: rgba(148, 163, 184, 0.24);',
       '  opacity: 1;',
       '}',
       '.mcp-tab:focus-visible {',
-      '  outline: 2px solid #3b82f6;',
+      '  outline: 2px solid var(--ag-accent, #38bdf8);',
       '  outline-offset: 1px;',
       '}',
       '.mcp-btn {',
@@ -3893,36 +3840,34 @@
       '  font-size: 12px;',
       '  font-weight: 500;',
       '  cursor: pointer;',
-      '  border: 1px solid rgba(128, 128, 128, 0.28);',
-      '  background: rgba(128, 128, 128, 0.12);',
-      '  color: inherit;',
+      '  border: 1px solid var(--ag-border, rgba(255, 255, 255, 0.18));',
+      '  background: var(--ag-surface-elevated, rgba(255, 255, 255, 0.08));',
+      '  color: var(--ag-text, #f0f6fc);',
       '  line-height: 1.3;',
       '}',
       '.mcp-btn:hover {',
-      '  background: rgba(128, 128, 128, 0.22);',
-      '  border-color: rgba(128, 128, 128, 0.42);',
+      '  border-color: var(--ag-accent, #38bdf8);',
       '}',
       '.mcp-btn:focus-visible {',
-      '  outline: 2px solid #3b82f6;',
+      '  outline: 2px solid var(--ag-accent, #38bdf8);',
       '  outline-offset: 1px;',
       '}',
       '.mcp-btn-primary {',
-      '  background: #2563eb;',
-      '  color: #ffffff;',
+      '  background: var(--ag-accent, #38bdf8);',
+      '  color: var(--ag-accent-fg, #082f49);',
       '  border-color: transparent;',
       '  font-weight: 600;',
       '}',
       '.mcp-btn-primary:hover {',
-      '  background: #1d4ed8;',
+      '  opacity: 0.92;',
       '}',
       '.mcp-btn-danger {',
       '  background: transparent;',
-      '  color: #f87171;',
-      '  border-color: rgba(239, 68, 68, 0.36);',
+      '  color: var(--ag-danger, #f87171);',
+      '  border-color: rgba(248, 113, 113, 0.42);',
       '}',
       '.mcp-btn-danger:hover {',
-      '  background: rgba(239, 68, 68, 0.16);',
-      '  border-color: rgba(239, 68, 68, 0.56);',
+      '  background: rgba(248, 113, 113, 0.14);',
       '}',
       '.mcp-btn-sm {',
       '  padding: 4px 10px;',
@@ -3935,26 +3880,51 @@
       '  border-radius: 999px;',
       '  font-size: 11px;',
       '  font-weight: 500;',
-      '  border: 1px solid rgba(128, 128, 128, 0.28);',
-      '  background: rgba(128, 128, 128, 0.10);',
+      '  border: 1px solid var(--ag-border, rgba(255, 255, 255, 0.18));',
+      '  background: rgba(148, 163, 184, 0.14);',
       '}',
       '.mcp-badge-ok {',
-      '  color: #34d399;',
-      '  border-color: rgba(16, 185, 129, 0.42);',
-      '  background: rgba(16, 185, 129, 0.12);',
+      '  color: var(--ag-success, #4ade80);',
+      '  border-color: rgba(74, 222, 128, 0.42);',
+      '  background: rgba(74, 222, 128, 0.12);',
+      '}',
+      '.mcp-badge-info {',
+      '  color: var(--ag-accent, #38bdf8);',
+      '  border-color: rgba(56, 189, 248, 0.42);',
+      '  background: rgba(56, 189, 248, 0.12);',
       '}',
       '.mcp-badge-warn {',
-      '  color: #fbbf24;',
-      '  border-color: rgba(245, 158, 11, 0.45);',
-      '  background: rgba(245, 158, 11, 0.12);',
+      '  color: var(--ag-warning, #fbbf24);',
+      '  border-color: rgba(251, 191, 36, 0.45);',
+      '  background: rgba(251, 191, 36, 0.12);',
       '}',
       '.mcp-badge-err {',
-      '  color: #f87171;',
-      '  border-color: rgba(239, 68, 68, 0.45);',
-      '  background: rgba(239, 68, 68, 0.12);',
+      '  color: var(--ag-danger, #f87171);',
+      '  border-color: rgba(248, 113, 113, 0.45);',
+      '  background: rgba(248, 113, 113, 0.12);',
       '}',
       '.mcp-badge-muted {',
-      '  opacity: 0.82;',
+      '  color: var(--ag-text-muted, #8b949e);',
+      '}',
+      '.mcp-remote-io-bar {',
+      '  display: flex;',
+      '  align-items: center;',
+      '  justify-content: space-between;',
+      '  gap: 8px;',
+      '  flex-wrap: wrap;',
+      '  padding: 9px 12px;',
+      '  border-radius: 8px;',
+      '  border: 1px solid rgba(56, 189, 248, 0.34);',
+      '  background: rgba(56, 189, 248, 0.08);',
+      '}',
+      '.mcp-remote-io-hint {',
+      '  font-size: 12px;',
+      '  color: var(--ag-text, #f0f6fc);',
+      '  opacity: 0.9;',
+      '  flex: 1 1 220px;',
+      '}',
+      '.mcp-file-input-hidden {',
+      '  display: none;',
       '}',
       '.mcp-banner-region {',
       '  display: flex;',
@@ -3969,19 +3939,23 @@
       '.mcp-banner {',
       '  padding: 10px 12px;',
       '  border-radius: 8px;',
-      '  border: 1px solid rgba(128, 128, 128, 0.30);',
-      '  background: rgba(128, 128, 128, 0.10);',
+      '  border: 1px solid var(--ag-border, rgba(255, 255, 255, 0.18));',
+      '  background: var(--ag-surface-elevated, rgba(255, 255, 255, 0.06));',
       '  display: flex;',
       '  flex-direction: column;',
       '  gap: 6px;',
       '}',
       '.mcp-banner-error {',
-      '  border-color: rgba(239, 68, 68, 0.56);',
-      '  background: rgba(239, 68, 68, 0.10);',
+      '  border-color: var(--ag-danger, #f87171);',
+      '  background: rgba(248, 113, 113, 0.10);',
       '}',
       '.mcp-banner-warn {',
-      '  border-color: rgba(245, 158, 11, 0.56);',
-      '  background: rgba(245, 158, 11, 0.10);',
+      '  border-color: var(--ag-warning, #fbbf24);',
+      '  background: rgba(251, 191, 36, 0.10);',
+      '}',
+      '.mcp-banner-info {',
+      '  border-color: var(--ag-accent, #38bdf8);',
+      '  background: rgba(56, 189, 248, 0.10);',
       '}',
       '.mcp-banner-actions {',
       '  display: flex;',
@@ -3996,7 +3970,7 @@
       '  flex-wrap: wrap;',
       '}',
       '.mcp-subtitle {',
-      '  opacity: 0.78;',
+      '  color: var(--ag-text-muted, #8b949e);',
       '  font-size: 12.5px;',
       '}',
       '.mcp-section-title {',
@@ -4008,9 +3982,9 @@
       '.mcp-server-list {',
       '  display: flex;',
       '  flex-direction: column;',
-      '  border: 1px solid rgba(128, 128, 128, 0.24);',
-      '  border-radius: 12px;',
-      '  background: rgba(128, 128, 128, 0.05);',
+      '  border: 1px solid var(--ag-border, rgba(255, 255, 255, 0.14));',
+      '  border-radius: var(--ag-radius, 10px);',
+      '  background: var(--ag-surface-elevated, rgba(255, 255, 255, 0.03));',
       '  overflow: hidden;',
       '}',
       '.mcp-server-row {',
@@ -4018,8 +3992,8 @@
       '  align-items: center;',
       '  justify-content: space-between;',
       '  gap: 14px;',
-      '  padding: 13px 16px;',
-      '  border-bottom: 1px solid rgba(128, 128, 128, 0.16);',
+      '  padding: 12px 14px;',
+      '  border-bottom: 1px solid var(--ag-border, rgba(255, 255, 255, 0.10));',
       '}',
       '.mcp-server-row:last-child {',
       '  border-bottom: 0;',
@@ -4028,8 +4002,8 @@
       '  opacity: 0.65;',
       '}',
       '.mcp-empty-row {',
-      '  padding: 16px;',
-      '  opacity: 0.78;',
+      '  padding: 14px;',
+      '  color: var(--ag-text-muted, #8b949e);',
       '  font-size: 12.5px;',
       '}',
       '.mcp-server-info {',
@@ -4063,7 +4037,7 @@
       '.mcp-server-meta {',
       '  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;',
       '  font-size: 11.5px;',
-      '  opacity: 0.78;',
+      '  color: var(--ag-text-muted, #8b949e);',
       '  word-break: break-all;',
       '}',
       '.mcp-row-actions {',
@@ -4076,10 +4050,10 @@
       '  flex-shrink: 0;',
       '}',
       '.mcp-card {',
-      '  border: 1px solid rgba(128, 128, 128, 0.26);',
-      '  border-radius: 10px;',
+      '  border: 1px solid var(--ag-border, rgba(255, 255, 255, 0.16));',
+      '  border-radius: var(--ag-radius, 10px);',
       '  padding: 14px 16px;',
-      '  background: rgba(128, 128, 128, 0.06);',
+      '  background: var(--ag-surface-elevated, rgba(255, 255, 255, 0.04));',
       '  display: flex;',
       '  flex-direction: column;',
       '  gap: 10px;',
@@ -4091,24 +4065,20 @@
       '}',
       '.mcp-field label {',
       '  font-size: 12px;',
-      '  opacity: 0.82;',
+      '  color: var(--ag-text-muted, #8b949e);',
       '}',
       '.mcp-input, .mcp-select, .mcp-textarea {',
       '  width: 100%;',
-      '  background: rgba(128, 128, 128, 0.10);',
-      '  color: inherit;',
-      '  border: 1px solid rgba(128, 128, 128, 0.34);',
+      '  background: var(--ag-bg, #0f131a);',
+      '  color: var(--ag-text, #f0f6fc);',
+      '  border: 1px solid var(--ag-border, rgba(255, 255, 255, 0.20));',
       '  border-radius: 6px;',
       '  padding: 7px 9px;',
       '  font-family: inherit;',
       '  font-size: 12.5px;',
       '}',
-      '.mcp-select option {',
-      '  background: #181a1f;',
-      '  color: #f3f4f6;',
-      '}',
       '.mcp-input:focus-visible, .mcp-select:focus-visible, .mcp-textarea:focus-visible {',
-      '  outline: 2px solid #3b82f6;',
+      '  outline: 2px solid var(--ag-accent, #38bdf8);',
       '  outline-offset: 1px;',
       '}',
       '.mcp-textarea.mcp-mono {',
@@ -4124,1327 +4094,602 @@
       '}',
     ].join('\n');
   }
-  function buildPaneSlotCss() {
-    return [
-      ':host {',
-      '  width: 100%;',
-      '  height: 100%;',
-      '  flex: 1 1 auto;',
-      '  min-height: 0;',
-      '  display: flex;',
-      '  flex-direction: column;',
-      '}',
-      ':host([data-agy-mcp-hidden="true"]) {',
-      '  display: none;',
-      '}',
-      `${OWNER_ROOT} {`,
-      '  width: 100%;',
-      '  height: 100%;',
-      '  flex: 1 1 auto;',
-      '  min-height: 0;',
-      '  display: flex;',
-      '  flex-direction: column;',
-      '}',
-      '[data-agy-mcp-manager-frame="true"] {',
-      '  width: 100%;',
-      '  height: 100%;',
-      '  flex: 1 1 auto;',
-      '  min-height: 0;',
-      '  border: 0;',
-      '  display: block;',
-      '  background: transparent;',
-      '}',
-      buildLauncherCss(),
-      buildNativePanelCss(),
-    ].join('\n');
-  }
-  function buildCustomizationsBtnSlotCss() {
-    return [
-      ':host {',
-      '  display: inline-flex;',
-      '  align-items: center;',
-      '  flex-shrink: 0;',
-      '}',
-      `${OWNER_ROOT} {`,
-      '  display: inline-flex;',
-      '  align-items: center;',
-      '}',
-      '[data-agy-mcp-customizations-btn="true"] {',
-      '  display: inline-flex;',
-      '  align-items: center;',
-      '  justify-content: center;',
-      '  height: 24px;',
-      '  box-sizing: border-box;',
-      '  background: rgba(128, 128, 128, 0.10);',
-      '  border: 1px solid rgba(128, 128, 128, 0.24);',
-      '  border-radius: 6px;',
-      '  color: inherit;',
-      '  font-family: inherit;',
-      '  font-size: 11.5px;',
-      '  font-weight: 500;',
-      '  line-height: 1;',
-      '  padding: 0 9px;',
-      '  margin-right: 4px;',
-      '  cursor: pointer;',
-      '  white-space: nowrap;',
-      '  transition: background-color 120ms ease, border-color 120ms ease;',
-      '}',
-      '[data-agy-mcp-customizations-btn="true"]:hover {',
-      '  background: rgba(128, 128, 128, 0.20);',
-      '  border-color: rgba(128, 128, 128, 0.40);',
-      '}',
-      '[data-agy-mcp-customizations-btn="true"]:focus-visible {',
-      '  outline: 2px solid currentColor;',
-      '  outline-offset: 2px;',
-      '}',
-      '@media (prefers-reduced-motion: reduce) {',
-      '  [data-agy-mcp-customizations-btn="true"] {',
-      '    transition: none;',
-      '  }',
-      '}',
-    ].join('\n');
-  }
-  function buildCustomizationsOverlaySlotCss() {
-    return [
-      ':host {',
-      '  width: 100%;',
-      '  height: 100%;',
-      '  display: flex;',
-      '  flex-direction: column;',
-      '}',
-      `${OWNER_ROOT} {`,
-      '  width: 100%;',
-      '  height: 100%;',
-      '  flex: 1 1 auto;',
-      '  min-height: 0;',
-      '  display: flex;',
-      '  flex-direction: column;',
-      '}',
-      '[data-agy-mcp-customizations-topbar="true"] {',
-      '  height: 46px;',
-      '  flex: 0 0 auto;',
-      '  display: flex;',
-      '  align-items: center;',
-      '  justify-content: space-between;',
-      '  padding: 0 16px;',
-      '  border-bottom: 1px solid rgba(128, 128, 128, 0.22);',
-      '}',
-      '[data-agy-mcp-customizations-title="true"] {',
-      '  margin: 0;',
-      '  font-size: 14px;',
-      '  font-weight: 600;',
-      '  line-height: 1.3;',
-      '  color: inherit;',
-      '}',
-      '[data-agy-mcp-customizations-close="true"] {',
-      '  display: inline-flex;',
-      '  align-items: center;',
-      '  justify-content: center;',
-      '  background: transparent;',
-      '  border: 0;',
-      '  border-radius: 6px;',
-      '  color: inherit;',
-      '  font-size: 15px;',
-      '  line-height: 1;',
-      '  width: 28px;',
-      '  height: 28px;',
-      '  cursor: pointer;',
-      '  transition: background-color 120ms ease;',
-      '}',
-      '[data-agy-mcp-customizations-close="true"]:hover {',
-      '  background: rgba(128, 128, 128, 0.18);',
-      '}',
-      '[data-agy-mcp-customizations-close="true"]:focus-visible {',
-      '  outline: 2px solid currentColor;',
-      '  outline-offset: 2px;',
-      '}',
-      '@media (prefers-reduced-motion: reduce) {',
-      '  [data-agy-mcp-customizations-close="true"] {',
-      '    transition: none;',
-      '  }',
-      '}',
-      '[data-agy-mcp-customizations-content="true"] {',
-      '  width: 100%;',
-      '  height: 100%;',
-      '  flex: 1 1 auto;',
-      '  min-height: 0;',
-      '  display: flex;',
-      '  flex-direction: column;',
-      '}',
-      '[data-agy-mcp-manager-frame="true"] {',
-      '  width: 100%;',
-      '  height: 100%;',
-      '  flex: 1 1 auto;',
-      '  min-height: 0;',
-      '  border: 0;',
-      '  display: block;',
-      '  background: transparent;',
-      '}',
-      buildLauncherCss(),
-      buildNativePanelCss(),
-    ].join('\n');
-  }
-  function buildSlotStyleDescriptors() {
-    return Object.freeze([
-      Object.freeze({
-        styleId: STYLE_IDS.PANE,
-        slotId: SLOT_IDS.SETTINGS_PANE,
-        cssText: buildPaneSlotCss(),
-      }),
-      Object.freeze({
-        styleId: STYLE_IDS.CUSTOMIZATIONS_BTN,
-        slotId: SLOT_IDS.CUSTOMIZATIONS_BTN,
-        cssText: buildCustomizationsBtnSlotCss(),
-      }),
-      Object.freeze({
-        styleId: STYLE_IDS.CUSTOMIZATIONS_OVERLAY,
-        slotId: SLOT_IDS.CUSTOMIZATIONS_OVERLAY,
-        cssText: buildCustomizationsOverlaySlotCss(),
-      }),
-    ]);
-  }
 
-  // --- module: settings-sidebar-mount.mjs ---
+  // --- module: mcp-v3-shell.mjs ---
   /**
-   * Settings Sidebar Mount Adapter (`src/adapters/antigravity/renderer/settings-sidebar-mount.mjs`).
+   * AddonContextV3 3-Tier API-First UI Shell (`src/adapters/antigravity/renderer/mcp-v3-shell.mjs`).
    *
    * SOLID Boundaries:
-   * - SRP: Discovers Antigravity's Settings left sidebar (`Browser`/`브라우저`) and right
-   *   content pane, mounts `settings-nav` (`shadow: false`) and `pane` (`shadow: true`) via
-   *   `AddonManifest.v2` `runtime.mountSlot(slotId, { container })`, handles paint-only
-   *   0px-shift selection, preserves native top-right close (`✕`), renders either a live
-   *   loopback `<iframe>` (when a host/test SidecarBridge URL is present) or the EN/KO Native
-   *   Sidecar launcher panel, and restores all native DOM state on sibling click or `dispose()`.
-   * - LSP / ISP: Implements the standard Mount Adapter contract (`id`, `ensureMount`,
-   *   `syncLabels`, `getFrames`, `handleKeydown`, `dispose`) using only the narrow `runtime` port.
+   * - SRP: Connects Antigravity MCP Manager exclusively through `AddonContextV3` 3-Tier host APIs:
+   *   - Tier 1 (Zero-DOM): `registerStatusItem`, `registerSettingsPage`, `registerCommand`, `showToast`, `confirm`
+   *   - Tier 2 (Declarative Host Panel): `openPanel` with 16 closed schema primitives + `handle.update(nextTree, nextState)`
+   *     ID-based in-place patching and host-managed mobile bottom-sheet auto-switching (`<=640px`)
+   *   - Tier 3 (Host Shadow Canvas): `openModal` + Settings Page `render(canvasRoot)` mounting `NativeMcpPanel`
+   *     styled with `ctx.ui.createStyleElementSafe(buildNativePanelCss())`
+   * - Zero manual DOM queries, zero coordinate math, zero `hostProfileId` checks, clean `AbortSignal` / `onDispose`.
    */
-  const NAV_ATTR = 'data-agy-mcp-manager-nav';
-  const PREV_DISPLAY_ATTR = 'agyMcpPrevDisplay';
-  const SUPPRESSED_BG_ATTR = 'agyMcpSuppressedBg';
-  const SUPPRESSED_COLOR_ATTR = 'agyMcpSuppressedColor';
+  const V3_IDS = Object.freeze({
+    STATUS_ITEM: 'mcp-manager',
+    SETTINGS_PAGE: 'mcp-manager',
+    CMD_OPEN_MANAGER: 'open-mcp-manager',
+    CMD_OPEN_PANEL: 'open-mcp-panel',
+    CMD_OPEN_SETTINGS: 'open-mcp-settings',
+  });
 
-  const BROWSER_LABELS = ['browser', '브라우저'];
-  const REQUIRED_SIBLING_LABELS = [
-    'general',
-    'application',
-    'appearance',
-    'shortcuts',
-    'notifications',
-    'models',
-    'browser',
-    '일반',
-    '애플리케이션',
-    '앱',
-    '외관',
-    '모양',
-    '화면',
-    '단축키',
-    '바로가기',
-    '알림',
-    '모델',
-    '브라우저',
-  ];
-  function createSettingsSidebarMount({ runtime, onLangChange = () => {}, win = window, doc = document }) {
-    let boundClickHost = null;
-    let boundClickHandler = null;
-    let activeSidebar = null;
-    let activeContentPane = null;
-    let navHostEl = null;
-    let navItemEl = null;
-    let paneHostEl = null;
-    let paneRootEl = null;
-    let frameEl = null;
-    let launcherView = null;
-    let nativePanelView = null;
-    let isPaneActive = false;
+  const SHELL_I18N = Object.freeze({
+    en: Object.freeze({
+      title: 'MCP Manager',
+      panelTitle: 'MCP Manager · Quick Overview',
+      statusLabel: 'MCP',
+      statusTooltip: (mode, count) =>
+        mode === 'host-bridge'
+          ? `MCP Manager (Desktop Config Bridge · ${count} servers)`
+          : `MCP Manager (Remote Draft · ${count} servers)`,
+      cmdOpenManager: 'Open MCP Manager',
+      cmdOpenPanel: 'Open MCP Quick Panel',
+      cmdOpenSettings: 'Open MCP Manager Settings',
+      modeHostBridge: 'Desktop Config Bridge',
+      modeRemoteDraft: 'Remote Draft (ctx.storage)',
+      summaryHeading: 'Configured MCP Servers',
+      summaryLine: (globalCount, enabledCount, pluginCount) =>
+        `Global: ${globalCount} (${enabledCount} active) · Plugins: ${pluginCount}`,
+      malformedAlert: 'Broken mcp_config.json detected. Open Full Editor -> Raw JSON to repair safely.',
+      loadErrorAlert: 'Failed to load MCP configuration.',
+      quickListTitle: 'Global Servers',
+      noServersItem: 'No global MCP servers configured yet.',
+      enableAction: 'Enable',
+      disableAction: 'Disable',
+      languageLabel: 'Language',
+      openEditorBtn: 'Open Full Editor',
+      openSettingsBtn: 'Settings Page',
+      refreshBtn: 'Refresh',
+      toggledToast: (name, disabled) =>
+        disabled ? `Disabled "${name}".` : `Enabled "${name}".`,
+      conflictToast: 'Config changed externally (CAS conflict). Reloaded latest snapshot.',
+      toggleFailedToast: 'Failed to toggle MCP server.',
+    }),
+    ko: Object.freeze({
+      title: 'MCP 매니저',
+      panelTitle: 'MCP 매니저 · 빠른 요약',
+      statusLabel: 'MCP',
+      statusTooltip: (mode, count) =>
+        mode === 'host-bridge'
+          ? `MCP 매니저 (데스크톱 Config Bridge · 서버 ${count}개)`
+          : `MCP 매니저 (원격 초안 · 서버 ${count}개)`,
+      cmdOpenManager: 'MCP 매니저 열기',
+      cmdOpenPanel: 'MCP 빠른 패널 열기',
+      cmdOpenSettings: 'MCP 매니저 설정 열기',
+      modeHostBridge: '데스크톱 Config Bridge',
+      modeRemoteDraft: '원격 초안 (ctx.storage)',
+      summaryHeading: '등록된 MCP 서버',
+      summaryLine: (globalCount, enabledCount, pluginCount) =>
+        `전역: ${globalCount}개 (활성 ${enabledCount}개) · 플러그인: ${pluginCount}개`,
+      malformedAlert: '손상된 mcp_config.json이 감지되었습니다. 전체 편집기의 원본 JSON 탭에서 안전하게 복구하세요.',
+      loadErrorAlert: 'MCP 설정을 불러오지 못했습니다.',
+      quickListTitle: '전역 서버 목록',
+      noServersItem: '등록된 전역 MCP 서버가 없습니다.',
+      enableAction: '활성화',
+      disableAction: '비활성화',
+      languageLabel: '언어',
+      openEditorBtn: '전체 편집기 열기',
+      openSettingsBtn: '설정 페이지',
+      refreshBtn: '새로고침',
+      toggledToast: (name, disabled) =>
+        disabled ? `"${name}" 서버를 비활성화했습니다.` : `"${name}" 서버를 활성화했습니다.`,
+      conflictToast: '외부에서 설정이 변경되었습니다(CAS 충돌). 최신 상태를 다시 불러왔습니다.',
+      toggleFailedToast: 'MCP 서버 상태 변경에 실패했습니다.',
+    }),
+  });
+  function buildQuickPanelSchema({ snapshot, mode, surface, lang, errorMessage = '' }) {
+    const dict = SHELL_I18N[lang === 'ko' ? 'ko' : 'en'];
+    const globalServers = snapshot?.globalConfig?.servers || [];
+    const enabledCount = globalServers.filter((s) => !s.disabled).length;
+    const pluginCount = (snapshot?.pluginServers || []).length;
+    const malformed = Boolean(snapshot?.globalConfig?.malformed);
 
-    function findSettingsSidebarAndAnchor() {
-      const candidates = doc.querySelectorAll('button, a, [role="tab"], [role="menuitem"], [role="button"], li, div');
-      for (const el of candidates) {
-        if (el.hasAttribute(NAV_ATTR) || el.closest?.(`[data-addon-host-slot="${SLOT_IDS.SETTINGS_NAV}"]`)) continue;
-        if (el.children.length > 2) continue;
-        if (!BROWSER_LABELS.includes(normalizedText(el))) continue;
+    const serverItems =
+      globalServers.length > 0
+        ? globalServers.map((s) => ({
+            id: `srv-${s.name}`,
+            label: `${s.name} · ${s.disabled ? dict.disableAction : s.transport === 'stdio' ? 'Stdio' : 'HTTP'}`,
+            actionId: 'toggle-server',
+            actionLabel: s.disabled ? dict.enableAction : dict.disableAction,
+            payload: { name: s.name, disabled: !s.disabled },
+          }))
+        : [{ id: 'empty-global', label: dict.noServersItem }];
 
-        let container = el.parentElement;
-        for (let depth = 0; depth < 4 && container && container !== doc.body; depth += 1) {
-          const items = Array.from(
-            container.querySelectorAll('button, a, [role="tab"], [role="menuitem"], [role="button"], li, div')
-          );
-          const seen = new Map();
-          for (const item of items) {
-            if (item.children.length > 2) continue;
-            const txt = normalizedText(item);
-            if (REQUIRED_SIBLING_LABELS.includes(txt) && !seen.has(txt)) {
-              seen.set(txt, item);
-            }
-          }
-          if (seen.size >= 4) {
-            let anchor = el;
-            while (anchor.parentElement && anchor.parentElement !== container && anchor.parentElement.children.length === 1) {
-              anchor = anchor.parentElement;
-            }
-            const listParent = anchor.parentElement || container;
-            const directSiblings = Array.from(listParent.children).filter(
-              (c) =>
-                c.nodeType === 1 &&
-                !c.hasAttribute(NAV_ATTR) &&
-                c.getAttribute('data-addon-host-slot') !== SLOT_IDS.SETTINGS_NAV &&
-                REQUIRED_SIBLING_LABELS.includes(normalizedText(c))
-            );
-            const inactiveSibling =
-              directSiblings.find(
-                (c) => !hasVisibleBg(c, win) && !['general', '일반', ...BROWSER_LABELS].includes(normalizedText(c))
-              ) ||
-              directSiblings.find((c) => !hasVisibleBg(c, win)) ||
-              anchor;
-            return { sidebar: container, listParent, browserItem: anchor, inactiveTemplate: inactiveSibling };
-          }
-          container = container.parentElement;
-        }
-      }
-      return null;
-    }
+    const tree = {
+      type: 'stack',
+      id: 'mcp-quick-root',
+      children: [
+        {
+          type: 'row',
+          id: 'mcp-quick-badges',
+          children: [
+            {
+              type: 'badge',
+              id: 'mcp-mode-badge',
+              text: mode === 'host-bridge' ? dict.modeHostBridge : dict.modeRemoteDraft,
+              variant: mode === 'host-bridge' ? 'success' : 'default',
+            },
+            {
+              type: 'badge',
+              id: 'mcp-surface-badge',
+              text: surface,
+            },
+          ],
+        },
+        {
+          type: 'alert',
+          id: 'mcp-malformed-alert',
+          variant: 'danger',
+          text: dict.malformedAlert,
+          visibleWhen: { field: 'malformed', eq: true },
+        },
+        {
+          type: 'alert',
+          id: 'mcp-error-alert',
+          variant: 'warning',
+          text: errorMessage || dict.loadErrorAlert,
+          visibleWhen: { field: 'hasError', eq: true },
+        },
+        {
+          type: 'section',
+          id: 'mcp-summary-section',
+          title: dict.summaryHeading,
+          children: [
+            {
+              type: 'text',
+              id: 'mcp-summary-text',
+              text: dict.summaryLine(globalServers.length, enabledCount, pluginCount),
+            },
+            {
+              type: 'list',
+              id: 'mcp-server-list',
+              items: serverItems,
+            },
+          ],
+        },
+        {
+          type: 'divider',
+          id: 'mcp-quick-divider',
+        },
+        {
+          type: 'select',
+          id: 'mcp-lang-select',
+          label: dict.languageLabel,
+          field: 'lang',
+          options: [
+            { value: 'en', label: 'English' },
+            { value: 'ko', label: '한국어' },
+          ],
+        },
+        {
+          type: 'row',
+          id: 'mcp-quick-actions',
+          children: [
+            {
+              type: 'button',
+              id: 'mcp-btn-open-editor',
+              label: dict.openEditorBtn,
+              variant: 'primary',
+              actionId: 'open-full-editor',
+            },
+            {
+              type: 'button',
+              id: 'mcp-btn-refresh',
+              label: dict.refreshBtn,
+              actionId: 'refresh',
+            },
+          ],
+        },
+      ],
+    };
 
-    function findSettingsLayout(sidebar) {
-      const sidebarRect = sidebar.getBoundingClientRect?.() || { left: 0, right: 0, width: 0, height: 0 };
-      let cursor = sidebar;
-      for (let depth = 0; depth < 8 && cursor && cursor.parentElement && cursor.parentElement !== doc.documentElement; depth += 1) {
-        const parent = cursor.parentElement;
-        const cursorRect = cursor.getBoundingClientRect?.() || sidebarRect;
-        const rightBoundary = Math.max(sidebarRect.right, cursorRect.right);
-        const siblings = Array.from(parent.children).filter((child) => {
-          if (child === cursor || child.nodeType !== 1) return false;
-          if (child.tagName === 'STYLE' || child.tagName === 'SCRIPT') return false;
-          const r = child.getBoundingClientRect?.();
-          if (!r) return false;
-          return r.width >= 280 && r.height >= 200 && r.left >= rightBoundary - 24;
-        });
-        if (siblings.length > 0) {
-          let best = siblings[0];
-          let bestArea = 0;
-          for (const sib of siblings) {
-            const r = sib.getBoundingClientRect();
-            const area = r.width * r.height;
-            if (area > bestArea) {
-              bestArea = area;
-              best = sib;
-            }
-          }
-          return { outerSidebar: cursor, contentPane: best };
-        }
-        cursor = parent;
-      }
-      return { outerSidebar: sidebar, contentPane: null };
-    }
+    const state = {
+      lang: lang === 'ko' ? 'ko' : 'en',
+      mode,
+      surface,
+      serverCount: globalServers.length,
+      enabledCount,
+      pluginCount,
+      malformed,
+      hasError: Boolean(errorMessage),
+    };
 
-    function isSettingsCloseControl(child, contentPaneRect) {
-      if (!child || child.nodeType !== 1) return false;
-      const isCloseBtn = (btn) => {
-        const aria = String(btn.getAttribute?.('aria-label') || btn.getAttribute?.('title') || '').toLowerCase();
-        if (aria.includes('close') || aria.includes('닫기')) return true;
-        const txt = normalizedText(btn);
-        if (txt === '×' || txt === '✕' || txt === 'x') return true;
-        const r = btn.getBoundingClientRect?.();
-        if (!r || !contentPaneRect) return false;
-        const isSmall = r.width > 0 && r.width <= 52 && r.height > 0 && r.height <= 52;
-        const isTopRight = r.right >= contentPaneRect.right - 72 && r.top <= contentPaneRect.top + 72;
-        return isSmall && isTopRight;
-      };
-      if (child.tagName === 'BUTTON' && isCloseBtn(child)) return true;
-      const r = child.getBoundingClientRect?.();
-      if (
-        r &&
-        contentPaneRect &&
-        r.width <= 64 &&
-        r.height <= 64 &&
-        r.right >= contentPaneRect.right - 72 &&
-        r.top <= contentPaneRect.top + 72
-      ) {
-        const innerBtn = child.querySelector?.('button');
-        if (innerBtn && isCloseBtn(innerBtn)) return true;
-      }
-      return false;
-    }
-
-    // Paint-only active suppression: NEVER mutates className, padding, margin, height, or font-weight (0px shift)
-    function suppressNativeActiveItems(listParent, navHost, inactiveColor) {
-      let detectedActiveBg = 'rgba(255, 255, 255, 0.08)';
-      let detectedActiveColor = '#ffffff';
-      const dimNode = (el) => {
-        if (!Object.prototype.hasOwnProperty.call(el.dataset, SUPPRESSED_BG_ATTR)) {
-          el.dataset[SUPPRESSED_BG_ATTR] = el.style.backgroundColor || '';
-          el.dataset[SUPPRESSED_COLOR_ATTR] = el.style.color || '';
-        }
-        el.style.setProperty('background-color', 'transparent', 'important');
-        if (inactiveColor) {
-          el.style.setProperty('color', inactiveColor, 'important');
-        }
-      };
-
-      if (listParent) {
-        for (const sib of Array.from(listParent.children)) {
-          if (sib.nodeType !== 1 || sib === navHost || sib.getAttribute('data-addon-host-slot') === SLOT_IDS.SETTINGS_NAV) continue;
-          const cs = win.getComputedStyle(sib);
-          if (hasVisibleBg(sib, win)) {
-            detectedActiveBg = cs.backgroundColor;
-            if (cs.color) detectedActiveColor = cs.color;
-          }
-          dimNode(sib);
-          for (const inner of Array.from(sib.querySelectorAll('button, span, div'))) {
-            const ics = win.getComputedStyle(inner);
-            if (hasVisibleBg(inner, win)) {
-              detectedActiveBg = ics.backgroundColor;
-              if (ics.color) detectedActiveColor = ics.color;
-            }
-            dimNode(inner);
-          }
-        }
-      }
-      return { activeBg: detectedActiveBg, activeColor: detectedActiveColor };
-    }
-
-    function restoreNativeActiveItems(outerSidebar) {
-      if (!outerSidebar) return;
-      const suppressed = outerSidebar.querySelectorAll('[data-agy-mcp-suppressed-bg]');
-      for (const item of suppressed) {
-        item.style.removeProperty('background-color');
-        item.style.removeProperty('color');
-        if (item.dataset[SUPPRESSED_BG_ATTR]) {
-          item.style.backgroundColor = item.dataset[SUPPRESSED_BG_ATTR];
-        }
-        if (item.dataset[SUPPRESSED_COLOR_ATTR]) {
-          item.style.color = item.dataset[SUPPRESSED_COLOR_ATTR];
-        }
-        delete item.dataset[SUPPRESSED_BG_ATTR];
-        delete item.dataset[SUPPRESSED_COLOR_ATTR];
-      }
-    }
-
-    function restoreNativePane(outerSidebar, contentPane, navItem) {
-      isPaneActive = false;
-      restoreNativeActiveItems(outerSidebar);
-      if (navItem) {
-        navItem.setAttribute('aria-selected', 'false');
-        navItem.dataset.agyMcpActive = 'false';
-        navItem.style.removeProperty('background-color');
-        navItem.style.removeProperty('color');
-        for (const inner of Array.from(navItem.querySelectorAll('button, span, div'))) {
-          inner.style.removeProperty('background-color');
-          inner.style.removeProperty('color');
-        }
-      }
-      if (paneHostEl) {
-        paneHostEl.setAttribute('data-agy-mcp-hidden', 'true');
-        paneHostEl.style.display = 'none';
-      }
-      if (!contentPane) return;
-      for (const child of Array.from(contentPane.children)) {
-        if (child === paneHostEl || child.getAttribute('data-addon-host-slot') === SLOT_IDS.SETTINGS_PANE) continue;
-        if (child.dataset && Object.prototype.hasOwnProperty.call(child.dataset, PREV_DISPLAY_ATTR)) {
-          child.style.display = child.dataset[PREV_DISPLAY_ATTR];
-          delete child.dataset[PREV_DISPLAY_ATTR];
-        }
-      }
-    }
-
-    function renderPaneContent(contentPane) {
-      if (!contentPane) return;
-      const slotRoot = runtime.mountSlot(SLOT_IDS.SETTINGS_PANE, { container: contentPane });
-      if (!slotRoot) return;
-      const slotHost = runtime.getSlotHostElement(slotRoot);
-      paneRootEl = slotRoot;
-      paneHostEl = slotHost;
-
-      if (slotHost && slotHost.style) {
-        slotHost.removeAttribute('data-agy-mcp-hidden');
-        slotHost.style.display = 'flex';
-        slotHost.style.flexDirection = 'column';
-        slotHost.style.flex = '1 1 auto';
-        slotHost.style.minHeight = '0';
-        slotHost.style.width = '100%';
-        slotHost.style.height = '100%';
-      }
-
-      if (typeof runtime.hasConfigBridge === 'function' && runtime.hasConfigBridge()) {
-        if (frameEl && frameEl.parentNode) frameEl.parentNode.removeChild(frameEl);
-        frameEl = null;
-        if (launcherView && launcherView.element.parentNode) launcherView.element.parentNode.removeChild(launcherView.element);
-        launcherView = null;
-
-        if (!nativePanelView || nativePanelView.element.parentNode !== slotRoot) {
-          if (nativePanelView) nativePanelView.dispose();
-          while (slotRoot.firstChild) slotRoot.removeChild(slotRoot.firstChild);
-          const service = runtime.createConfigService();
-          nativePanelView = createNativeMcpPanel({ runtime, service, surface: 'settings', onLangChange, doc });
-          slotRoot.appendChild(nativePanelView.element);
-        } else {
-          nativePanelView.syncLang();
-        }
-        return;
-      }
-
-      if (nativePanelView) {
-        nativePanelView.dispose();
-        nativePanelView = null;
-      }
-
-      const baseUrl = runtime.getServerUrl();
-      if (baseUrl) {
-        if (launcherView && launcherView.element.parentNode) {
-          launcherView.element.parentNode.removeChild(launcherView.element);
-        }
-        launcherView = null;
-
-        const themedUrl = runtime.buildThemedIframeUrl(baseUrl, contentPane);
-        if (!frameEl || frameEl.parentNode !== slotRoot) {
-          while (slotRoot.firstChild) slotRoot.removeChild(slotRoot.firstChild);
-          frameEl = doc.createElement('iframe');
-          frameEl.setAttribute(FRAME_ATTR, 'true');
-          frameEl.setAttribute('title', 'MCP Manager');
-          frameEl.src = themedUrl;
-          slotRoot.appendChild(frameEl);
-        } else if (!sameFrameBaseAndTheme(frameEl.src, themedUrl)) {
-          frameEl.src = themedUrl;
-        }
-        return;
-      }
-
-      if (frameEl && frameEl.parentNode) {
-        frameEl.parentNode.removeChild(frameEl);
-      }
-      frameEl = null;
-
-      if (!launcherView || launcherView.element.parentNode !== slotRoot) {
-        while (slotRoot.firstChild) slotRoot.removeChild(slotRoot.firstChild);
-        launcherView = createSidecarLauncherView({ runtime, surface: 'settings', onLangChange, doc });
-        slotRoot.appendChild(launcherView.element);
-      } else {
-        launcherView.syncLang();
-      }
-    }
-
-    function showMcpManagerPane(outerSidebar, listParent, contentPane, navHost, navItem) {
-      if (!contentPane) return;
-
-      activeSidebar = outerSidebar;
-      activeContentPane = contentPane;
-      isPaneActive = true;
-
-      const inactiveColor = navItem?.dataset?.agyMcpInactiveColor || '';
-      const { activeBg, activeColor } = suppressNativeActiveItems(listParent, navHost, inactiveColor);
-
-      if (navItem) {
-        navItem.setAttribute('aria-selected', 'true');
-        navItem.dataset.agyMcpActive = 'true';
-        const nextTextColor = activeColor || '#ffffff';
-        navItem.style.setProperty('background-color', activeBg, 'important');
-        navItem.style.setProperty('color', nextTextColor, 'important');
-        for (const inner of Array.from(navItem.querySelectorAll('button, span, div'))) {
-          inner.style.setProperty('background-color', 'transparent', 'important');
-          inner.style.setProperty('color', nextTextColor, 'important');
-        }
-      }
-
-      const contentPaneRect = contentPane.getBoundingClientRect?.();
-      for (const child of Array.from(contentPane.children)) {
-        if (child === paneHostEl || child.getAttribute('data-addon-host-slot') === SLOT_IDS.SETTINGS_PANE) continue;
-        if (isSettingsCloseControl(child, contentPaneRect)) {
-          child.style.zIndex = '20';
-          continue;
-        }
-        if (!Object.prototype.hasOwnProperty.call(child.dataset, PREV_DISPLAY_ATTR)) {
-          child.dataset[PREV_DISPLAY_ATTR] = child.style.display || '';
-        }
-        child.style.display = 'none';
-      }
-
-      renderPaneContent(contentPane);
-    }
-
-    function ensureMount() {
-      const found = findSettingsSidebarAndAnchor();
-      if (!found) return;
-      const { sidebar, listParent, browserItem, inactiveTemplate } = found;
-      const { outerSidebar, contentPane: initialContentPane } = findSettingsLayout(sidebar);
-
-      if (navItemEl && navItemEl.isConnected && sidebar.contains(navItemEl)) {
-        if (isPaneActive && initialContentPane) {
-          renderPaneContent(initialContentPane);
-        } else if (frameEl && frameEl.isConnected) {
-          const baseUrl = runtime.getServerUrl();
-          if (baseUrl) {
-            const nextUrl = runtime.buildThemedIframeUrl(baseUrl, initialContentPane);
-            if (!sameFrameBaseAndTheme(frameEl.src, nextUrl)) {
-              frameEl.src = nextUrl;
-            }
-          }
-        }
-        return;
-      }
-
-      const navSlot = runtime.mountSlot(SLOT_IDS.SETTINGS_NAV, { container: listParent });
-      if (!navSlot) return;
-      const navHost = runtime.getSlotHostElement(navSlot);
-      if (navHost && navHost.style) {
-        navHost.style.display = 'contents';
-      }
-      while (navSlot.firstChild) navSlot.removeChild(navSlot.firstChild);
-
-      // Clone an INACTIVE native sibling node and keep its className immutable (0px shift, native focus ring intact)
-      const navItem = inactiveTemplate.cloneNode(true);
-      navItem.removeAttribute('id');
-      navItem.setAttribute(NAV_ATTR, 'true');
-      navItem.setAttribute('aria-selected', 'false');
-      navItem.dataset.agyMcpActive = 'false';
-      navItem.dataset.agyMcpInactiveColor = win.getComputedStyle(inactiveTemplate)?.color || '';
-      replaceLeafText(navItem, 'MCP Manager', doc);
-
-      navItem.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        const layout = findSettingsLayout(sidebar);
-        showMcpManagerPane(layout.outerSidebar, listParent, layout.contentPane, navHost, navItem);
-      });
-
-      navSlot.appendChild(navItem);
-      navHostEl = navHost;
-      navItemEl = navItem;
-
-      // Position inside the same listParent right after browserItem (parentNode unchanged -> host idempotent & auto-disposed)
-      if (browserItem.nextSibling && browserItem.nextSibling !== navHost) {
-        listParent.insertBefore(navHost, browserItem.nextSibling);
-      }
-
-      const clickHost = outerSidebar || sidebar;
-      if (boundClickHost !== clickHost) {
-        if (boundClickHost && boundClickHandler) {
-          boundClickHost.removeEventListener('click', boundClickHandler, true);
-        }
-        boundClickHost = clickHost;
-        boundClickHandler = (ev) => {
-          const target = ev.target;
-          if (!target || target.closest?.(`[${NAV_ATTR}="true"]`)) return;
-          if (navItemEl && navItemEl.isConnected && navItemEl.dataset.agyMcpActive === 'true') {
-            const layout = findSettingsLayout(sidebar);
-            restoreNativePane(layout.outerSidebar, layout.contentPane, navItemEl);
-          }
-        };
-        clickHost.addEventListener('click', boundClickHandler, true);
-      }
-    }
-
-    function syncLabels() {
-      if (nativePanelView) {
-        nativePanelView.syncLang();
-      }
-      if (launcherView) {
-        launcherView.syncLang();
-      }
-    }
-
-    function getFrames() {
-      return frameEl && frameEl.isConnected ? [frameEl] : [];
-    }
-
-    function dispose() {
-      restoreNativePane(activeSidebar || boundClickHost, activeContentPane, navItemEl);
-      if (boundClickHost && boundClickHandler) {
-        boundClickHost.removeEventListener('click', boundClickHandler, true);
-      }
-      boundClickHost = null;
-      boundClickHandler = null;
-      activeSidebar = null;
-      activeContentPane = null;
-      navHostEl = null;
-      navItemEl = null;
-      paneHostEl = null;
-      paneRootEl = null;
-      if (nativePanelView) {
-        nativePanelView.dispose();
-        nativePanelView = null;
-      }
-      frameEl = null;
-      launcherView = null;
-      isPaneActive = false;
-      try {
-        runtime.unmountSlot(SLOT_IDS.SETTINGS_PANE);
-      } catch {
-        // Ignore if host already unmounted
-      }
-      try {
-        runtime.unmountSlot(SLOT_IDS.SETTINGS_NAV);
-      } catch {
-        // Ignore if host already unmounted
-      }
-    }
-
-    return Object.freeze({
-      id: 'settings-sidebar',
-      ensureMount,
-      syncLabels,
-      getFrames,
-      handleKeydown: () => {},
-      dispose,
-    });
+    return { tree, state };
   }
+  function createMcpV3Shell({
+    runtime,
+    doc = typeof document !== 'undefined' ? document : null,
+    win = typeof window !== 'undefined' ? window : null,
+  }) {
+    const mode = runtime.getConfigStoreMode();
+    const surface = runtime.getSurface();
+    const service = runtime.createConfigService();
 
-  // --- module: customizations-mount.mjs ---
-  /**
-   * Customizations Screen Mount Adapter (`src/adapters/antigravity/renderer/customizations-mount.mjs`).
-   *
-   * SOLID Boundaries:
-   * - SRP: Detects Antigravity's Customizations (`MCP Servers` / `MCP 서버`) header,
-   *   mounts the trigger button (`custom` slot, Shadow DOM Option B2) immediately before
-   *   right-hand action icons, and opens/closes the full-pane modal overlay via
-   *   `AddonManifest.v2` `runtime.openModal(slotId, { shadow: true, onClose })` (preserving
-   *   host `marginTop`/`zIndex` & `PortalArbiter` LIFO `Escape` / focus restoration), rendering
-   *   either the live loopback `<iframe>` or the EN/KO Native Sidecar launcher panel.
-   * - LSP / ISP: Implements the exact same Mount Adapter contract as `settings-sidebar-mount.mjs`.
-   */
-  const CUSTOMIZATIONS_BTN_ATTR = 'data-agy-mcp-customizations-btn';
-  const CUSTOMIZATIONS_OVERLAY_ATTR = 'data-agy-mcp-customizations-overlay';
-  const CUSTOMIZATIONS_TOPBAR_ATTR = 'data-agy-mcp-customizations-topbar';
-  const CUSTOMIZATIONS_TITLE_ATTR = 'data-agy-mcp-customizations-title';
-  const CUSTOMIZATIONS_CLOSE_ATTR = 'data-agy-mcp-customizations-close';
-  const CUSTOMIZATIONS_CONTENT_ATTR = 'data-agy-mcp-customizations-content';
-
-  const CUSTOMIZATIONS_PAGE_MARKERS = [
-    'customizations',
-    'skills & rules',
-    'custom agents',
-    '사용자 정의',
-    '맞춤 설정',
-    '커스터마이징',
-    '스킬 및 규칙',
-    '사용자 지정 에이전트',
-    '커스텀 에이전트',
-  ];
-  const MCP_SERVERS_SECTION_LABELS = ['mcp servers', 'mcp 서버'];
-
-  function isCustomizationsMarker(txt) {
-    return CUSTOMIZATIONS_PAGE_MARKERS.some(
-      (marker) => txt === marker || (txt.startsWith(marker) && /^[\s(]*\d*[\s)]*$/.test(txt.slice(marker.length)))
-    );
-  }
-
-  function isMcpServersLabel(txt) {
-    return MCP_SERVERS_SECTION_LABELS.some(
-      (label) => txt === label || (txt.startsWith(label) && /^[\s(]*\d+[\s)]*$/.test(txt.slice(label.length)))
-    );
-  }
-  function createCustomizationsMount({ runtime, onLangChange = () => {}, win = window, doc = document }) {
-    let lastTriggerBtn = null;
-    let btnHostEl = null;
-    let btnRootEl = null;
-    let btnEl = null;
-    let activeModalHandle = null;
-    let modalTitleEl = null;
-    let modalCloseBtnEl = null;
-    let modalContentEl = null;
-    let modalFrameEl = null;
-    let modalLauncherView = null;
-    let modalNativePanel = null;
-
-    function resolveLang() {
-      return (typeof runtime.resolveEffectiveLang === 'function' ? runtime.resolveEffectiveLang() : runtime.readSavedLang()) === 'ko'
-        ? 'ko'
-        : 'en';
-    }
-
-    function getButtonLabel() {
-      return resolveLang() === 'ko' ? 'MCP 매니저' : 'MCP Manager';
-    }
-
-    function getCloseAriaLabel() {
-      return resolveLang() === 'ko' ? 'MCP 매니저 닫기' : 'Close MCP Manager';
-    }
-
-    function isInsideOwnSlot(el) {
-      if (!el || typeof el.closest !== 'function') return false;
-      return Boolean(
-        el.closest(`[${CUSTOMIZATIONS_OVERLAY_ATTR}="true"]`) ||
-          el.closest('[data-addon-host-modal-dialog="1"]') ||
-          el.closest(`[data-addon-host-slot="${SLOT_IDS.CUSTOMIZATIONS_BTN}"]`)
-      );
-    }
-
-    function isCustomizationsPageVisible() {
-      const candidates = doc.querySelectorAll('h1, h2, h3, h4, div, span, button');
-      for (const el of candidates) {
-        if (el.children.length > 2) continue;
-        if (isInsideOwnSlot(el)) continue;
-        if (isCustomizationsMarker(normalizedText(el))) {
-          const rect = el.getBoundingClientRect?.();
-          if (!rect || (rect.width > 0 && rect.height > 0)) return true;
-        }
-      }
-      return false;
-    }
-
-    function hasMatchingMcpLabelDescendant(el) {
-      const descendants = el.querySelectorAll('h1, h2, h3, h4, span, div, button, p');
-      for (const child of descendants) {
-        if (child === el || isInsideOwnSlot(child) || child.hasAttribute(CUSTOMIZATIONS_BTN_ATTR)) continue;
-        if (isMcpServersLabel(normalizedText(child))) return true;
-      }
-      return false;
-    }
-
-    function findCustomizationsMcpHeader() {
-      if (!isCustomizationsPageVisible()) return null;
-      const candidates = doc.querySelectorAll('h1, h2, h3, h4, span, div, button, p');
-      for (const el of candidates) {
-        if (el.children.length > 2) continue;
-        if (isInsideOwnSlot(el)) continue;
-        if (el.hasAttribute(CUSTOMIZATIONS_BTN_ATTR)) continue;
-        if (!isMcpServersLabel(normalizedText(el))) continue;
-        // Pick the innermost label node; never match an outer wrapper that wraps the collapse <button>
-        if (hasMatchingMcpLabelDescendant(el)) continue;
-        if (el.tagName !== 'BUTTON' && el.querySelector('button')) continue;
-
-        const leftAnchor = el.closest?.('button') || el;
-        const anchorRect = leftAnchor.getBoundingClientRect?.() || null;
-        const hasAnchorBox = Boolean(anchorRect && anchorRect.width > 0 && anchorRect.height > 0);
-        const anchorCenterY = hasAnchorBox ? (anchorRect.top + anchorRect.bottom) / 2 : 0;
-
-        let row = leftAnchor.parentElement;
-        for (let depth = 0; depth < 5 && row && row !== doc.body; depth += 1) {
-          const rightButtons = Array.from(row.querySelectorAll('button')).filter((b) => {
-            if (b === leftAnchor || b.hasAttribute(CUSTOMIZATIONS_BTN_ATTR) || isInsideOwnSlot(b)) return false;
-            if (b.contains(leftAnchor) || leftAnchor.contains(b)) return false;
-            if (isMcpServersLabel(normalizedText(b))) return false;
-            if (hasAnchorBox) {
-              const bRect = b.getBoundingClientRect?.();
-              if (!bRect || bRect.width <= 0 || bRect.height <= 0) return false;
-              const bCenterY = (bRect.top + bRect.bottom) / 2;
-              const maxRowDelta = Math.max(anchorRect.height, bRect.height, 28);
-              if (Math.abs(bCenterY - anchorCenterY) > maxRowDelta) return false;
-              if (bRect.left < anchorRect.right - 2) return false;
-            }
-            return true;
-          });
-
-          if (rightButtons.length >= 1) {
-            rightButtons.sort((a, b) => {
-              const ar = a.getBoundingClientRect?.();
-              const br = b.getBoundingClientRect?.();
-              return (ar?.left || 0) - (br?.left || 0);
-            });
-            // Anchor into the rightmost action group (e.g. [] and + icon cluster) so a separate chevron button is never chosen
-            const rightmostBtn = rightButtons[rightButtons.length - 1];
-            const actionContainer = rightmostBtn.parentElement || row;
-            const firstActionButton =
-              rightButtons.find((b) => b.parentElement === actionContainer) || rightmostBtn;
-            return {
-              row,
-              actionContainer,
-              firstActionButton,
-              alignRightInRow: actionContainer === row,
-            };
-          }
-          row = row.parentElement;
-        }
-
-        const fallbackRow = leftAnchor.parentElement;
-        if (fallbackRow && fallbackRow !== doc.body) {
-          return { row: fallbackRow, actionContainer: fallbackRow, firstActionButton: null, alignRightInRow: true };
-        }
-      }
-      return null;
-    }
-
-    function syncLabels() {
-      const label = getButtonLabel();
-      if (btnEl) btnEl.textContent = label;
-      if (modalTitleEl) modalTitleEl.textContent = label;
-      if (modalCloseBtnEl) modalCloseBtnEl.setAttribute('aria-label', getCloseAriaLabel());
-      if (activeModalHandle?.element) activeModalHandle.element.setAttribute('aria-label', label);
-      if (modalNativePanel) modalNativePanel.syncLang();
-      if (modalLauncherView) modalLauncherView.syncLang();
-    }
-
-    function clearModalRefs() {
-      if (modalNativePanel) {
-        modalNativePanel.dispose();
-      }
-      activeModalHandle = null;
-      modalTitleEl = null;
-      modalCloseBtnEl = null;
-      modalContentEl = null;
-      modalFrameEl = null;
-      modalLauncherView = null;
-      modalNativePanel = null;
-    }
-
-    function handleModalClosed() {
-      clearModalRefs();
-      if (lastTriggerBtn && lastTriggerBtn.isConnected && typeof lastTriggerBtn.focus === 'function') {
-        try {
-          lastTriggerBtn.focus();
-        } catch {
-          // Ignore focus restoration errors
-        }
-      }
-    }
-
-    function closeOverlay() {
-      const handle = activeModalHandle;
-      if (!handle) return;
-      clearModalRefs();
-      try {
-        handle.close();
-      } catch {
-        // Ignore if host already closed modal
-      }
-    }
-
-    function renderModalContent() {
-      if (!modalContentEl) return;
-
-      if (typeof runtime.hasConfigBridge === 'function' && runtime.hasConfigBridge()) {
-        if (modalFrameEl && modalFrameEl.parentNode) modalFrameEl.parentNode.removeChild(modalFrameEl);
-        modalFrameEl = null;
-        if (modalLauncherView && modalLauncherView.element.parentNode) {
-          modalLauncherView.element.parentNode.removeChild(modalLauncherView.element);
-        }
-        modalLauncherView = null;
-
-        if (!modalNativePanel || modalNativePanel.element.parentNode !== modalContentEl) {
-          if (modalNativePanel) modalNativePanel.dispose();
-          while (modalContentEl.firstChild) modalContentEl.removeChild(modalContentEl.firstChild);
-          const service = runtime.createConfigService();
-          modalNativePanel = createNativeMcpPanel({ runtime, service, surface: 'customizations', onLangChange, doc });
-          modalContentEl.appendChild(modalNativePanel.element);
-        } else {
-          modalNativePanel.syncLang();
-        }
-        return;
-      }
-
-      if (modalNativePanel) {
-        modalNativePanel.dispose();
-        modalNativePanel = null;
-      }
-
-      const baseUrl = runtime.getServerUrl();
-      if (baseUrl) {
-        if (modalLauncherView && modalLauncherView.element.parentNode) {
-          modalLauncherView.element.parentNode.removeChild(modalLauncherView.element);
-        }
-        modalLauncherView = null;
-
-        const themedUrl = runtime.buildThemedIframeUrl(baseUrl, doc.body);
-        if (!modalFrameEl || modalFrameEl.parentNode !== modalContentEl) {
-          while (modalContentEl.firstChild) modalContentEl.removeChild(modalContentEl.firstChild);
-          modalFrameEl = doc.createElement('iframe');
-          modalFrameEl.setAttribute(FRAME_ATTR, 'true');
-          modalFrameEl.setAttribute('data-agy-mcp-customizations-frame', 'true');
-          modalFrameEl.setAttribute('title', 'MCP Manager');
-          modalFrameEl.src = themedUrl;
-          modalContentEl.appendChild(modalFrameEl);
-        } else if (!sameFrameBaseAndTheme(modalFrameEl.src, themedUrl)) {
-          modalFrameEl.src = themedUrl;
-        }
-        return;
-      }
-
-      if (modalFrameEl && modalFrameEl.parentNode) {
-        modalFrameEl.parentNode.removeChild(modalFrameEl);
-      }
-      modalFrameEl = null;
-
-      if (!modalLauncherView || modalLauncherView.element.parentNode !== modalContentEl) {
-        while (modalContentEl.firstChild) modalContentEl.removeChild(modalContentEl.firstChild);
-        modalLauncherView = createSidecarLauncherView({ runtime, surface: 'customizations', onLangChange, doc });
-        modalContentEl.appendChild(modalLauncherView.element);
-      } else {
-        modalLauncherView.syncLang();
-      }
-    }
-
-    function openOverlay(triggerBtn) {
-      if (!doc.body) return;
-      lastTriggerBtn = triggerBtn || btnEl || null;
-
-      if (activeModalHandle && activeModalHandle.element && activeModalHandle.element.isConnected) {
-        if (typeof activeModalHandle.reposition === 'function') {
-          activeModalHandle.reposition('customizations-page');
-        }
-        renderModalContent();
-        syncLabels();
-        return;
-      }
-
-      const bodyCs = win.getComputedStyle(doc.body);
-      const bodyBg = bodyCs?.backgroundColor || '';
-      const hostBg = bodyBg && bodyBg !== 'rgba(0, 0, 0, 0)' && bodyBg !== 'transparent' ? bodyBg : '#0d0e11';
-      const hostFg = bodyCs?.color || '#e5e7eb';
-      const hostFont = bodyCs?.fontFamily || 'sans-serif';
-
-      const modalHandle = runtime.openModal(SLOT_IDS.CUSTOMIZATIONS_OVERLAY, {
-        shadow: true,
-        surface: 'customizations-page',
-        onClose: handleModalClosed,
-      });
-      if (!modalHandle || !modalHandle.bodyEl) return;
-
-      activeModalHandle = modalHandle;
-      const dlg = modalHandle.element;
-      if (dlg) {
-        dlg.setAttribute(CUSTOMIZATIONS_OVERLAY_ATTR, 'true');
-        dlg.setAttribute('aria-label', getButtonLabel());
-        // Centered popup modal window:
-        // - On antigravity-addons v2.4.0+, preserve host-managed surface insets (`left`/`top`/`right`/`bottom`, `margin: auto`)
-        //   and dynamic resize-tracked `maxWidth`/`maxHeight` when `data-addon-host-modal-surface` is active.
-        // - On legacy Host v2.3.0, preserve titlebar safe inset (`marginTop`/`top`) and viewport-clamped centering.
-        if (dlg.style) {
-          const hostManagedSurface = Boolean(dlg.getAttribute?.('data-addon-host-modal-surface'));
-          dlg.style.boxSizing = 'border-box';
-          if (hostManagedSurface) {
-            dlg.style.width = '820px';
-            dlg.style.height = '660px';
-          } else {
-            dlg.style.width = 'min(820px, calc(100vw - 48px))';
-            dlg.style.maxWidth = 'calc(100vw - 48px)';
-            dlg.style.height = 'min(660px, calc(100vh - 88px))';
-            dlg.style.maxHeight = 'calc(100vh - 88px)';
-            if (dlg.style.margin !== 'auto') {
-              dlg.style.marginLeft = 'auto';
-              dlg.style.marginRight = 'auto';
-            }
-          }
-          dlg.style.padding = '0';
-          dlg.style.border = '1px solid rgba(128, 128, 128, 0.28)';
-          dlg.style.borderRadius = '14px';
-          dlg.style.boxShadow = '0 24px 64px rgba(0, 0, 0, 0.52), 0 0 0 100vmax rgba(0, 0, 0, 0.45)';
-          dlg.style.background = hostBg;
-          dlg.style.color = hostFg;
-          dlg.style.fontFamily = hostFont;
-          dlg.style.overflow = 'hidden';
-        }
-        // Dismiss popup cleanly when clicking the dimmed backdrop outside the dialog bounds
-        dlg.addEventListener('click', (ev) => {
-          if (ev.target !== dlg) return;
-          const rect = dlg.getBoundingClientRect?.();
-          if (!rect || rect.width <= 0 || rect.height <= 0) return;
-          const outside =
-            ev.clientX < rect.left ||
-            ev.clientX > rect.right ||
-            ev.clientY < rect.top ||
-            ev.clientY > rect.bottom;
-          if (outside) {
-            closeOverlay();
-          }
-        });
-      }
-
-      const shadowHost = runtime.getSlotHostElement(modalHandle.bodyEl);
-      if (shadowHost && shadowHost !== dlg && shadowHost.style) {
-        shadowHost.style.width = '100%';
-        shadowHost.style.height = '100%';
-        shadowHost.style.display = 'flex';
-        shadowHost.style.flexDirection = 'column';
-      }
-
-      const bodyRoot = modalHandle.bodyEl;
-      while (bodyRoot.firstChild) bodyRoot.removeChild(bodyRoot.firstChild);
-
-      const topBar = doc.createElement('div');
-      topBar.setAttribute(CUSTOMIZATIONS_TOPBAR_ATTR, 'true');
-
-      const titleEl = doc.createElement('h2');
-      titleEl.setAttribute(CUSTOMIZATIONS_TITLE_ATTR, 'true');
-      titleEl.textContent = getButtonLabel();
-
-      const closeBtn = doc.createElement('button');
-      closeBtn.type = 'button';
-      closeBtn.setAttribute(CUSTOMIZATIONS_CLOSE_ATTR, 'true');
-      closeBtn.setAttribute('aria-label', getCloseAriaLabel());
-      closeBtn.textContent = '✕';
-      closeBtn.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        closeOverlay();
-      });
-
-      topBar.appendChild(titleEl);
-      topBar.appendChild(closeBtn);
-
-      const content = doc.createElement('div');
-      content.setAttribute(CUSTOMIZATIONS_CONTENT_ATTR, 'true');
-
-      bodyRoot.appendChild(topBar);
-      bodyRoot.appendChild(content);
-
-      modalTitleEl = titleEl;
-      modalCloseBtnEl = closeBtn;
-      modalContentEl = content;
-      renderModalContent();
-      syncLabels();
-    }
-
-    function ensureMount() {
-      const found = findCustomizationsMcpHeader();
-      if (!found) return;
-      const { actionContainer, firstActionButton, alignRightInRow } = found;
-
-      if (btnHostEl && btnHostEl.isConnected && btnHostEl.parentElement === actionContainer) {
-        if (firstActionButton && firstActionButton.parentElement === actionContainer && btnHostEl.nextElementSibling !== firstActionButton) {
-          actionContainer.insertBefore(btnHostEl, firstActionButton);
-        }
-        if (activeModalHandle && activeModalHandle.element && activeModalHandle.element.isConnected) {
-          renderModalContent();
-        }
-        return;
-      }
-
-      const btnRoot = runtime.mountSlot(SLOT_IDS.CUSTOMIZATIONS_BTN, { container: actionContainer });
-      if (!btnRoot) return;
-      const btnHost = runtime.getSlotHostElement(btnRoot);
-      if (btnHost && btnHost.style) {
-        btnHost.style.display = 'inline-flex';
-        btnHost.style.alignItems = 'center';
-        btnHost.style.flexShrink = '0';
-        btnHost.style.marginLeft = alignRightInRow ? 'auto' : '';
-      }
-      while (btnRoot.firstChild) btnRoot.removeChild(btnRoot.firstChild);
-
-      const btn = doc.createElement('button');
-      btn.type = 'button';
-      btn.setAttribute(CUSTOMIZATIONS_BTN_ATTR, 'true');
-      btn.textContent = getButtonLabel();
-      btn.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        openOverlay(btn);
-      });
-
-      btnRoot.appendChild(btn);
-      btnHostEl = btnHost;
-      btnRootEl = btnRoot;
-      btnEl = btn;
-
-      if (firstActionButton && firstActionButton.parentElement === actionContainer && firstActionButton !== btnHost) {
-        actionContainer.insertBefore(btnHost, firstActionButton);
-      }
-    }
-
-    function handleKeydown(ev) {
-      // Host ModalPortal handles capture-phase Escape LIFO; keep fallback only if not already handled
-      if (ev.key !== 'Escape' || ev.defaultPrevented || ev.isComposing || ev.keyCode === 229) return;
-      if (activeModalHandle && activeModalHandle.element && activeModalHandle.element.isConnected) {
-        ev.preventDefault();
-        closeOverlay();
-      }
-    }
-
-    function getFrames() {
-      return modalFrameEl && modalFrameEl.isConnected ? [modalFrameEl] : [];
-    }
-
-    function dispose() {
-      lastTriggerBtn = null;
-      closeOverlay();
-      btnHostEl = null;
-      btnRootEl = null;
-      btnEl = null;
-      try {
-        runtime.unmountSlot(SLOT_IDS.CUSTOMIZATIONS_BTN);
-      } catch {
-        // Ignore if host already unmounted
-      }
-    }
-
-    return Object.freeze({
-      id: 'customizations',
-      ensureMount,
-      syncLabels,
-      getFrames,
-      handleKeydown,
-      dispose,
-    });
-  }
-
-  // --- module: mount-coordinator.mjs ---
-  /**
-   * Renderer Mount Coordinator (`src/adapters/antigravity/renderer/mount-coordinator.mjs`).
-   *
-   * SOLID Boundaries:
-   * - OCP: Coordinates an open list of uniform Mount Adapters (`ensureMount`, `syncLabels`,
-   *   `getFrames`, `handleKeydown`, `dispose`) and slot-scoped CSS descriptors without knowing
-   *   internal DOM details of each surface.
-   * - DIP: Receives `runtime` (wrapping `AddonManifest.v2` `addonHost`) and `adapters` via
-   *   dependency injection; wires a single deterministic `runtime.onDispose(...)` teardown that
-   *   disconnects observers, detaches managed listeners, disposes adapters, and removes every
-   *   slot-scoped style.
-   */
-  function createMountCoordinator({ runtime, adapters, win = window, doc = document }) {
-    const styleDescriptors = buildSlotStyleDescriptors();
-    let started = false;
     let disposed = false;
-    let scheduled = false;
-    let observer = null;
-    let unbindUrlListener = null;
-    let detachKeydown = null;
-    let detachMessage = null;
-    let detachDomReady = null;
+    let latestSnapshot = null;
+    let latestError = '';
+    let statusItemHandle = null;
+    let settingsPageHandle = null;
+    let quickPanelHandle = null;
+    let fullModalHandle = null;
+    let fullModalPanel = null;
+    let settingsCanvasPanel = null;
+    const commandHandles = [];
+    const unsubscribers = [];
 
-    function ensureAllMounts() {
-      if (disposed) return;
-      for (const adapter of adapters) {
-        adapter.ensureMount();
+    function getLang() {
+      return runtime.resolveEffectiveLang() === 'ko' ? 'ko' : 'en';
+    }
+
+    function dict() {
+      return SHELL_I18N[getLang()];
+    }
+
+    function syncStatusItem() {
+      if (!statusItemHandle || disposed) return;
+      const count = latestSnapshot?.globalConfig?.servers?.length ?? 0;
+      const d = dict();
+      try {
+        statusItemHandle.update({
+          label: d.statusLabel,
+          tooltip: d.statusTooltip(mode, count),
+          badge: latestSnapshot ? String(count) : null,
+        });
+      } catch {
+        // Ignore updates during disposal
       }
     }
 
-    function syncAllLabels() {
-      if (disposed) return;
-      for (const adapter of adapters) {
-        adapter.syncLabels();
+    function syncQuickPanel() {
+      if (!quickPanelHandle || disposed) return;
+      const { tree, state } = buildQuickPanelSchema({
+        snapshot: latestSnapshot,
+        mode,
+        surface,
+        lang: getLang(),
+        errorMessage: latestError,
+      });
+      try {
+        quickPanelHandle.update(tree, state);
+      } catch {
+        // Panel may already be closed
       }
     }
 
-    function collectFrames() {
-      const frames = [];
-      for (const adapter of adapters) {
-        for (const frame of adapter.getFrames()) {
-          frames.push(frame);
+    function syncAllUi() {
+      if (disposed) return;
+      syncStatusItem();
+      syncQuickPanel();
+      if (fullModalPanel) fullModalPanel.syncLang();
+      if (settingsCanvasPanel) settingsCanvasPanel.syncLang();
+    }
+
+    async function refreshSnapshot() {
+      if (disposed) return null;
+      try {
+        const snap = await service.getSnapshot({ includeRawText: false });
+        if (disposed) return null;
+        if (snap && snap.ok) {
+          latestSnapshot = snap;
+          latestError = '';
+        } else {
+          latestError = (snap?.errors || [dict().loadErrorAlert]).join(' ');
+        }
+      } catch (err) {
+        if (disposed) return null;
+        latestError = err?.message || dict().loadErrorAlert;
+      }
+      syncStatusItem();
+      syncQuickPanel();
+      return latestSnapshot;
+    }
+
+    async function handleQuickToggle(payload) {
+      if (!payload || !payload.name || disposed) return;
+      if (!latestSnapshot) {
+        await refreshSnapshot();
+        if (!latestSnapshot || disposed) return;
+      }
+      try {
+        const res = await service.toggleServerDisabled({
+          name: payload.name,
+          disabled: Boolean(payload.disabled),
+          expectedSha256: latestSnapshot.globalConfig.sha256,
+        });
+        if (disposed) return;
+        if (res.code === 'CONFLICT') {
+          runtime.showToast({ message: dict().conflictToast, variant: 'warning' });
+          await refreshSnapshot();
+          return;
+        }
+        if (!res.ok) {
+          runtime.showToast({ message: (res.errors || [dict().toggleFailedToast]).join(' '), variant: 'error' });
+          return;
+        }
+        runtime.showToast({ message: dict().toggledToast(payload.name, Boolean(payload.disabled)), variant: 'success' });
+        await refreshSnapshot();
+        if (fullModalPanel) void fullModalPanel.refresh();
+        if (settingsCanvasPanel) void settingsCanvasPanel.refresh();
+      } catch (err) {
+        if (!disposed) {
+          runtime.showToast({ message: err?.message || dict().toggleFailedToast, variant: 'error' });
         }
       }
-      return frames;
     }
 
-    function scheduleEnsure() {
-      if (disposed || scheduled) return;
-      scheduled = true;
-      const run = () => {
-        scheduled = false;
-        ensureAllMounts();
+    function mountNativePanelInCanvas(canvasRoot, overlayHandle, panelSurface) {
+      if (!canvasRoot || disposed) return null;
+      const styleEl = runtime.createStyleElementSafe(buildNativePanelCss());
+      if (styleEl && typeof canvasRoot.appendChild === 'function') {
+        canvasRoot.appendChild(styleEl);
+      }
+      const panel = createNativeMcpPanel({
+        runtime,
+        service,
+        mode,
+        surface: panelSurface,
+        doc,
+        win,
+        onLangChange: () => syncAllUi(),
+        onSnapshotChange: (snap) => {
+          latestSnapshot = snap;
+          latestError = '';
+          syncStatusItem();
+          syncQuickPanel();
+        },
+      });
+      canvasRoot.appendChild(panel.element);
+      return panel;
+    }
+
+    function openFullModal() {
+      if (disposed) return null;
+      if (fullModalHandle) {
+        try {
+          fullModalHandle.close();
+        } catch {}
+        fullModalHandle = null;
+      }
+      if (fullModalPanel) {
+        fullModalPanel.dispose();
+        fullModalPanel = null;
+      }
+
+      const handle = runtime.openModal({
+        title: dict().title,
+        placement: {
+          zone: 'surface-center',
+          surface: 'auto',
+          width: 820,
+          maxHeight: 720,
+        },
+        onClose: () => {
+          if (fullModalPanel) {
+            fullModalPanel.dispose();
+            fullModalPanel = null;
+          }
+          fullModalHandle = null;
+        },
+      });
+      fullModalHandle = handle;
+      if (handle && handle.bodyEl) {
+        fullModalPanel = mountNativePanelInCanvas(handle.bodyEl, handle, 'customizations');
+      }
+      return handle;
+    }
+
+    function openQuickPanel(anchorEl = null) {
+      if (disposed) return null;
+      if (quickPanelHandle) {
+        try {
+          quickPanelHandle.close();
+        } catch {}
+        quickPanelHandle = null;
+      }
+
+      const { tree, state } = buildQuickPanelSchema({
+        snapshot: latestSnapshot,
+        mode,
+        surface,
+        lang: getLang(),
+        errorMessage: latestError,
+      });
+
+      const placement = {
+        zone: 'drawer',
+        side: 'right',
+        width: 420,
+        ...(anchorEl ? { anchorEl } : {}),
       };
-      if (typeof win.requestAnimationFrame === 'function') {
-        win.requestAnimationFrame(run);
-      } else {
-        setTimeout(run, 16);
-      }
+
+      const handle = runtime.openPanel({
+        title: dict().panelTitle,
+        placement,
+        tree,
+        state,
+        onChange: (ev) => {
+          if (ev && ev.field === 'lang' && (ev.value === 'en' || ev.value === 'ko')) {
+            runtime.writeSavedLang(ev.value);
+            syncAllUi();
+          }
+        },
+        onAction: (ev) => {
+          if (!ev) return;
+          if (ev.actionId === 'open-full-editor') {
+            if (quickPanelHandle) {
+              try {
+                quickPanelHandle.close();
+              } catch {}
+            }
+            openFullModal();
+          } else if (ev.actionId === 'refresh') {
+            void refreshSnapshot();
+          } else if (ev.actionId === 'toggle-server') {
+            void handleQuickToggle(ev.payload);
+          }
+        },
+        onClose: () => {
+          quickPanelHandle = null;
+        },
+      });
+      quickPanelHandle = handle;
+      void refreshSnapshot();
+      return handle;
     }
 
-    function onKeydown(ev) {
-      if (disposed) return;
-      for (const adapter of adapters) {
-        adapter.handleKeydown(ev);
-      }
-    }
-
-    function onMessage(ev) {
-      if (disposed) return;
-      if (!runtime.isTrustedIframeMessage(ev, collectFrames())) return;
-      if (ev.data?.type === 'agy-mcp-lang-change' && (ev.data.lang === 'ko' || ev.data.lang === 'en')) {
-        runtime.writeSavedLang(ev.data.lang);
-        syncAllLabels();
-      }
-    }
-
-    function attachObserver() {
-      if (disposed || !doc.body || observer) return;
-      ensureAllMounts();
-      observer = new MutationObserver(scheduleEnsure);
-      observer.observe(doc.body, { childList: true, subtree: true });
+    function openSettingsPage() {
+      if (disposed || !settingsPageHandle) return null;
+      return settingsPageHandle.open();
     }
 
     function dispose() {
       if (disposed) return;
       disposed = true;
-      scheduled = false;
-
-      if (observer) {
-        observer.disconnect();
-        observer = null;
-      }
-      if (detachDomReady) {
-        detachDomReady();
-        detachDomReady = null;
-      }
-      if (detachKeydown) {
-        detachKeydown();
-        detachKeydown = null;
-      }
-      if (detachMessage) {
-        detachMessage();
-        detachMessage = null;
-      }
-      if (unbindUrlListener) {
-        unbindUrlListener();
-        unbindUrlListener = null;
-      }
-
-      for (let i = adapters.length - 1; i >= 0; i -= 1) {
+      for (const unsub of unsubscribers.splice(0)) {
         try {
-          adapters[i].dispose();
-        } catch {
-          // Isolate per-adapter teardown errors
-        }
+          unsub();
+        } catch {}
       }
-      for (const desc of styleDescriptors) {
+      for (const cmd of commandHandles.splice(0)) {
         try {
-          runtime.removeStyle(desc.styleId);
-        } catch {
-          // Ignore if host already removed style
-        }
+          if (typeof cmd.dispose === 'function') cmd.dispose();
+          else if (typeof cmd.unregister === 'function') cmd.unregister();
+        } catch {}
+      }
+      if (quickPanelHandle) {
+        try {
+          quickPanelHandle.close();
+        } catch {}
+        quickPanelHandle = null;
+      }
+      if (fullModalHandle) {
+        try {
+          fullModalHandle.close();
+        } catch {}
+        fullModalHandle = null;
+      }
+      if (fullModalPanel) {
+        fullModalPanel.dispose();
+        fullModalPanel = null;
+      }
+      if (settingsCanvasPanel) {
+        settingsCanvasPanel.dispose();
+        settingsCanvasPanel = null;
+      }
+      if (statusItemHandle) {
+        try {
+          statusItemHandle.dispose();
+        } catch {}
+        statusItemHandle = null;
+      }
+      if (settingsPageHandle) {
+        try {
+          settingsPageHandle.dispose();
+        } catch {}
+        settingsPageHandle = null;
       }
     }
 
     function start() {
-      if (started || disposed) return;
-      started = true;
+      if (disposed) return;
+      const d = dict();
 
-      for (const desc of styleDescriptors) {
-        runtime.injectStyle(desc.styleId, desc.cssText, { slotId: desc.slotId });
-      }
-      runtime.onDispose(dispose);
-
-      detachKeydown = runtime.addManagedListener(win, 'keydown', onKeydown);
-      detachMessage = runtime.addManagedListener(win, 'message', onMessage);
-      unbindUrlListener = runtime.bindServerUrlListener((nextUrl) => {
-        if (nextUrl) {
-          scheduleEnsure();
-        }
+      statusItemHandle = runtime.registerStatusItem({
+        id: V3_IDS.STATUS_ITEM,
+        label: d.statusLabel,
+        tooltip: d.statusTooltip(mode, 0),
+        align: 'right',
+        priority: 60,
+        onClick: (ev) => {
+          openQuickPanel(ev?.anchorEl || null);
+        },
       });
 
-      if (doc.body) {
-        attachObserver();
-      } else {
-        detachDomReady = runtime.addManagedListener(
-          win,
-          'DOMContentLoaded',
-          () => {
-            detachDomReady = null;
-            attachObserver();
-          },
-          { once: true }
-        );
+      settingsPageHandle = runtime.registerSettingsPage({
+        id: V3_IDS.SETTINGS_PAGE,
+        title: d.title,
+        order: 60,
+        width: 820,
+        render: (canvasRoot, handle) => {
+          if (settingsCanvasPanel) {
+            settingsCanvasPanel.dispose();
+            settingsCanvasPanel = null;
+          }
+          settingsCanvasPanel = mountNativePanelInCanvas(canvasRoot, handle, 'settings');
+        },
+        onClose: () => {
+          if (settingsCanvasPanel) {
+            settingsCanvasPanel.dispose();
+            settingsCanvasPanel = null;
+          }
+        },
+      });
+
+      commandHandles.push(
+        runtime.registerCommand(V3_IDS.CMD_OPEN_MANAGER, {
+          label: d.cmdOpenManager,
+          run: () => openFullModal(),
+        }),
+        runtime.registerCommand(V3_IDS.CMD_OPEN_PANEL, {
+          label: d.cmdOpenPanel,
+          run: () => openQuickPanel(),
+        }),
+        runtime.registerCommand(V3_IDS.CMD_OPEN_SETTINGS, {
+          label: d.cmdOpenSettings,
+          run: () => openSettingsPage(),
+        })
+      );
+
+      unsubscribers.push(
+        runtime.onStorageChange((ev) => {
+          if (!ev || disposed) return;
+          if (ev.key === LANG_STORAGE_KEY) {
+            syncAllUi();
+          } else if (ev.key === STORAGE_DRAFT_KEY) {
+            void refreshSnapshot();
+          }
+        }),
+        runtime.onThemeChange(() => {
+          syncQuickPanel();
+        })
+      );
+
+      if (runtime.signal && typeof runtime.signal.addEventListener === 'function') {
+        const onAbort = () => dispose();
+        runtime.signal.addEventListener('abort', onAbort, { once: true });
+        unsubscribers.push(() => {
+          try {
+            runtime.signal.removeEventListener('abort', onAbort);
+          } catch {}
+        });
       }
+      runtime.onDispose(() => dispose());
+
+      void runtime.loadSavedLang().then(() => {
+        if (!disposed) syncAllUi();
+      });
+      void refreshSnapshot();
     }
 
     return Object.freeze({
       start,
-      ensureAllMounts,
-      syncAllLabels,
+      openQuickPanel,
+      openFullModal,
+      openSettingsPage,
+      refreshSnapshot,
+      getQuickPanelHandle: () => quickPanelHandle,
+      getFullModalHandle: () => fullModalHandle,
       dispose,
     });
   }
 
-  // --- composition root ---
-  const runtime = createHostRuntime({ addonHost, win: window, doc: document });
-  let coordinator = null;
-  const onLangChange = () => {
-    if (coordinator) coordinator.syncAllLabels();
-  };
-  coordinator = createMountCoordinator({
-    runtime,
-    adapters: [
-      createSettingsSidebarMount({ runtime, onLangChange, win: window, doc: document }),
-      createCustomizationsMount({ runtime, onLangChange, win: window, doc: document }),
-    ],
-    win: window,
-    doc: document,
-  });
-  coordinator.start();
+  // --- composition root (AddonContextV3 API-First) ---
+  const doc = typeof document !== "undefined" ? document : null;
+  const win = typeof window !== "undefined" ? window : null;
+  const runtime = createHostRuntime({ ctx: addonHost, doc });
+  const shell = createMcpV3Shell({ runtime, doc, win });
+  shell.start();
 })(typeof addonHost !== "undefined" ? addonHost : undefined);

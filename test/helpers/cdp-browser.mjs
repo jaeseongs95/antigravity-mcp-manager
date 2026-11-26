@@ -3,10 +3,11 @@
  *
  * SOLID Responsibility (SRP):
  * - Single source of truth for locating Chromium/Edge, allocating ephemeral CDP ports,
- *   capturing stderr on launch failure, connecting CDP WebSocket sessions (including OOPIF
- *   iframes), and simulating the exact `AddonManifest.v2` `addonHost` capability handle
- *   contract from `antigravity-native-addon-host` v2.0.0 / v2.1.0 (`slot-manager.js`,
- *   `style-manager.js`, `modal-portal.js`, `kernel.js`).
+ *   capturing stderr on launch failure, connecting CDP WebSocket sessions, and simulating
+ *   the `AddonManifest.v3` + `AddonContextV3` browser host runtime contract from
+ *   `antigravity-addons` v3.0.0 (3-Tier UI, `PlacementSpec` + mobile `<=640px` sheet,
+ *   16-primitive declarative schema + `handle.update`, `ctx.storage`, `ctx.configBridge`,
+ *   `ctx.lifecycle.signal`, and minimal-permission ISP namespace gating).
  */
 
 import fs from 'node:fs';
@@ -62,566 +63,492 @@ export async function waitUntil(fn, timeoutMs = 8000, intervalMs = 40) {
 }
 
 /**
- * Builds an inline browser script that mirrors `antigravity-native-addon-host` v2.0.0/v2.1.0's
- * `kernel.js` + `slot-manager.js` + `style-manager.js` + `modal-portal.js` contract:
- * - Option B2 Shadow DOM slots (`shadow: true` by default in v2; `restricted` cannot downgrade)
- * - Strict `mountSlot(slotId, { container, shadow, tagName, fallbackToBody })` signature
- * - `translate="no"`, `data-addon-host-no-translate="true"`, `data-agy-no-translate="true"`
- * - Owner-scoped CSS validation & `scopeCssToOwner` with automatic ShadowRoot style routing
- * - Native `<dialog>.showModal()` `openModal(slotId, { shadow, onClose })` + `PortalArbiter`
- *   state counter + titlebar safe `marginTop` + `zIndex` + capture-phase IME-safe `Escape` LIFO
- * - `addManagedListener`, `onDispose`, and deterministic `dispose()` teardown
+ * Builds an inline browser script that mirrors `antigravity-addons` v3.0.0 `AddonContextV3`:
+ * - Minimal ISP namespaces: `net` and `dom` omitted when undeclared; `configBridge` omitted on remote-web
+ * - Tier 1: `showToast`, `confirm`, `prompt`, `registerCommand`, `registerStatusItem`, `registerSettingsPage`
+ * - Tier 2: `openPanel` / `openPopup` / `openModal` with 16-primitive declarative schema renderer,
+ *   `handle.update(nextTree, nextState)` ID-based patching, and responsive mobile `<=640px` bottom-sheet
+ * - Tier 3: ShadowRoot canvas `bodyEl` + `createStyleElementSafe` + `--ag-*` tokens
+ * - `storage` (KV + `onDidChange`), `theme`, `i18n`, `events`, `services`, `lifecycle.signal` / `onDispose`
  */
-export function buildAddonHostHarnessScript(manifest, harnessOpts = {}) {
-  const schemaVersion = Number(manifest.schemaVersion || 2);
-  const trustLevel = String(manifest.trustLevel || 'restricted');
+export function buildAddonContextV3HarnessScript(manifest, opts = {}) {
+  const surface = opts.surface === 'remote-web' ? 'remote-web' : 'desktop';
+  const locale = String(opts.locale || 'en-US');
+  const themeMode = opts.themeMode === 'light' ? 'light' : 'dark';
   const pluginId = String(manifest.pluginId);
-  const version = String(manifest.version || '0.0.0');
-  const noTranslate = !manifest.isolation || manifest.isolation.noTranslate !== false;
-  const enableSurfaceGeometry = Boolean(harnessOpts && harnessOpts.enableSurfaceGeometry);
-  const uiSlots = (manifest.uiSlots || []).map((s) => ({
-    slotId: s.slotId,
-    slot: s.slot,
-    shadow: s.slot === 'document-transform' ? false : typeof s.shadow === 'boolean' ? s.shadow : schemaVersion >= 2,
-  }));
+  const displayName = String(manifest.displayName || pluginId);
+  const version = String(manifest.version || '4.0.0');
+  const trustLevel = surface === 'remote-web' ? 'restricted' : String(manifest.trustLevel || 'restricted');
+  const cbScopes =
+    surface === 'desktop' && trustLevel === 'trusted' && Array.isArray(manifest.permissions?.configBridge?.scopes)
+      ? manifest.permissions.configBridge.scopes
+      : [];
 
   return `(function(){
     'use strict';
     const pluginId = ${JSON.stringify(pluginId)};
+    const displayName = ${JSON.stringify(displayName)};
     const version = ${JSON.stringify(version)};
+    const surface = ${JSON.stringify(surface)};
     const trustLevel = ${JSON.stringify(trustLevel)};
-    const schemaVersion = ${JSON.stringify(schemaVersion)};
-    const noTranslate = ${JSON.stringify(noTranslate)};
-    const enableSurfaceGeometry = ${JSON.stringify(enableSurfaceGeometry)};
-    const slotDefs = Object.create(null);
-    for (const def of ${JSON.stringify(uiSlots)}) slotDefs[def.slotId] = def;
+    const locale = ${JSON.stringify(locale)};
+    const themeMode = ${JSON.stringify(themeMode)};
+    const cbScopes = ${JSON.stringify(cbScopes)};
 
-    const mountedSlots = new Map();
-    const styleRecords = new Map();
-    const shadowRootsBySlot = new Map();
-    const modalStack = [];
-    const modalCalls = [];
-    const managedListeners = [];
+    const abortController = new AbortController();
     const disposers = [];
-    let modalSeq = 0;
+    const managedListeners = [];
+    const statusItems = new Map();
+    const settingsPages = new Map();
+    const commands = new Map();
+    const toasts = [];
+    const activeOverlays = new Set();
+    const storageMap = new Map();
+    const storageListeners = new Set();
+    const themeListeners = new Set();
+    const escapeStack = [];
     let disposed = false;
-    let portalClaimActive = false;
-    const portalTransitions = [];
+    let overlaySeq = 0;
 
     function assertActive() {
       if (disposed) throw new Error('ERR_HANDLE_DISPOSED:' + pluginId);
     }
 
-    function applyNoTranslate(el) {
-      if (!noTranslate) return;
-      el.setAttribute('translate', 'no');
-      el.setAttribute('data-addon-host-no-translate', 'true');
-      el.setAttribute('data-agy-no-translate', 'true');
+    function detectLayoutMode() {
+      const w = Number(window.innerWidth) || 1280;
+      if (w > 0 && w <= 640) return 'mobile';
+      if (w > 0 && w <= 1024) return 'compact';
+      return 'desktop';
     }
 
-    function validateOwnerCss(cssText) {
-      if (typeof cssText !== 'string') throw new Error('ERR_CSS_NOT_STRING');
-      if (/@import\\b|expression\\s*\\(|javascript\\s*:|@charset\\b|<\\s*\\/\\s*style/i.test(cssText)) {
-        throw new Error('ERR_UNSAFE_CSS_CONSTRUCT');
+    function computePlacement(kind, spec = {}) {
+      const vw = Number(window.innerWidth) || 1280;
+      const vh = Number(window.innerHeight) || 800;
+      const bp = Number(spec.mobileBreakpointPx) || 640;
+      const isMobileSheet = !spec.disableMobileSheet && vw > 0 && vw <= bp;
+      const zone = isMobileSheet ? 'sheet' : (spec.zone || (kind === 'panel' ? 'drawer' : kind === 'modal' ? 'surface-center' : 'anchor'));
+      if (isMobileSheet) {
+        return { zone: 'sheet', isMobileSheet: true, left: 0, top: Math.round(vh * 0.25), width: vw, height: Math.round(vh * 0.75) };
       }
-      if (/:\\s*has\\s*\\(/i.test(cssText)) {
-        throw new Error('ERR_FORBIDDEN_CSS_NESTING');
+      if (zone === 'drawer') {
+        const width = Math.min(Number(spec.width) || 420, vw - 24);
+        const side = spec.side === 'left' ? 'left' : 'right';
+        return { zone: 'drawer', side, isMobileSheet: false, left: side === 'left' ? 0 : vw - width, top: 36, width, height: vh - 36 };
       }
+      const width = Math.min(Number(spec.width) || 720, vw - 32);
+      const height = Math.min(Number(spec.maxHeight || spec.height) || 680, vh - 60);
+      return {
+        zone: 'surface-center',
+        isMobileSheet: false,
+        left: Math.round((vw - width) / 2),
+        top: Math.max(36, Math.round((vh - height) / 2)),
+        width,
+        height,
+      };
     }
 
-    function scopeCssToOwner(cssText) {
-      const ownerPrefix = '[data-addon-host-owner="' + pluginId.replace(/"/g, '\\\\"') + '"]';
-      const clean = String(cssText || '').replace(/\\/\\*[\\s\\S]*?\\*\\//g, ' ');
-      return clean.replace(/([^{}]+)\\{([^{}]*)\\}/g, (_m, prelude, body) => {
-        const trimmedPrelude = prelude.trim();
-        if (trimmedPrelude.startsWith('@')) return prelude + '{' + body + '}';
-        const scoped = prelude
-          .split(',')
-          .map((sel) => {
-            const t = sel.trim();
-            if (!t) return '';
-            if (t.startsWith(':host')) return t;
-            if (
-              t === ownerPrefix ||
-              t.startsWith(ownerPrefix + ' ') ||
-              t.startsWith(ownerPrefix + '>') ||
-              t.startsWith(ownerPrefix + '.') ||
-              t.startsWith(ownerPrefix + '#') ||
-              t.startsWith(ownerPrefix + ':') ||
-              t.startsWith(ownerPrefix + '[')
-            ) {
-              return t;
-            }
-            if (/^(?:html|body|:root)(?![a-z0-9_-])/i.test(t)) {
-              return t.replace(/^(?:html|body|:root)(?![a-z0-9_-])/i, ownerPrefix);
-            }
-            return ownerPrefix + ' ' + t;
-          })
-          .filter(Boolean)
-          .join(', ');
-        return scoped + ' {' + body + '}';
-      });
-    }
-
-    function upsertStyleEl(parentNode, existingEl, styleId, scope, finalCss) {
-      if (!parentNode || typeof parentNode.appendChild !== 'function') return null;
-      let el = existingEl;
-      if (!el || !el.parentNode) {
-        el = document.createElement('style');
-        el.setAttribute('data-addon-host-owner', pluginId);
-        el.setAttribute('data-addon-host-style', pluginId + ':' + styleId);
-        el.setAttribute('data-addon-host-style-scope', scope);
-        parentNode.appendChild(el);
-      }
-      el.textContent = finalCss;
-      return el;
-    }
-
-    function removeHeadStyle(rec) {
-      if (rec && rec.headEl && rec.headEl.parentNode) {
-        rec.headEl.parentNode.removeChild(rec.headEl);
-      }
-      if (rec) rec.headEl = null;
-    }
-
-    function registerShadowRoot(slotId, shadowRoot) {
-      if (!shadowRoot) return;
-      let set = shadowRootsBySlot.get(slotId);
-      if (!set) {
-        set = new Set();
-        shadowRootsBySlot.set(slotId, set);
-      }
-      set.add(shadowRoot);
-      for (const rec of styleRecords.values()) {
-        if (rec.slotId && rec.slotId !== slotId) continue;
-        const el = upsertStyleEl(shadowRoot, rec.shadowEls.get(shadowRoot), rec.styleId, rec.scope, rec.finalCss);
-        if (el) rec.shadowEls.set(shadowRoot, el);
-        if (rec.slotId === slotId && rec.headEl) {
-          removeHeadStyle(rec);
-        }
-      }
-    }
-
-    function unregisterShadowRoot(slotId, shadowRoot) {
-      const set = shadowRootsBySlot.get(slotId);
-      if (!set) return;
-      set.delete(shadowRoot);
-      for (const rec of styleRecords.values()) {
-        const el = rec.shadowEls.get(shadowRoot);
-        if (el && el.parentNode) el.parentNode.removeChild(el);
-        rec.shadowEls.delete(shadowRoot);
-      }
-      if (set.size === 0) shadowRootsBySlot.delete(slotId);
-    }
-
-    function resolveUseShadow(slotDef, opts) {
-      if (slotDef.slot === 'document-transform') return false;
-      if (opts && typeof opts.shadow === 'boolean' && (opts.shadow === true || trustLevel === 'trusted' || !slotDef.shadow)) {
-        return opts.shadow;
-      }
-      return Boolean(slotDef.shadow);
-    }
-
-    function notifyPortalState() {
-      const nextActive = modalStack.length > 0;
-      if (nextActive === portalClaimActive) return;
-      portalClaimActive = nextActive;
-      portalTransitions.push(nextActive);
-    }
-
-    function closeModalEntry(entry) {
-      const idx = modalStack.indexOf(entry);
-      if (idx === -1) return false;
-      entry.closing = true;
-      modalStack.splice(idx, 1);
-      if (entry.shadowRoot) unregisterShadowRoot(entry.slotId, entry.shadowRoot);
-      if (typeof entry.onResizeCleanup === 'function') {
-        try { entry.onResizeCleanup(); } catch {}
-        entry.onResizeCleanup = null;
-      }
-      try {
-        if (typeof entry.el.close === 'function' && entry.el.open) entry.el.close();
-      } catch {}
-      if (entry.el && entry.el.parentNode) entry.el.parentNode.removeChild(entry.el);
-      if (entry.prevFocus && typeof entry.prevFocus.focus === 'function') {
-        try { entry.prevFocus.focus(); } catch {}
-      }
-      if (typeof entry.onClose === 'function') {
-        try { entry.onClose(); } catch {}
-      }
-      notifyPortalState();
+    function evalCondition(cond, state) {
+      if (!cond || typeof cond !== 'object') return true;
+      const val = cond.field ? state[cond.field] : undefined;
+      if ('eq' in cond) return val === cond.eq;
+      if ('neq' in cond) return val !== cond.neq;
+      if ('truthy' in cond) return Boolean(val) === Boolean(cond.truthy);
       return true;
     }
 
-    function computeSurfaceBounds(surfaceIdOrOpts) {
-      const vw = Number(window.innerWidth) || 0;
-      const vh = Number(window.innerHeight) || 0;
-      const requested =
-        typeof surfaceIdOrOpts === 'string' && surfaceIdOrOpts.trim()
-          ? surfaceIdOrOpts.trim()
-          : surfaceIdOrOpts && typeof surfaceIdOrOpts.surface === 'string' && surfaceIdOrOpts.surface.trim()
-            ? surfaceIdOrOpts.surface.trim()
-            : 'auto';
-      let left = 0;
-      let top = 36;
-      let right = vw;
-      let bottom = vh;
-      let matched = false;
-      let source = 'viewport';
-      let surfaceId = requested === 'auto' || requested === 'active' ? 'viewport' : requested;
-
-      if (requested === 'customizations-page' || requested === 'auto') {
-        const directEl = document.querySelector('[data-testid="customizations-view"]');
-        const rect = directEl ? directEl.getBoundingClientRect() : null;
-        if (rect && rect.width > 0 && rect.height > 0) {
-          left = Math.max(0, rect.left);
-          top = Math.max(36, rect.top);
-          right = Math.min(vw, rect.right);
-          bottom = Math.min(vh, rect.bottom);
-          matched = true;
-          source = 'selector';
-          surfaceId = 'customizations-page';
-        } else {
-          const leftChrome = document.querySelector('[data-testid="sidebar"], [data-testid="left-sidebar"], aside, nav');
-          const lr = leftChrome ? leftChrome.getBoundingClientRect() : null;
-          if (lr && lr.width > 0 && lr.left <= 12 && lr.right < vw * 0.65) {
-            left = lr.right;
-            matched = true;
-            source = 'chrome-subtracted';
-            surfaceId = 'customizations-page';
+    function renderSchemaTree(container, tree, state, onChange, onAction, idMap) {
+      while (container.firstChild) container.removeChild(container.firstChild);
+      idMap.clear();
+      const buildNode = (node) => {
+        if (!node || typeof node !== 'object') return null;
+        let el;
+        if (node.type === 'stack' || node.type === 'row' || node.type === 'section') {
+          el = document.createElement('div');
+          el.className = 'ag-' + node.type;
+          if (node.type === 'section' && node.title) {
+            const h = document.createElement('div');
+            h.className = 'ag-section-title';
+            h.textContent = node.title;
+            el.appendChild(h);
           }
+          for (const child of node.children || []) {
+            const cEl = buildNode(child);
+            if (cEl) el.appendChild(cEl);
+          }
+        } else if (node.type === 'heading' || node.type === 'text' || node.type === 'badge' || node.type === 'alert') {
+          el = document.createElement('div');
+          el.className = 'ag-' + node.type;
+          el.textContent = String(node.text ?? node.label ?? '');
+          if (node.variant) el.setAttribute('data-variant', node.variant);
+        } else if (node.type === 'divider') {
+          el = document.createElement('hr');
+        } else if (node.type === 'button') {
+          el = document.createElement('button');
+          el.type = 'button';
+          el.className = 'ag-btn';
+          el.textContent = String(node.label ?? node.text ?? 'Action');
+          el.addEventListener('click', () => onAction && onAction({ actionId: node.actionId, payload: node.payload, state: { ...state } }));
+        } else if (node.type === 'select') {
+          el = document.createElement('div');
+          const sel = document.createElement('select');
+          for (const opt of node.options || []) {
+            const o = document.createElement('option');
+            o.value = typeof opt === 'object' ? opt.value : String(opt);
+            o.textContent = typeof opt === 'object' ? (opt.label || opt.value) : String(opt);
+            sel.appendChild(o);
+          }
+          if (node.field && state[node.field] !== undefined) sel.value = String(state[node.field]);
+          sel.addEventListener('change', () => {
+            if (node.field) state[node.field] = sel.value;
+            if (onChange) onChange({ field: node.field, value: sel.value, state: { ...state } });
+          });
+          el.appendChild(sel);
+        } else if (node.type === 'list') {
+          el = document.createElement('ul');
+          el.className = 'ag-list';
+          for (const item of node.items || []) {
+            const li = document.createElement('li');
+            const span = document.createElement('span');
+            span.textContent = typeof item === 'object' ? (item.label || item.text || '') : String(item);
+            li.appendChild(span);
+            if (item && typeof item === 'object' && item.actionId) {
+              const b = document.createElement('button');
+              b.type = 'button';
+              b.textContent = item.actionLabel || 'Open';
+              b.setAttribute('data-ag-list-action', item.id || item.actionId);
+              b.addEventListener('click', () => onAction && onAction({ actionId: item.actionId, payload: item.payload, state: { ...state } }));
+              li.appendChild(b);
+            }
+            el.appendChild(li);
+          }
+        } else {
+          el = document.createElement('div');
         }
-      }
+        if (node.id) {
+          el.setAttribute('data-ag-node-id', node.id);
+          idMap.set(node.id, el);
+        }
+        if (node.visibleWhen && !evalCondition(node.visibleWhen, state)) {
+          el.hidden = true;
+          el.setAttribute('hidden', 'true');
+        }
+        return el;
+      };
+      const rootEl = buildNode(tree);
+      if (rootEl) container.appendChild(rootEl);
+    }
 
-      const width = Math.max(0, right - left);
-      const height = Math.max(0, bottom - top);
+    function openOverlay(kind, opts = {}) {
+      assertActive();
+      const isModal = kind === 'modal';
+      const el = document.createElement(isModal ? 'dialog' : 'div');
+      el.setAttribute('data-addon-host-v3-overlay', kind);
+      el.setAttribute('data-addon-host-owner', pluginId);
+      el.setAttribute('translate', 'no');
+      el.setAttribute('role', 'dialog');
+      if (isModal) el.setAttribute('aria-modal', 'true');
+      el.style.padding = '0';
+      el.style.border = 'none';
+      el.style.background = 'transparent';
+      el.style.position = 'fixed';
+      el.style.margin = '0';
+
+      const shadowHost = isModal ? document.createElement('div') : el;
+      if (isModal) el.appendChild(shadowHost);
+      const sr = shadowHost.attachShadow({ mode: 'open' });
+
+      const shell = document.createElement('div');
+      shell.className = 'ag-ui-shell';
+      shell.style.background = themeMode === 'light' ? '#ffffff' : '#161b24';
+      shell.style.color = themeMode === 'light' ? '#111827' : '#f0f6fc';
+      shell.style.border = '1px solid rgba(148,163,184,0.28)';
+      shell.style.borderRadius = '10px';
+      shell.style.display = 'flex';
+      shell.style.flexDirection = 'column';
+      shell.style.height = '100%';
+      shell.style.overflow = 'hidden';
+
+      const header = document.createElement('div');
+      header.className = 'ag-ui-header';
+      const titleSpan = document.createElement('span');
+      titleSpan.className = 'ag-ui-title';
+      titleSpan.textContent = opts.title || '';
+      const badge = document.createElement('span');
+      badge.className = 'ag-ui-attribution';
+      badge.textContent = displayName;
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'ag-ui-close';
+      closeBtn.textContent = '×';
+      header.appendChild(titleSpan);
+      header.appendChild(badge);
+      header.appendChild(closeBtn);
+
+      const body = document.createElement('div');
+      body.className = 'ag-ui-body';
+      body.style.flex = '1 1 auto';
+      body.style.overflow = 'auto';
+      body.style.padding = '12px';
+
+      shell.appendChild(header);
+      shell.appendChild(body);
+      sr.appendChild(shell);
+
+      let closed = false;
+      let curState = opts.state ? { ...opts.state } : {};
+      let curTree = opts.tree || null;
+      const idMap = new Map();
+
+      const applyPlacement = () => {
+        const p = computePlacement(kind, opts.placement || {});
+        el.setAttribute('data-addon-host-zone', p.zone);
+        el.style.left = p.left + 'px';
+        el.style.top = p.top + 'px';
+        el.style.width = p.width + 'px';
+        el.style.height = p.height + 'px';
+        return p;
+      };
+
+      const close = () => {
+        if (closed) return false;
+        closed = true;
+        activeOverlays.delete(close);
+        const idx = escapeStack.indexOf(close);
+        if (idx !== -1) escapeStack.splice(idx, 1);
+        window.removeEventListener('resize', applyPlacement);
+        try { if (isModal && el.open) el.close(); } catch {}
+        if (el.parentNode) el.parentNode.removeChild(el);
+        if (typeof opts.onClose === 'function') opts.onClose();
+        return true;
+      };
+      closeBtn.addEventListener('click', close);
+      if (isModal) {
+        el.addEventListener('cancel', (ev) => { ev.preventDefault(); close(); });
+      }
+      window.addEventListener('resize', applyPlacement);
+
+      if (curTree) {
+        renderSchemaTree(body, curTree, curState, opts.onChange, opts.onAction, idMap);
+      }
+      document.body.appendChild(el);
+      if (isModal && typeof el.showModal === 'function') {
+        try { el.showModal(); } catch {}
+      }
+      applyPlacement();
+      activeOverlays.add(close);
+      escapeStack.push(close);
+      overlaySeq += 1;
+
       return Object.freeze({
-        surfaceId,
-        requestedSurfaceId: requested,
-        matched,
-        source,
-        left,
-        top,
-        right,
-        bottom,
-        width,
-        height,
-        centerX: left + width / 2,
-        centerY: top + height / 2,
-        insetLeft: left,
-        insetTop: top,
-        insetRight: Math.max(0, vw - right),
-        insetBottom: Math.max(0, vh - bottom),
-        viewport: Object.freeze({ width: vw, height: vh }),
+        kind,
+        element: el,
+        bodyEl: curTree ? null : body,
+        attributionBadge: badge,
+        getPlacement: () => computePlacement(kind, opts.placement || {}),
+        reposition: () => applyPlacement(),
+        update(nextTree, nextState) {
+          if (!curTree) throw new Error('ERR_OVERLAY_NOT_SCHEMA_DRIVEN');
+          if (nextTree) curTree = nextTree;
+          if (nextState) curState = { ...curState, ...nextState };
+          renderSchemaTree(body, curTree, curState, opts.onChange, opts.onAction, idMap);
+          applyPlacement();
+        },
+        getState: () => ({ ...curState }),
+        getElementById: (nodeId) => idMap.get(nodeId) || null,
+        close,
       });
     }
 
-    window.addEventListener(
-      'keydown',
-      (ev) => {
-        if (!ev || ev.key !== 'Escape' || modalStack.length === 0) return;
-        if (ev.isComposing || ev.keyCode === 229 || ev.defaultPrevented) return;
-        ev.preventDefault();
-        ev.stopImmediatePropagation();
-        closeModalEntry(modalStack[modalStack.length - 1]);
-      },
-      true
-    );
+    window.addEventListener('keydown', (ev) => {
+      if (!ev || ev.key !== 'Escape' || escapeStack.length === 0) return;
+      if (ev.isComposing || ev.keyCode === 229 || ev.defaultPrevented) return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      escapeStack[escapeStack.length - 1]();
+    }, true);
 
-    const handle = Object.freeze({
-      pluginId,
-      version,
-      trustLevel,
-      schemaVersion,
-      sourceSchemaVersion: schemaVersion,
-      hasSettingsBridge: false,
-      mountSlot(slotId, opts) {
+    const storage = Object.freeze({
+      get: async (k) => (storageMap.has(k) ? JSON.parse(JSON.stringify(storageMap.get(k))) : undefined),
+      set: async (k, v) => {
         assertActive();
-        const slotDef = slotDefs[slotId];
-        if (!slotDef) throw new Error('ERR_UNDECLARED_SLOT:' + pluginId + ':' + slotId);
-        const options = opts && typeof opts === 'object' ? opts : {};
-        const existing = mountedSlots.get(slotId);
-        if (existing && existing.hostEl) {
-          if (existing.hostEl.isConnected) return existing.rootEl;
-          if (existing.shadowRoot) unregisterShadowRoot(slotId, existing.shadowRoot);
-          mountedSlots.delete(slotId);
+        const oldValue = storageMap.has(k) ? storageMap.get(k) : undefined;
+        const cloned = JSON.parse(JSON.stringify(v));
+        storageMap.set(k, cloned);
+        for (const fn of Array.from(storageListeners)) {
+          try { fn({ key: k, oldValue, newValue: cloned }); } catch {}
         }
-        const container = options.container || (options.fallbackToBody ? document.body : null);
-        if (!container || typeof container.appendChild !== 'function') return null;
-
-        const useShadow = resolveUseShadow(slotDef, options);
-        const hostEl = document.createElement('div');
-        hostEl.setAttribute('data-addon-host-owner', pluginId);
-        hostEl.setAttribute('data-addon-host-slot', slotId);
-        hostEl.setAttribute('data-addon-host-slot-kind', slotDef.slot);
-        applyNoTranslate(hostEl);
-        container.appendChild(hostEl);
-
-        let rootEl = hostEl;
-        let shadowRoot = null;
-        if (useShadow && typeof hostEl.attachShadow === 'function') {
-          shadowRoot = hostEl.attachShadow({ mode: 'open' });
-          const inner = document.createElement('div');
-          inner.className = 'addon-host-slot-root';
-          inner.setAttribute('data-addon-host-owner', pluginId);
-          inner.setAttribute('data-addon-host-slot', slotId);
-          shadowRoot.appendChild(inner);
-          rootEl = inner;
-          registerShadowRoot(slotId, shadowRoot);
-        }
-
-        mountedSlots.set(slotId, { hostEl, rootEl, shadowRoot, slotDef });
-        return rootEl;
-      },
-      unmountSlot(slotId) {
-        assertActive();
-        const rec = mountedSlots.get(slotId);
-        if (!rec) return false;
-        if (rec.shadowRoot) unregisterShadowRoot(slotId, rec.shadowRoot);
-        if (rec.hostEl && rec.hostEl.parentNode) rec.hostEl.parentNode.removeChild(rec.hostEl);
-        mountedSlots.delete(slotId);
         return true;
       },
-      injectStyle(styleId, cssText, opts) {
+      delete: async (k) => {
         assertActive();
-        const options = opts && typeof opts === 'object' ? opts : {};
-        const scope = options.scope ? String(options.scope) : 'owner';
-        if (scope === 'global' && trustLevel !== 'trusted') {
-          throw new Error('ERR_RESTRICTED_GLOBAL_CSS_FORBIDDEN');
-        }
-        validateOwnerCss(cssText);
-        const slotId = typeof options.slotId === 'string' && options.slotId ? options.slotId : null;
-        const finalCss = scope === 'global' ? String(cssText) : scopeCssToOwner(cssText);
-        let rec = styleRecords.get(styleId);
-        if (!rec) {
-          rec = { styleId, scope, slotId, finalCss, headEl: null, shadowEls: new Map() };
-          styleRecords.set(styleId, rec);
-        } else {
-          rec.scope = scope;
-          rec.slotId = slotId;
-          rec.finalCss = finalCss;
-        }
-        const specificSet = slotId ? shadowRootsBySlot.get(slotId) : null;
-        if (specificSet && specificSet.size > 0) {
-          removeHeadStyle(rec);
-          let firstEl = null;
-          for (const sr of specificSet) {
-            const el = upsertStyleEl(sr, rec.shadowEls.get(sr), styleId, scope, finalCss);
-            if (el) {
-              rec.shadowEls.set(sr, el);
-              if (!firstEl) firstEl = el;
-            }
-          }
-          return firstEl;
-        }
-        const head = document.head || document.documentElement || document.body;
-        rec.headEl = upsertStyleEl(head, rec.headEl, styleId, scope, finalCss);
-        for (const [sId, srSet] of shadowRootsBySlot.entries()) {
-          if (slotId && slotId !== sId) continue;
-          for (const sr of srSet) {
-            const el = upsertStyleEl(sr, rec.shadowEls.get(sr), styleId, scope, finalCss);
-            if (el) rec.shadowEls.set(sr, el);
+        const oldValue = storageMap.get(k);
+        const ok = storageMap.delete(k);
+        if (ok) {
+          for (const fn of Array.from(storageListeners)) {
+            try { fn({ key: k, oldValue, newValue: undefined }); } catch {}
           }
         }
-        return rec.headEl;
+        return ok;
       },
-      removeStyle(styleId) {
-        assertActive();
-        const rec = styleRecords.get(styleId);
-        if (!rec) return false;
-        removeHeadStyle(rec);
-        for (const el of rec.shadowEls.values()) {
-          if (el && el.parentNode) el.parentNode.removeChild(el);
-        }
-        styleRecords.delete(styleId);
-        return true;
-      },
-      openModal(slotId, opts) {
-        assertActive();
-        const slotDef = slotDefs[slotId];
-        if (!slotDef) throw new Error('ERR_UNDECLARED_SLOT:' + pluginId + ':' + slotId);
-        if (slotDef.slot !== 'modal' && slotDef.slot !== 'overlay') {
-          throw new Error('ERR_INVALID_MODAL_SLOT_KIND:' + slotDef.slot);
-        }
-        const options = opts && typeof opts === 'object' ? opts : {};
-        modalCalls.push({
-          slotId,
-          surface: typeof options.surface === 'string' ? options.surface : null,
-          align: typeof options.align === 'string' ? options.align : null,
-        });
-        const prevFocus = document.activeElement || null;
-        const dlg = document.createElement('dialog');
-        dlg.setAttribute('data-addon-host-modal-dialog', '1');
-        dlg.setAttribute('data-addon-host-owner', pluginId);
-        dlg.setAttribute('data-addon-host-slot', slotId);
-        dlg.setAttribute('role', 'dialog');
-        dlg.setAttribute('aria-modal', 'true');
-        applyNoTranslate(dlg);
-        dlg.style.marginTop = 'max(env(titlebar-area-height, 36px), 36px)';
-        dlg.style.zIndex = String(2147483000 + modalStack.length + 1);
-
-        const useShadow = resolveUseShadow(slotDef, options);
-        let bodyEl = dlg;
-        let shadowRoot = null;
-        if (useShadow) {
-          const wrap = document.createElement('div');
-          wrap.className = 'addon-host-modal-shadow-host';
-          wrap.setAttribute('data-addon-host-owner', pluginId);
-          wrap.setAttribute('data-addon-host-slot', slotId);
-          dlg.appendChild(wrap);
-          shadowRoot = wrap.attachShadow({ mode: 'open' });
-          const inner = document.createElement('div');
-          inner.className = 'addon-host-slot-root';
-          inner.setAttribute('data-addon-host-owner', pluginId);
-          inner.setAttribute('data-addon-host-slot', slotId);
-          shadowRoot.appendChild(inner);
-          bodyEl = inner;
-          registerShadowRoot(slotId, shadowRoot);
-        }
-
-        (document.body || document.documentElement).appendChild(dlg);
-        const requestedSurface =
-          typeof options.surface === 'string' && options.surface.trim()
-            ? options.surface.trim()
-            : options.align === 'surface'
-              ? 'auto'
-              : null;
-        const applySurfaceBounds = (targetSurface) => {
-          if (!enableSurfaceGeometry) return null;
-          const bounds = computeSurfaceBounds(targetSurface || 'auto');
-          if (bounds && dlg.style) {
-            dlg.setAttribute('data-addon-host-modal-surface', bounds.surfaceId);
-            if (bounds.viewport && bounds.viewport.width > 0 && bounds.viewport.height > 0) {
-              dlg.style.position = 'fixed';
-              dlg.style.inset = '';
-              dlg.style.left = bounds.insetLeft + 'px';
-              dlg.style.top = bounds.insetTop + 'px';
-              dlg.style.right = bounds.insetRight + 'px';
-              dlg.style.bottom = bounds.insetBottom + 'px';
-              dlg.style.margin = 'auto';
-              dlg.style.maxWidth = Math.max(120, Math.floor(bounds.width - 24)) + 'px';
-              dlg.style.maxHeight = Math.max(120, Math.floor(bounds.height - 24)) + 'px';
-            }
-          }
-          return bounds;
-        };
-        const entry = {
-          id: 'modal-' + (++modalSeq),
-          slotId,
-          el: dlg,
-          bodyEl,
-          shadowRoot,
-          prevFocus,
-          surfaceTarget: requestedSurface,
-          onResizeCleanup: null,
-          onClose: options.onClose || null,
-        };
-        if (enableSurfaceGeometry && requestedSurface) {
-          applySurfaceBounds(requestedSurface);
-          const handleResize = () => {
-            if (entry.closing || !modalStack.includes(entry)) return;
-            applySurfaceBounds(entry.surfaceTarget);
-          };
-          window.addEventListener('resize', handleResize);
-          entry.onResizeCleanup = () => window.removeEventListener('resize', handleResize);
-        }
-        dlg.addEventListener('cancel', (ev) => {
-          if (ev.cancelable) ev.preventDefault();
-          closeModalEntry(modalStack[modalStack.length - 1]);
-        });
-        dlg.addEventListener('close', () => {
-          closeModalEntry(entry);
-        });
-        modalStack.push(entry);
-        if (typeof dlg.showModal === 'function') {
-          try { dlg.showModal(); } catch {}
-        }
-        notifyPortalState();
-        const modalHandle = {
-          id: entry.id,
-          element: dlg,
-          bodyEl,
-          close: () => closeModalEntry(entry),
-        };
-        if (enableSurfaceGeometry) {
-          modalHandle.reposition = (nextSurface) => {
-            if (entry.closing || !modalStack.includes(entry)) return null;
-            if (typeof nextSurface === 'string' && nextSurface.trim()) {
-              entry.surfaceTarget = nextSurface.trim();
-            } else if (!entry.surfaceTarget) {
-              entry.surfaceTarget = 'auto';
-            }
-            return applySurfaceBounds(entry.surfaceTarget);
-          };
-        }
-        return Object.freeze(modalHandle);
-      },
-      ...(enableSurfaceGeometry
-        ? {
-            getSurfaceBounds(surfaceIdOrOpts) {
-              assertActive();
-              return computeSurfaceBounds(surfaceIdOrOpts);
-            },
-            getActiveSurface() {
-              assertActive();
-              return computeSurfaceBounds('auto');
-            },
-            listSurfaces() {
-              assertActive();
-              return Object.freeze(['settings-pane', 'customizations-page', 'automation-page', 'workspace', 'viewport']);
-            },
-          }
-        : {}),
-      addManagedListener(target, type, listener, opts) {
-        assertActive();
-        if (!target || typeof target.addEventListener !== 'function') return () => {};
-        target.addEventListener(type, listener, opts);
-        let active = true;
-        const detach = () => {
-          if (!active) return;
-          active = false;
-          try { target.removeEventListener(type, listener, opts); } catch {}
-        };
-        managedListeners.push(detach);
-        return detach;
-      },
-      onDispose(fn) {
-        assertActive();
-        if (typeof fn === 'function') disposers.push(fn);
-      },
-      dispose() {
-        if (disposed) return;
-        disposed = true;
-        for (const fn of disposers.splice(0)) {
-          try { fn(); } catch {}
-        }
-        for (const detach of managedListeners.splice(0)) {
-          try { detach(); } catch {}
-        }
-        for (const entry of modalStack.slice()) {
-          closeModalEntry(entry);
-        }
-        for (const [slotId, rec] of Array.from(mountedSlots.entries())) {
-          if (rec.shadowRoot) unregisterShadowRoot(slotId, rec.shadowRoot);
-          if (rec.hostEl && rec.hostEl.parentNode) rec.hostEl.parentNode.removeChild(rec.hostEl);
-          mountedSlots.delete(slotId);
-        }
-        for (const [styleId, rec] of Array.from(styleRecords.entries())) {
-          removeHeadStyle(rec);
-          for (const el of rec.shadowEls.values()) {
-            if (el && el.parentNode) el.parentNode.removeChild(el);
-          }
-          styleRecords.delete(styleId);
-        }
+      keys: async () => Array.from(storageMap.keys()),
+      clear: async () => { storageMap.clear(); },
+      onDidChange: (cb) => {
+        storageListeners.add(cb);
+        return () => storageListeners.delete(cb);
       },
     });
 
-    window.__TEST_ADDON_HOST__ = handle;
-    window.__TEST_ADDON_HOST_DIAG__ = {
-      getPortalTransitions: () => portalTransitions.slice(),
-      getPortalActive: () => portalClaimActive,
-      getOpenModalCount: () => modalStack.length,
-      getModalCalls: () => modalCalls.slice(),
+    const ui = Object.freeze({
+      showToast: (opts) => {
+        const rec = typeof opts === 'string' ? { message: opts, variant: 'info' } : { ...opts };
+        toasts.push(rec);
+        return { id: 'toast-' + toasts.length, dismiss() {} };
+      },
+      confirm: async () => true,
+      prompt: async () => null,
+      registerCommand: (commandId, spec) => {
+        assertActive();
+        commands.set(commandId, spec);
+        const unregister = () => commands.delete(commandId);
+        return Object.freeze({ unregister, dispose: unregister });
+      },
+      listCommands: () => Array.from(commands.entries()).map(([actionId, s]) => ({ pluginId, actionId, label: s.label || actionId })),
+      invokeCommand: (_pid, commandId, ...args) => commands.get(commandId)?.run?.(...args),
+      registerStatusItem: (spec) => {
+        assertActive();
+        const rec = { ...spec };
+        statusItems.set(spec.id, rec);
+        return Object.freeze({
+          id: spec.id,
+          update: (patch) => Object.assign(rec, patch),
+          dispose: () => statusItems.delete(spec.id),
+        });
+      },
+      registerSettingsPage: (spec) => {
+        assertActive();
+        let activeHandle = null;
+        const open = () => {
+          if (activeHandle) activeHandle.close();
+          activeHandle = openOverlay('modal', {
+            title: spec.title,
+            placement: { zone: 'surface-center', width: spec.width || 720 },
+            onClose: () => {
+              activeHandle = null;
+              if (typeof spec.onClose === 'function') spec.onClose();
+            },
+          });
+          if (typeof spec.render === 'function' && activeHandle.bodyEl) {
+            spec.render(activeHandle.bodyEl, activeHandle);
+          }
+          return activeHandle;
+        };
+        settingsPages.set(spec.id, { spec, open });
+        return Object.freeze({
+          id: spec.id,
+          open,
+          update() {},
+          dispose: () => {
+            if (activeHandle) activeHandle.close();
+            settingsPages.delete(spec.id);
+          },
+        });
+      },
+      openPopup: (opts) => openOverlay('popup', opts),
+      openModal: (opts) => openOverlay('modal', opts),
+      openPanel: (opts) => openOverlay('panel', opts),
+      createStyleElementSafe: (cssText) => {
+        if (/@import\\b|expression\\s*\\(|javascript\\s*:|<\\s*\\/\\s*style/i.test(cssText)) {
+          throw new Error('ERR_UNSAFE_CSS_CONSTRUCT');
+        }
+        const styleEl = document.createElement('style');
+        styleEl.setAttribute('data-addon-host-owner', pluginId);
+        styleEl.textContent = String(cssText);
+        return styleEl;
+      },
+      mountCanvas: () => { throw new Error('ERR_NOT_USED'); },
+      injectStyle: () => null,
+      removeStyle: () => false,
+      getSurfaceBounds: () => ({ width: window.innerWidth, height: window.innerHeight }),
+      getActiveSurface: () => ({ surfaceId: 'viewport' }),
+      listSurfaces: () => Object.freeze(['viewport']),
+    });
+
+    const lifecycle = Object.freeze({
+      signal: abortController.signal,
+      onDispose: (fn) => { if (typeof fn === 'function') disposers.push(fn); },
+      addManagedListener: (target, type, fn, listenerOpts) => {
+        target.addEventListener(type, fn, listenerOpts);
+        const detach = () => target.removeEventListener(type, fn, listenerOpts);
+        managedListeners.push(detach);
+        return detach;
+      },
+      runSafe: (fn) => fn(),
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        abortController.abort();
+        for (const fn of disposers.splice(0)) { try { fn(); } catch {} }
+        for (const d of managedListeners.splice(0)) { try { d(); } catch {} }
+        for (const close of Array.from(activeOverlays)) { try { close(); } catch {} }
+        activeOverlays.clear();
+        statusItems.clear();
+        settingsPages.clear();
+        commands.clear();
+      },
+    });
+
+    const configBridgeObj =
+      cbScopes.length > 0 && window.__TEST_V3_CONFIG_BRIDGE__
+        ? Object.freeze({
+            scopes: Object.freeze(cbScopes.map((s) => Object.freeze({ ...s }))),
+            read: (scopeId) => window.__TEST_V3_CONFIG_BRIDGE__.read(scopeId),
+            write: (scopeId, payload, writeOpts) => window.__TEST_V3_CONFIG_BRIDGE__.write(scopeId, payload, writeOpts),
+          })
+        : undefined;
+
+    const ctx = Object.freeze({
+      apiVersion: 3,
+      meta: Object.freeze({ pluginId, displayName, version, trustLevel, sourceSchemaVersion: 3 }),
+      env: Object.freeze({
+        surface,
+        get layoutMode() { return detectLayoutMode(); },
+        capabilities: Object.freeze({
+          hasLocalLoopback: false,
+          hasNetHttps: false,
+          hasConfigBridge: Boolean(configBridgeObj),
+          hasSettingsBridge: false,
+          hasDocumentTransform: false,
+        }),
+      }),
+      theme: Object.freeze({
+        getMode: () => themeMode,
+        getTokens: () => Object.freeze({}),
+        getTokenCss: () => '',
+        onDidChange: (cb) => { themeListeners.add(cb); return () => themeListeners.delete(cb); },
+      }),
+      i18n: Object.freeze({
+        getLocale: () => locale,
+        t: (k) => k,
+      }),
+      ui,
+      storage,
+      events: Object.freeze({ on: () => () => {}, once: () => () => {}, emit: () => 0 }),
+      services: Object.freeze({ provide: () => ({ name: '', dispose() {} }), has: () => false, list: () => [], call: () => undefined }),
+      lifecycle,
+      ...(configBridgeObj ? { configBridge: configBridgeObj } : {}),
+    });
+
+    window.__TEST_ADDON_CTX_V3__ = ctx;
+    window.__TEST_V3_DIAG__ = {
+      getStatusItems: () => Array.from(statusItems.values()),
+      clickStatusItem: (id) => statusItems.get(id)?.onClick?.({ pluginId, itemId: id, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, anchorEl: null }),
+      getSettingsPages: () => Array.from(settingsPages.keys()),
+      openSettingsPage: (id) => settingsPages.get(id)?.open?.(),
+      getCommands: () => Array.from(commands.keys()),
+      runCommand: (id) => commands.get(id)?.run?.(),
+      getToasts: () => toasts.slice(),
+      getStorageSnapshot: () => Object.fromEntries(storageMap.entries()),
+      dispose: () => lifecycle.dispose(),
     };
   })();`;
 }

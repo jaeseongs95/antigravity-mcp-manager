@@ -1,8 +1,8 @@
 {
   "name": "antigravity-mcp-manager",
   "displayName": "MCP Manager",
-  "description": "Safe visual manager for global MCP servers in mcp_config.json with read-only plugin inventory and live status diagnostics.",
-  "version": "3.0.1",
+  "description": "Safe visual manager for global MCP servers in mcp_config.json with read-only plugin inventory, Desktop Config Bridge, and Remote Web storage draft sync.",
+  "version": "4.0.0",
   "logo": "assets/logo.svg",
   "author": {
     "name": "jaeseongs95",

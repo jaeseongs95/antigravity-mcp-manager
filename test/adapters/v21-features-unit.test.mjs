@@ -8,8 +8,9 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 import { startDesktopMcpServer } from '../../src/adapters/antigravity/desktop-server.mjs';
+import { V3_IDS } from '../../src/adapters/antigravity/renderer/mcp-v3-shell.mjs';
 import {
-  buildAddonHostHarnessScript,
+  buildAddonContextV3HarnessScript,
   findChromiumBinary,
   launchCdpSession,
   waitUntil,
@@ -222,7 +223,7 @@ test('NMCP-TC-025 (Unit): UI I18N dictionary has 100% EN/KO key parity, matching
   }
 });
 
-test('NMCP-TC-026 (Real Chromium CDP): addon-renderer rejects untrusted postMessage, switches lang without iframe reload under storageNamespace, and Korean interactive UI panels work', async (t) => {
+test('NMCP-TC-026 (Real Chromium CDP): AddonContextV3 switches EN/KO live via ctx.storage without page reload and renders Korean interactive UI panels cleanly', async (t) => {
   const browserBin = findChromiumBinary();
   if (!browserBin || typeof WebSocket !== 'function') {
     t.skip('Headless Chromium/Edge binary or global WebSocket is unavailable on this host');
@@ -231,131 +232,96 @@ test('NMCP-TC-026 (Real Chromium CDP): addon-renderer rejects untrusted postMess
 
   const rendererSrc = fs.readFileSync(RENDERER_PATH, 'utf8');
   const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
-  const hostHarness = buildAddonHostHarnessScript(manifest);
+  const hostHarness = buildAddonContextV3HarnessScript(manifest, { surface: 'desktop', locale: 'en-US' });
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-v21-cdp-'));
   const profileDir = path.join(tmpDir, 'profile');
-  const cfgDir = path.join(tmpDir, '.gemini', 'config');
   fs.mkdirSync(profileDir, { recursive: true });
-  fs.mkdirSync(cfgDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(cfgDir, 'mcp_config.json'),
-    JSON.stringify({ mcpServers: { alphaSrv: { url: 'https://alpha.example/mcp' } } }, null, 2) + '\n',
-    'utf8'
-  );
 
-  const desktopSrv = await startDesktopMcpServer({ homeDir: tmpDir });
-  const parentServer = http.createServer((req, res) => {
+  const parentServer = http.createServer((_req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(`<!doctype html>
-      <html>
-        <body style="display:flex;margin:0;height:100vh;background:#111;color:#eee;font-family:sans-serif;">
-          <div id="settings-root" style="display:flex;width:100%;height:100%;">
-            <aside id="settings-sidebar" style="width:220px;display:flex;flex-direction:column;gap:8px;padding:12px;">
-              <nav id="settings-nav-section" style="display:flex;flex-direction:column;gap:4px;">
-                <button type="button" id="nav-general">General</button>
-                <button type="button" id="nav-application">Application</button>
-                <button type="button" id="nav-appearance">Appearance</button>
-                <button type="button" id="nav-shortcuts">Shortcuts</button>
-                <button type="button" id="nav-notifications">Notifications</button>
-                <button type="button" id="nav-models">Models</button>
-                <button type="button" id="nav-browser">Browser</button>
-              </nav>
-            </aside>
-            <main id="settings-content" style="flex:1;padding:16px;position:relative;display:flex;flex-direction:column;">
-              <div id="native-pane">Native</div>
-            </main>
-          </div>
-          <script>${hostHarness}</script>
-          <script>
-            window.__AGY_MCP_MANAGER_URL__ = ${JSON.stringify(desktopSrv.url)};
-            (function(addonHost) {
-              ${rendererSrc}
-            })(window.__TEST_ADDON_HOST__);
-          </script>
-        </body>
-      </html>`);
+    res.end(`<!doctype html><html><body style="margin:0;height:100vh;background:#111;color:#eee;font-family:sans-serif;">
+      <script>
+        window.__TEST_V3_CONFIG_BRIDGE__ = {
+          async read(scopeId) {
+            if (scopeId === 'antigravity:mcp-config') {
+              return { ok: true, scopeId, status: 'ok', data: { mcpServers: { alphaSrv: { url: 'https://alpha.example/mcp' } } }, rawText: null, sha256: 'sha-alpha' };
+            }
+            return { ok: true, scopeId, status: 'missing', data: null, rawText: null, sha256: null };
+          },
+          async write() { return { ok: true, currentSha256: 'sha-alpha-2' }; }
+        };
+      </script>
+      <script>${hostHarness}</script>
+      <script>(function(addonHost){ ${rendererSrc} })(window.__TEST_ADDON_CTX_V3__);</script>
+    </body></html>`);
   });
   await new Promise((r) => parentServer.listen(0, '127.0.0.1', r));
   const parentPort = parentServer.address().port;
 
-  const session = await launchCdpSession({
-    browserBin,
-    profileDir,
-    iframeOrigin: `http://127.0.0.1:${desktopSrv.port}`,
-  });
-
+  const session = await launchCdpSession({ browserBin, profileDir });
   try {
-    const { cdp, evalMain, evalIframe, hasIframe } = session;
+    const { cdp, evalMain, exceptions } = session;
     await cdp('Page.navigate', { url: `http://localhost:${parentPort}/` });
-
-    assert.equal(await waitUntil(() => evalMain(`Boolean(document.querySelector('[data-agy-mcp-manager-nav="true"]'))`)), true);
-    await evalMain(`document.querySelector('[data-agy-mcp-manager-nav="true"]').click()`);
-    assert.equal(await waitUntil(hasIframe, 8000, 40), true);
     assert.equal(
-      await waitUntil(async () => {
-        try {
-          return await evalIframe(`Boolean(document.querySelector('[data-testid="global-server-alphaSrv"]'))`);
-        } catch {
-          return false;
-        }
-      }, 8000, 40),
+      await waitUntil(() => evalMain(`Boolean(window.__TEST_V3_DIAG__ && window.__TEST_V3_DIAG__.getSettingsPages().length > 0)`), 8000, 30),
       true
     );
 
-    // 1. Untrusted postMessage from wrong source (parent itself) MUST NOT overwrite namespaced localStorage
-    await evalMain(`window.localStorage.setItem('antigravity-mcp-manager:lang', 'en')`);
-    await evalMain(`window.postMessage({ type: 'agy-mcp-lang-change', lang: 'ko' }, '*')`);
-    await evalMain(`window.postMessage({ type: 'agy-mcp-lang-change', lang: 'xx' }, '*')`);
-    await new Promise((r) => setTimeout(r, 120));
+    await evalMain(`window.__TEST_V3_DIAG__.openSettingsPage(${JSON.stringify(V3_IDS.SETTINGS_PAGE)})`);
     assert.equal(
-      await evalMain(`window.localStorage.getItem('antigravity-mcp-manager:lang')`),
-      'en',
-      'Untrusted postMessage from non-iframe source must be ignored'
-    );
-
-    // 2. Plant sentinel inside iframe -> switch to Korean -> verify NO iframe reload occurred
-    await evalIframe(`window.__NO_RELOAD_SENTINEL__ = 42`);
-    await evalIframe(`document.querySelector('[data-testid="btn-lang-ko"]').click()`);
-    assert.equal(
-      await waitUntil(() => evalMain(`window.localStorage.getItem('antigravity-mcp-manager:lang') === 'ko'`), 3000, 30),
+      await waitUntil(() =>
+        evalMain(`Boolean(document.querySelector('dialog[data-addon-host-v3-overlay="modal"]')?.firstElementChild?.shadowRoot?.querySelector('[data-testid="global-server-alphaSrv"]'))`)
+      ),
       true
     );
-    assert.equal(await evalIframe(`window.__NO_RELOAD_SENTINEL__`), 42, 'Switching language must not reload iframe');
 
-    // 3. Korean interactive UI panels: Quick Paste toggle, Add Server modal, Raw JSON tab
-    const quickPasteBefore = await evalIframe(`document.querySelector('[data-testid="btn-toggle-smart-paste"]')?.textContent?.trim()`);
+    // 1. Switch EN -> KO live inside Tier-3 panel -> persists via ctx.storage with zero reload
+    await evalMain(`window.__NO_RELOAD_SENTINEL__ = 42`);
+    await evalMain(`document.querySelector('dialog[data-addon-host-v3-overlay="modal"]').firstElementChild.shadowRoot.querySelector('[data-agy-mcp-lang-btn="ko"]').click()`);
+    assert.equal(
+      await waitUntil(() => evalMain(`window.__TEST_V3_DIAG__.getStorageSnapshot().lang === 'ko'`)),
+      true
+    );
+    assert.equal(await evalMain(`window.__NO_RELOAD_SENTINEL__`), 42);
+
+    // 2. Korean interactive UI panels: Quick Paste toggle, Add Server editor, Raw JSON tab
+    const quickPasteBefore = await evalMain(`document.querySelector('dialog[data-addon-host-v3-overlay="modal"]').firstElementChild.shadowRoot.querySelector('[data-testid="btn-toggle-smart-paste"]')?.textContent?.trim()`);
     assert.equal(quickPasteBefore, 'JSON / URL 빠른 붙여넣기');
-    await evalIframe(`document.querySelector('[data-testid="btn-toggle-smart-paste"]').click()`);
-    const quickPasteAfter = await evalIframe(`({
-      cardTitle: document.querySelector('.card .server-header strong')?.textContent?.trim(),
-      hideBtnText: document.querySelector('.card .server-header button')?.textContent?.trim(),
-      hasTextarea: Boolean(document.querySelector('[data-testid="smart-paste-input"]')),
-    })`);
+    await evalMain(`document.querySelector('dialog[data-addon-host-v3-overlay="modal"]').firstElementChild.shadowRoot.querySelector('[data-testid="btn-toggle-smart-paste"]').click()`);
+    const quickPasteAfter = await evalMain(`(() => {
+      const sr = document.querySelector('dialog[data-addon-host-v3-overlay="modal"]').firstElementChild.shadowRoot;
+      return {
+        cardTitle: sr.querySelector('[data-testid="smart-paste-card"] strong')?.textContent?.trim(),
+        hasTextarea: Boolean(sr.querySelector('[data-testid="smart-paste-input"]')),
+      };
+    })()`);
     assert.equal(quickPasteAfter.cardTitle, '스마트 붙여넣기 (JSON / URL)');
-    assert.equal(quickPasteAfter.hideBtnText, '닫기');
     assert.equal(quickPasteAfter.hasTextarea, true);
 
-    await evalIframe(`document.getElementById('btn-add').click()`);
-    const modalKo = await evalIframe(`({
-      heading: document.querySelector('[data-testid="server-editor-card"] strong')?.textContent?.trim(),
-      saveText: document.querySelector('[data-testid="btn-save-server"]')?.textContent?.trim(),
-      cancelText: Array.from(document.querySelectorAll('[data-testid="server-editor-card"] button')).at(-1)?.textContent?.trim(),
-    })`);
+    await evalMain(`document.querySelector('dialog[data-addon-host-v3-overlay="modal"]').firstElementChild.shadowRoot.querySelector('[data-testid="btn-add-server"]').click()`);
+    const modalKo = await evalMain(`(() => {
+      const sr = document.querySelector('dialog[data-addon-host-v3-overlay="modal"]').firstElementChild.shadowRoot;
+      return {
+        heading: sr.querySelector('[data-testid="server-editor-card"] strong')?.textContent?.trim(),
+        saveText: sr.querySelector('[data-testid="btn-save-server"]')?.textContent?.trim(),
+        cancelText: sr.querySelector('[data-testid="btn-cancel-editor"]')?.textContent?.trim(),
+      };
+    })()`);
     assert.equal(modalKo.heading, '전역 MCP 서버 추가');
     assert.equal(modalKo.saveText, '저장');
     assert.equal(modalKo.cancelText, '취소');
-    await evalIframe(`Array.from(document.querySelectorAll('[data-testid="server-editor-card"] button')).at(-1).click()`);
+    await evalMain(`document.querySelector('dialog[data-addon-host-v3-overlay="modal"]').firstElementChild.shadowRoot.querySelector('[data-testid="btn-cancel-editor"]').click()`);
 
-    await evalIframe(`document.getElementById('tab-raw').click()`);
+    await evalMain(`document.querySelector('dialog[data-addon-host-v3-overlay="modal"]').firstElementChild.shadowRoot.querySelector('[data-testid="tab-raw"]').click()`);
     assert.equal(
-      await waitUntil(() => evalIframe(`Boolean(document.querySelector('[data-testid="btn-save-raw"]'))`), 3000, 30),
+      await waitUntil(() => evalMain(`Boolean(document.querySelector('dialog[data-addon-host-v3-overlay="modal"]').firstElementChild.shadowRoot.querySelector('[data-testid="btn-save-raw"]'))`)),
       true
     );
-    const rawKo = await evalIframe(`document.querySelector('[data-testid="btn-save-raw"]')?.textContent?.trim()`);
+    const rawKo = await evalMain(`document.querySelector('dialog[data-addon-host-v3-overlay="modal"]').firstElementChild.shadowRoot.querySelector('[data-testid="btn-save-raw"]')?.textContent?.trim()`);
     assert.equal(rawKo, '검증 후 원본 JSON 저장');
+    assert.equal(exceptions.length, 0);
   } finally {
     await session.close();
-    await desktopSrv.close();
     await new Promise((r) => parentServer.close(r));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
