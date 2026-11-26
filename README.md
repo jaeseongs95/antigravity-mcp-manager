@@ -1,57 +1,66 @@
-# Antigravity MCP Manager (`v3.0.1`)
+# Antigravity MCP Manager (`v4.0.0`)
 
 [한국어 문서 (README.ko.md)](./README.ko.md)
 
-A safe, vendor-independent **MCP Server Manager** for **Antigravity 2.0 Native Desktop App**, built as a zero-dependency **`AddonManifest.v2`** (`trustLevel: "trusted"`, `capabilities: ["renderer"]`, Option A **Named-Scope Config Bridge**) plugin hosted by [`antigravity-addons`](https://github.com/jaeseongs95/antigravity-addons) (formerly `antigravity-native-addon-host`, `v2.3.0+`; surface-centered modal positioning automatically activates on `v2.4.0+` / `v2.5.1+`).
+A safe, vendor-independent **MCP Server Manager** built on the [`antigravity-addons`](https://github.com/jaeseongs95/antigravity-addons) **`v3.0.0+`** API-First framework (`AddonManifest.v3` + `AddonContextV3`, minimal ISP `permissions`, 3-Tier host UI, zero runtime dependencies):
+- **Antigravity Desktop (`ctx.env.surface === 'desktop'`)**: Live `~/.gemini/config/mcp_config.json` CRUD via `permissions.configBridge.scopes` + `ctx.configBridge` (gated on `ctx.env.capabilities.hasConfigBridge`).
+- **Antigravity Remote Web (`ctx.env.surface === 'remote-web'`)**: 1-click public HTTPS modular `@require` Userscript (`antigravity-mcp-manager.user.js`) with browser-local `ctx.storage` draft persistence (`remote-draft:v1`) + **Import JSON / Copy JSON / Download `mcp_config.json`**.
 
-> **Zero `app.asar` Patching · Zero `mainHook` · Zero `AUX_PANE` Sidecar · Zero Runtime Dependencies**: `antigravity-mcp-manager` never patches or touches `app.asar`, carries zero runtime npm dependencies, and removes the separate `AUX_PANE` sidecar pane (`플러그인 > MCP Manager`). All full-featured MCP CRUD runs directly inside **Settings → MCP Manager** (cleanly coexisting with `antigravity-addons v2.5.0+` built-in **Addon Manager** tab) and the **Customizations → MCP Manager** surface-centered popup modal inside Isolated World `998` Shadow DOM via `antigravity-addons` `v2.3.0+`'s Option A **Named-Scope Config Bridge** (`trustLevel: "trusted"` + `trust-policy.json` SHA-256 pinning).
+> **API-First 3-Tier Architecture · Zero Manual DOM Placement**: `v4.0.0` removes all legacy v2 host DOM scraping, manual coordinate math, `uiSlots`, `settingsBridge`, `hostProfileId` checks, and `window.localStorage` calls. All UI runs strictly through host-managed `AddonContextV3` surfaces (`ui.registerStatusItem`, `ui.registerSettingsPage`, `ui.registerCommand`, `ui.showToast`, `ui.openPanel`, `ui.openModal`, `ui.createStyleElementSafe`).
 
-## Features
-- **Native Shadow DOM CRUD in Settings & Customizations (`AddonManifest.v2`, World `998`)**:
-  - Mounts **MCP Manager** directly under **Browser** (or Korean **브라우저**) in Antigravity **Settings** (`settings-nav` declared `shadow: false` for native Tailwind inheritance with 0px layout shift; `pane` mounted inside open Shadow DOM Option B2 with preserved top-right `✕` close control and seamless coexistence with `antigravity-addons` built-in **Addon Manager** tab).
-  - Mounts an **MCP Manager** (`MCP 매니저` in KO) Shadow DOM button in **Customizations → MCP Servers** right before the native `[]` / `+` action icons, opening a surface-centered native `<dialog>.showModal()` popup via `addonHost.openModal(slotId, { shadow: true, surface: 'customizations-page', onClose })` (centered inside the Customizations content surface excluding sidebars with automatic resize clamping on `antigravity-addons v2.4.0+`, graceful viewport fallback on `v2.3.0`, `PortalArbiter`-coordinated, `✕`, backdrop click, and capture-phase IME-safe `Esc` focus restoration).
-  - Powered directly by `antigravity-addons` `v2.3.0+` **Option A Named-Scope Config Bridge** with 3 least-privilege scopes:
-    - `antigravity:mcp-config` (`rw`): `~/.gemini/config/mcp_config.json` (sole canonical write target)
-    - `antigravity:plugin-mcp-configs` (`ro`): read-only plugin MCP inventory
-    - `antigravity:mcp-config-legacy` (`ro`): read-only 1-time legacy import preview
-  - Cleanly unmounts all slots, modals, styles, and listeners immediately on `dispose()` when disabled or unregistered.
-- **Host Language Auto-Detection & `EN | 한국어` Toggle**: Automatically detects Korean vs English host UI on first load (with explicit user override persisted under `storageNamespace` key `antigravity-mcp-manager:lang`, including 1-time migration from v2.1's `agy-mcp-manager-lang`).
-- **Single Canonical Write Scope & Authoritative CAS**: Reads and writes only `~/.gemini/config/mcp_config.json` with mandatory on-disk SHA-256 CAS (preserving exact disk digests across CRLF/non-canonical JSON files), advisory file lock, private backups outside `plugins/`, ancestor/backup symlink protection, and atomic replace.
-- **Read-Only Plugin Inventory & Declarative Smart Paste**: Displays read-only plugin MCP entries with collision warnings and secret-preserving **Clone to Global**, parses `mcpServers` JSON and Streamable HTTP URLs, normalizes `serverUrl` → `url`, detects legacy `/sse` with an editable `mcp-remote` Stdio preview, enforces explicit Stdio confirmation, and fails closed on malformed JSON with Raw JSON CAS recovery.
+## 3-Tier UI & Minimal Permissions
+- **Declared `permissions` (Least Privilege)**:
+  - `permissions.ui`: `toasts`, `dialogs`, `overlays`, `commands`, `statusItems`, `settingsPages`, `canvas`
+  - `permissions.storage`: `namespace: "antigravity-mcp-manager"`, `maxBytes: 262144`
+  - `permissions.configBridge.scopes`:
+    - `antigravity:mcp-config` (`rw`, `262144` bytes) — sole canonical write target (`~/.gemini/config/mcp_config.json`)
+    - `antigravity:plugin-mcp-configs` (`ro`, `262144` bytes) — read-only plugin MCP inventory
+    - `antigravity:mcp-config-legacy` (`ro`, `262144` bytes) — read-only 1-time legacy import preview
+  - **Strictly Omitted**: `net`, `dom`, `events`, `services`, `uiSlots` (`ctx.net === undefined`, `ctx.dom === undefined` at runtime).
+- **Tier 1 (Zero-DOM Host Surfaces)**:
+  - `ui.registerStatusItem`: Statusbar `MCP` button with live server-count badge and tooltip.
+  - `ui.registerSettingsPage`: Unified Desktop + Remote Web Settings Page (`id: "mcp-manager"`).
+  - `ui.registerCommand`: `open-mcp-manager`, `open-mcp-panel`, `open-mcp-settings`.
+  - `ui.showToast` / `ui.confirm`: Non-intrusive notifications on toggle, copy, and download.
+- **Tier 2 (Declarative Host Panel + `PlacementSpec`)**:
+  - `ui.openPanel({ placement: { zone: 'drawer', side: 'right', width: 420 } })` using the 16 closed declarative primitives with `handle.update(nextTree, nextState)` ID-based in-place patching and automatic mobile bottom-sheet transition at `<= 640px`.
+  - Quick enable/disable toggles, live server summary, language switcher (`en`/`ko`), and 1-click launch into the Full Editor.
+- **Tier 3 (Host Shadow DOM Canvas)**:
+  - `ui.openModal({ placement: { zone: 'surface-center', surface: 'auto', width: 820, maxHeight: 720 } })` & Settings Page `render(canvasRoot)` mount `NativeMcpPanel` styled via `ctx.ui.createStyleElementSafe(buildNativePanelCss())` using `--ag-*` semantic theme tokens.
+  - Full Global CRUD, authoritative on-disk SHA-256 CAS (CRLF-safe), masked secret preservation, Stdio confirmation gate, Declarative Smart Paste, Raw JSON CAS conflict recovery, Read-Only Plugin Clone-to-Global, Legacy import, and Remote Web JSON Import/Copy/Download.
 
 ## Architecture (SOLID & Vendor-Independent)
-- `addon-manifest.json`: Declarative `AddonManifest.v2` contract (`schemaVersion: 2`, `trustLevel: "trusted"`, `compatibility: { hostProfile: "antigravity-desktop", minHostVersion: "2.3.0" }`, `capabilities: ["renderer"]`, `configBridge.scopes` for the 3 scopes above, 4 non-exclusive `addon-owned-slot` entries with Shadow DOM Option B2 declarations, `storageNamespace: "antigravity-mcp-manager"`, `ipcChannelPrefix: "mcp-manager:"`, `loadOrder: 60`).
-- `src/adapters/antigravity/renderer/*.mjs` → `src/adapters/antigravity/addon-renderer.js`: SOLID modular renderer (`host-runtime`, `host-config-store`, `native-mcp-panel`, `addon-styles`, `settings-sidebar-mount`, `customizations-mount`, `mount-coordinator`) deterministically assembled by `scripts/build-renderer.mjs` with zero external dependencies and zero unsafe DOM sinks.
-- `src/core/**`: 100% vendor-independent pure ESM domain logic (zero Node/DOM/Sidecar/host dependencies).
-- `src/adapters/fs-config-store.mjs`, `src/adapters/antigravity/**`, `src/adapters/sidecar/http-app.mjs`, `src/ui/**`: Reusable write-jailed FS store, loopback-only LS inspector, hardened HTTP security middleware, and standalone loopback UI assets.
+- `addon-manifest.json`: `AddonManifest.v3` (`schemaVersion: 3`, `apiVersion: 3`, `version: "4.0.0"`, `minHostVersion: "3.0.0"`).
+- `src/adapters/antigravity/renderer/*.mjs` → `src/adapters/antigravity/addon-renderer.js`:
+  - `host-config-store.mjs`: `ConfigStorePort` over `ctx.configBridge` (`hasConfigBridge === true`).
+  - `storage-draft-config-store.mjs`: `ConfigStorePort` over `ctx.storage` (`hasConfigBridge === false`) with UTF-8 SHA-256 CAS.
+  - `host-runtime.mjs`: `AddonContextV3` capability adapter (`ctx.env.surface`, `ctx.env.layoutMode`, `ctx.env.capabilities.hasConfigBridge`, `ctx.storage`, `ctx.i18n`, `ctx.theme`, `ctx.lifecycle`).
+  - `addon-styles.mjs`: `--ag-*` tokenized CSS for `ctx.ui.createStyleElementSafe(...)`.
+  - `native-mcp-panel.mjs`: Zero-unsafe-sink full CRUD panel compatible with both Chromium and `@antigravity-addons/sdk` `createTestHost`.
+  - `mcp-v3-shell.mjs`: 3-Tier API-First coordinator with `ctx.lifecycle.signal` / `onDispose` cleanup.
+- `scripts/build-renderer.mjs` & `scripts/build-userscript.mjs`: Zero-dependency deterministic builders.
+- `src/core/**`: 100% vendor-independent pure ESM domain logic.
 
-## Install, Register & Trust Approve (via `antigravity-addons` v2.3.0+; v2.4.0+ recommended)
-1. Ensure [`antigravity-addons`](https://github.com/jaeseongs95/antigravity-addons) (formerly `antigravity-native-addon-host`) **`v2.3.0+`** (**`v2.4.0+` / `v2.5.1+`** recommended for surface-centered Customizations popup and built-in Addon Manager tab) is installed/upgraded on your Antigravity Desktop (`addon-host --install` or `addon-host --upgrade`).
-2. Close Antigravity Desktop, then place this repository under `~/.gemini/config/plugins/antigravity-mcp-manager/` (excluding `.git` and `node_modules` — zero runtime dependencies).
-3. Validate, register, approve SHA-256 trust pinning, and check host health:
+## Install, Register & Trust Approve (Antigravity Desktop via `antigravity-addons` `v3.0.0+`)
+1. Upgrade [`antigravity-addons`](https://github.com/jaeseongs95/antigravity-addons) to **`v3.0.0+`** (`addon-host --upgrade`).
+2. Close Antigravity Desktop and mirror this repository into `~/.gemini/config/plugins/antigravity-mcp-manager/` (excluding `.git` and `node_modules`).
+3. Validate, register, approve SHA-256 trust pin, and verify:
    ```bash
    addon-host --validate ~/.gemini/config/plugins/antigravity-mcp-manager/addon-manifest.json
    addon-host --register ~/.gemini/config/plugins/antigravity-mcp-manager/addon-manifest.json
    addon-host trust approve antigravity-mcp-manager
    addon-host --doctor
    ```
-   > **Note**: Whenever `src/adapters/antigravity/addon-renderer.js` changes after an update/rebuild, re-run `addon-host trust approve antigravity-mcp-manager` to refresh the SHA-256 pin in `~/.gemini/antigravity/trust-policy.json`.
-4. Start Antigravity Desktop and open **Settings → MCP Manager** or **Customizations → MCP Servers → MCP Manager**.
-5. To revoke trust or unregister cleanly anytime:
-   ```bash
-   addon-host trust revoke antigravity-mcp-manager
-   addon-host --unregister antigravity-mcp-manager
-   ```
 
-## Migrating from v2.x / v1 Host
-`v3.x` removes `sidecars/` (`AUX_PANE`), `scripts/install-settings-menu.mjs`, `scripts/electron-hook.cjs`, and `@electron/asar` completely:
-1. Upgrade [`antigravity-addons`](https://github.com/jaeseongs95/antigravity-addons) to **`v2.4.0+` / `v2.5.1+`** (`addon-host --upgrade`, or `addon-host --install --replace-legacy` if migrating from v2.1.x direct `app.asar` patching).
-2. Close Antigravity Desktop, mirror `v3.0.1` to `~/.gemini/config/plugins/antigravity-mcp-manager/` (removing any stale `node_modules/` and `sidecars/`), then run `addon-host --register ~/.gemini/config/plugins/antigravity-mcp-manager/addon-manifest.json` followed by `addon-host trust approve antigravity-mcp-manager`.
-3. Existing language preferences saved in `agy-mcp-manager-lang` are migrated automatically to `antigravity-mcp-manager:lang` on first open.
+## Remote Web Install (`antigravity-addons v3.0.0+` Public HTTPS `@require` Userscript)
+1. Install Violentmonkey / Tampermonkey (Desktop) or Userscripts (iOS/iPadOS Safari).
+2. Install `antigravity-mcp-manager.user.js` from the latest GitHub Release or build locally via `npm run build:userscript`.
+3. Open `https://antigravity.google.com/` and launch MCP Manager from the statusbar item, Settings Page, or Quick Actions.
 
 ## Development & Tests
 ```bash
 npm run build:renderer
+npm run check:userscript
 npm test
 ```
-Runs all 31 unit, core-purity, `AddonManifest.v2` contract/SOLID parity, Named-Scope Config Bridge (`rawText: null` on `status: 'ok'`, CRLF on-disk `sha256` CAS, `corrupt` recovery, workspace plugin display paths, write-path error & lock guards), filesystem write-jail/symlink-junction/CAS, HTTP security, EN/KO `I18N` parity, and real Headless Chromium/Edge CDP E2E tests (`NMCP-TC-001`–`NMCP-TC-033`, including `antigravity-addons v2.4.0+` surface-centered modal geometry) on Node 22+.
+Runs unit, core-purity, `AddonManifest.v3` minimal-permission parity, `@antigravity-addons/sdk` `createTestHost({ surface: 'desktop' })` + `createTestHost({ surface: 'remote-web' })` parity (`NMCP-TC-037`, `NMCP-TC-038`), FS write-jail/CAS, HTTP security, EN/KO `I18N` parity, and real Headless Chromium/Edge CDP E2E tests (`NMCP-TC-001`–`NMCP-TC-038`) on Node 22+.

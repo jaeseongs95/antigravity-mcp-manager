@@ -2,10 +2,10 @@
  * Host Named-Scope Config Bridge Store Adapter (`src/adapters/antigravity/renderer/host-config-store.mjs`).
  *
  * SOLID Boundaries:
- * - SRP: Translates `antigravity-native-addon-host` v2.3.0+ Option A Named-Scope Config Bridge
- *   (`addonHost.hasConfigBridge`, `addonHost.configScopes`, `addonHost.readConfigScope`,
- *   `addonHost.writeConfigScope`) into the vendor-independent `ConfigStorePort` contract
- *   consumed by `src/core/manager-service.mjs`.
+ * - SRP: Translates `antigravity-addons` v3.0.0 `AddonContextV3` Named-Scope Config Bridge
+ *   (`ctx.env.capabilities.hasConfigBridge`, `ctx.configBridge.scopes`, `ctx.configBridge.read`,
+ *   `ctx.configBridge.write`) into the vendor-independent `ConfigStorePort` contract consumed by
+ *   `src/core/manager-service.mjs`.
  * - DIP: `McpManagerService` and `native-mcp-panel.mjs` depend solely on `ConfigStorePort`,
  *   never directly on Electron IPC or host-specific bridge methods.
  */
@@ -31,9 +31,9 @@ function resolveSnapshotRawText(res) {
   return null;
 }
 
-function hasDeclaredScope(addonHost, scopeId, requiredAccess = null) {
-  if (!Array.isArray(addonHost?.configScopes)) return true;
-  const entry = addonHost.configScopes.find((s) => s && s.scopeId === scopeId);
+function hasDeclaredScope(configBridge, scopeId, requiredAccess = null) {
+  if (!Array.isArray(configBridge?.scopes)) return true;
+  const entry = configBridge.scopes.find((s) => s && s.scopeId === scopeId);
   if (!entry) return false;
   if (requiredAccess === 'rw') return entry.access === 'rw';
   if (requiredAccess === 'ro') return entry.access === 'ro' || entry.access === 'rw';
@@ -72,48 +72,45 @@ function mapHostBridgeReasonToErrorCode(reason) {
   return code;
 }
 
-export function resolveHostConfigBridge(addonHost) {
-  if (!addonHost || typeof addonHost !== 'object') return null;
-  if (addonHost.hasConfigBridge !== true) return null;
-  if (
-    typeof addonHost.readConfigScope !== 'function' ||
-    typeof addonHost.writeConfigScope !== 'function'
-  ) {
+export function resolveHostConfigBridge(ctx) {
+  if (!ctx || typeof ctx !== 'object') return null;
+  if (ctx.env?.capabilities?.hasConfigBridge !== true) return null;
+  const bridge = ctx.configBridge;
+  if (!bridge || typeof bridge !== 'object') return null;
+  if (typeof bridge.read !== 'function' || typeof bridge.write !== 'function') {
     return null;
   }
-  if (!hasDeclaredScope(addonHost, HOST_CONFIG_SCOPES.GLOBAL_MCP, 'rw')) {
+  if (!hasDeclaredScope(bridge, HOST_CONFIG_SCOPES.GLOBAL_MCP, 'rw')) {
     return null;
   }
-  return addonHost;
+  return bridge;
 }
 
-export function createHostBridgeConfigStore(addonHost) {
-  const bridge = resolveHostConfigBridge(addonHost);
+export function createHostBridgeConfigStore(ctx) {
+  const bridge = resolveHostConfigBridge(ctx);
   if (!bridge) {
     throw new TypeError(
-      'Host Config Bridge requires addonHost.hasConfigBridge === true, readConfigScope(), writeConfigScope(), and rw access to antigravity:mcp-config'
+      'Host Config Bridge requires ctx.env.capabilities.hasConfigBridge === true, ctx.configBridge.read/write(), and rw access to antigravity:mcp-config'
     );
   }
 
   async function readGlobalConfig() {
-    const res = await bridge.readConfigScope(HOST_CONFIG_SCOPES.GLOBAL_MCP);
+    const res = await bridge.read(HOST_CONFIG_SCOPES.GLOBAL_MCP);
     if (!res || typeof res !== 'object') {
       throw new Error('Host Config Bridge returned an invalid response for global MCP config.');
     }
-    if (res.ok === false || res.status === 'error') {
-      throw new Error(String(res.reason || 'ERR_CONFIG_READ_FAILED'));
-    }
-    const displayPath = DEFAULT_DISPLAY_PATHS[HOST_CONFIG_SCOPES.GLOBAL_MCP];
     if (res.status === 'missing') {
       return {
         exists: false,
         rawText: '',
         sha256: null,
-        displayPath,
+        displayPath: DEFAULT_DISPLAY_PATHS[HOST_CONFIG_SCOPES.GLOBAL_MCP],
       };
     }
-    // Host v2.3.0 config-bridge.js returns `{ status: 'ok', data, rawText: null, sha256 }`
-    // for valid files and `{ status: 'corrupt', data: null, rawText, sha256 }` for malformed JSON.
+    if (res.ok === false || res.status === 'error') {
+      throw new Error(String(res.reason || 'ERR_CONFIG_READ_FAILED'));
+    }
+    const displayPath = DEFAULT_DISPLAY_PATHS[HOST_CONFIG_SCOPES.GLOBAL_MCP];
     const rawText = resolveSnapshotRawText(res);
     if (rawText === null) {
       throw new Error(String(res.reason || 'ERR_CONFIG_EMPTY_PAYLOAD'));
@@ -128,7 +125,7 @@ export function createHostBridgeConfigStore(addonHost) {
 
   async function writeGlobalConfig({ rawText, expectedSha256 }) {
     try {
-      const res = await bridge.writeConfigScope(
+      const res = await bridge.write(
         HOST_CONFIG_SCOPES.GLOBAL_MCP,
         String(rawText ?? ''),
         { expectedSha256: expectedSha256 ?? null }
@@ -169,15 +166,15 @@ export function createHostBridgeConfigStore(addonHost) {
     if (!hasDeclaredScope(bridge, HOST_CONFIG_SCOPES.PLUGIN_MCP, 'ro')) {
       return [];
     }
-    const res = await bridge.readConfigScope(HOST_CONFIG_SCOPES.PLUGIN_MCP);
+    const res = await bridge.read(HOST_CONFIG_SCOPES.PLUGIN_MCP);
     if (!res || typeof res !== 'object') {
       throw new Error('Host Config Bridge returned an invalid response for plugin MCP configs.');
     }
-    if (res.ok === false || res.status === 'error') {
-      throw new Error(String(res.reason || 'ERR_CONFIG_PLUGIN_READ_FAILED'));
-    }
     if (res.status === 'missing') {
       return [];
+    }
+    if (res.ok === false || res.status === 'error') {
+      throw new Error(String(res.reason || 'ERR_CONFIG_PLUGIN_READ_FAILED'));
     }
     const rawItems = Array.isArray(res.items) ? res.items : [];
     const normalized = [];
@@ -213,7 +210,7 @@ export function createHostBridgeConfigStore(addonHost) {
       return { exists: false, rawText: '', displayPath: '' };
     }
     try {
-      const res = await bridge.readConfigScope(HOST_CONFIG_SCOPES.LEGACY_MCP);
+      const res = await bridge.read(HOST_CONFIG_SCOPES.LEGACY_MCP);
       if (!res || typeof res !== 'object' || res.ok === false || res.status === 'missing' || res.status === 'error') {
         return { exists: false, rawText: '', displayPath: '' };
       }
