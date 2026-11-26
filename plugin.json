@@ -1,8 +1,8 @@
 {
   "name": "antigravity-mcp-manager",
   "displayName": "MCP Manager",
-  "description": "Safe visual manager for global MCP servers in mcp_config.json with read-only plugin inventory, Desktop Config Bridge, and Remote Web storage draft sync.",
-  "version": "4.1.0",
+  "description": "Safe visual manager for global MCP servers in mcp_config.json with read-only plugin inventory, Extenra Desktop & Unified Remote Host Bridge Config Bridge, and Remote Web storage draft sync.",
+  "version": "4.2.0",
   "logo": "assets/logo.svg",
   "author": {
     "name": "jaeseongs95",

@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.2.0 — Extenra (`v3.2.0` / `v3.2.1`) Specification, Userscript & UI Token Alignment
+- **Extenra Manifest & Userscript Contract Alignment**:
+  - Added canonical `"$schema": "https://github.com/jaeseongs95/extenra/schemas/addon-manifest.v3.schema.json"` to `addon-manifest.json` (`version: "4.2.0"`, preserving `minHostVersion: "3.1.0"` compatibility across Extenra `v3.1.x`–`v3.2.x`).
+  - Updated `scripts/build-userscript.mjs` default `@namespace` and `@require` host library URL to `https://github.com/jaeseongs95/extenra` / `https://github.com/jaeseongs95/extenra/releases/latest/download/antigravity-remote-host.lib.js`, added `normalizeHostLibUrl` with optional `#sha256=<64hex>` SRI pinning (`--host-lib-sha256`, `--host-lib-file`), and aligned `sanitizeRemotePermissions` (`userApprovedHttps` pass-through) with Extenra `v3.2.1` `scripts/build-remote.js`.
+- **Extenra `v3.2.1` Tier-3 Canvas Design Tokens & Scrollbar Polish (`src/adapters/antigravity/renderer/addon-styles.mjs`)**:
+  - Upgraded `buildNativePanelCss()` to adopt Extenra `v3.2.1` `--ag-*` tokens (`--ag-primary`, `--ag-primary-hover`, `--ag-primary-fg`, `--ag-input-bg`, `--ag-surface-hover`, `--ag-border-strong`, `--ag-focus-ring`, `--ag-scrollbar-thumb`, `--ag-scrollbar-thumb-hover`, `--ag-radius`) with backward-compatible fallbacks, thin rounded custom scrollbars for dark/light Shadow DOM containers and textareas, and `@media (prefers-reduced-motion: reduce)` transitions — 100% validated against Extenra `validateSafeCssText`.
+- **`@extenra/sdk` Parity & Documentation**:
+  - Updated `test/adapters/v40-addon-v3-sdk-parity.test.mjs` to discover `@extenra/sdk` via `EXTENRA_SDK_PATH` and sibling `../extenra/packages/sdk/src/index.js` (with legacy `ANTIGRAVITY_ADDONS_SDK_PATH` / `../antigravity-addons` fallback), and added Extenra `v3.2.1` safe CSS token, custom scrollbar, and rounded modal verification.
+  - Updated `test/adapters/addon-manifest-and-main-hook.test.mjs`, `test/adapters/v31-remote-web-and-userscript.test.mjs`, `test/helpers/cdp-browser.mjs`, `package.json`, `plugin.json`, `README.md`, `README.ko.md`, and `docs/TEST_CASES.md` for Extenra `v3.2.1`.
+
 ## 4.1.0 — Native Host `v3.1.1` Unified Remote Host Bridge Integration
 - **Transparent Remote Web Host Bridge Integration (`antigravity-addons` `v3.1.0` / `v3.1.1+`)**:
   - Declared minimal `permissions.events.subscribe: ["host:remote-bridge-changed"]` in `addon-manifest.json` (`version: "4.1.0"`, `minHostVersion: "3.1.0"`), keeping `compatibility.surfaces: ["desktop", "remote-web"]` and `compatibility.hostProfiles: ["antigravity-desktop", "antigravity-remote-web"]` cleanly compatible with `v3.1.1` `remote-dist` packing (`hasConfigBridge: true`, 3 scopes, zero rejections).

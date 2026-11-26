@@ -1,10 +1,11 @@
 {
+  "$schema": "https://github.com/jaeseongs95/extenra/schemas/addon-manifest.v3.schema.json",
   "schemaVersion": 3,
   "apiVersion": 3,
   "pluginId": "antigravity-mcp-manager",
   "displayName": "Antigravity MCP Manager",
-  "description": "Safe visual manager for global MCP servers in mcp_config.json with read-only plugin inventory, Desktop Config Bridge, and Remote Web storage draft sync.",
-  "version": "4.1.0",
+  "description": "Safe visual manager for global MCP servers in mcp_config.json with read-only plugin inventory, Extenra Desktop & Unified Remote Host Bridge Config Bridge, and Remote Web storage draft sync.",
+  "version": "4.2.0",
   "trustLevel": "trusted",
   "compatibility": {
     "surfaces": [

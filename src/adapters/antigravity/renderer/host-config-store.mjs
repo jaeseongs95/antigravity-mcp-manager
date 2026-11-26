@@ -2,7 +2,7 @@
  * Host Named-Scope Config Bridge Store Adapter (`src/adapters/antigravity/renderer/host-config-store.mjs`).
  *
  * SOLID Boundaries:
- * - SRP: Translates `antigravity-addons` v3.0.0 `AddonContextV3` Named-Scope Config Bridge
+ * - SRP: Translates Extenra (`extenra`, v3.1.0+/v3.2.1) `AddonContextV3` Named-Scope Config Bridge
  *   (`ctx.env.capabilities.hasConfigBridge`, `ctx.configBridge.scopes`, `ctx.configBridge.read`,
  *   `ctx.configBridge.write`) into the vendor-independent `ConfigStorePort` contract consumed by
  *   `src/core/manager-service.mjs`.

@@ -4,10 +4,10 @@
  * SOLID Responsibility (SRP):
  * - Single source of truth for locating Chromium/Edge, allocating ephemeral CDP ports,
  *   capturing stderr on launch failure, connecting CDP WebSocket sessions, and simulating
- *   the `AddonManifest.v3` + `AddonContextV3` browser host runtime contract from
- *   `antigravity-addons` v3.0.0 (3-Tier UI, `PlacementSpec` + mobile `<=640px` sheet,
- *   16-primitive declarative schema + `handle.update`, `ctx.storage`, `ctx.configBridge`,
- *   `ctx.lifecycle.signal`, and minimal-permission ISP namespace gating).
+ *   Extenra (`extenra`, v3.2.1) `AddonManifest.v3` + `AddonContextV3` browser host runtime contract
+ *   (3-Tier UI, `PlacementSpec` + mobile `<=640px` sheet, 16-primitive declarative schema +
+ *   `handle.update`, `ctx.storage`, `ctx.configBridge`, `ctx.lifecycle.signal`, and minimal-permission
+ *   ISP namespace gating).
  */
 
 import fs from 'node:fs';
@@ -63,7 +63,7 @@ export async function waitUntil(fn, timeoutMs = 8000, intervalMs = 40) {
 }
 
 /**
- * Builds an inline browser script that mirrors `antigravity-addons` v3.0.0 `AddonContextV3`:
+ * Builds an inline browser script that mirrors Extenra (`extenra`, v3.2.1) `AddonContextV3`:
  * - Minimal ISP namespaces: `net` and `dom` omitted when undeclared; `configBridge` omitted on remote-web
  * - Tier 1: `showToast`, `confirm`, `prompt`, `registerCommand`, `registerStatusItem`, `registerSettingsPage`
  * - Tier 2: `openPanel` / `openPopup` / `openModal` with 16-primitive declarative schema renderer,

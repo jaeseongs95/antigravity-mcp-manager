@@ -9,9 +9,11 @@ import { fileURLToPath } from 'node:url';
 
 import {
   DEFAULT_HOST_LIB_URL,
+  DEFAULT_NAMESPACE,
   DEFAULT_UPDATE_BASE_URL,
   REMOTE_WEB_PROFILE,
   buildUserscriptArtifacts,
+  normalizeHostLibUrl,
   verifyUserscriptSafety,
 } from '../../scripts/build-userscript.mjs';
 import { RENDERER_OUTPUT_PATH } from '../../scripts/build-renderer.mjs';
@@ -142,6 +144,12 @@ test('NMCP-TC-035 (Unit): build-userscript.mjs produces deterministic AddonManif
     const metaJs = fs.readFileSync(resA.metaPath, 'utf8');
 
     assert.equal(verifyUserscriptSafety(userJs).ok, true);
+    assert.equal(DEFAULT_NAMESPACE, 'https://github.com/jaeseongs95/extenra');
+    assert.equal(
+      DEFAULT_HOST_LIB_URL,
+      'https://github.com/jaeseongs95/extenra/releases/latest/download/antigravity-remote-host.lib.js'
+    );
+    assert.ok(metaJs.includes(`// @namespace    ${DEFAULT_NAMESPACE}`));
     assert.ok(metaJs.includes('// @match        https://antigravity.google.com/*'));
     assert.ok(metaJs.includes('// @inject-into  content'));
     assert.ok(metaJs.includes(`// @require      ${DEFAULT_HOST_LIB_URL}`));
@@ -150,6 +158,21 @@ test('NMCP-TC-035 (Unit): build-userscript.mjs produces deterministic AddonManif
     assert.ok(metaJs.includes('// @grant        GM_deleteValue'));
     assert.ok(metaJs.includes(`// @updateURL    ${DEFAULT_UPDATE_BASE_URL}/antigravity-mcp-manager.meta.js`));
     assert.ok(metaJs.includes(`// @downloadURL  ${DEFAULT_UPDATE_BASE_URL}/antigravity-mcp-manager.user.js`));
+
+    // Extenra v3.2.x optional SRI pinning (#sha256=<64hex>) & mismatch guard
+    const sampleSha = 'a'.repeat(64);
+    assert.equal(
+      normalizeHostLibUrl(DEFAULT_HOST_LIB_URL, { hostLibSha256: sampleSha }),
+      `${DEFAULT_HOST_LIB_URL}#sha256=${sampleSha}`
+    );
+    assert.throws(
+      () => normalizeHostLibUrl(`${DEFAULT_HOST_LIB_URL}#sha256=${'b'.repeat(64)}`, { hostLibSha256: sampleSha }),
+      /ERR_HOST_LIB_SHA256_MISMATCH/
+    );
+    assert.throws(
+      () => normalizeHostLibUrl(`${DEFAULT_HOST_LIB_URL}#not-sri`),
+      /ERR_HOST_LIB_URL_UNSAFE/
+    );
 
     const registered = [];
     let bootCount = 0;
