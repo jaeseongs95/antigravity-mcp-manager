@@ -1,6 +1,6 @@
 {
   "name": "antigravity-mcp-manager",
-  "version": "4.3.0",
+  "version": "4.3.1",
   "type": "module",
   "description": "Vendor-independent MCP Server Manager built on Extenra (AddonManifest.v3 + AddonContextV3 API-First) for Antigravity Desktop and Remote Web.",
   "license": "MIT",

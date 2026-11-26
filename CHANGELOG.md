@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.3.1 — Extenra `v3.3.1` Alignment (`minHostVersion: "3.3.1"`, Tier-2 `segmented`, Central i18n Override Sync & Real DOM Parity)
+- **Extenra `v3.3.1` Minimum Host Requirement (`addon-manifest.json`, `package.json`, `plugin.json`)**:
+  - Bumped `version` to `"4.3.1"` and `compatibility.minHostVersion` to `"3.3.1"` so Desktop `HOST_CFG.profile.uiSectionTargets` serialization and the hardened Antigravity `v2.35.2` nested Customizations DOM matcher are guaranteed at runtime.
+- **Tier-2 `segmented` Primitive Adoption (`src/adapters/antigravity/renderer/mcp-v3-shell.mjs`)**:
+  - Upgraded the Tier-2 Quick Panel language switcher (`id: "mcp-lang-select"`) from `type: "select"` to Extenra `v3.3.x`'s 17th declarative UI primitive `type: "segmented"` (`EN` / `한국어` pill toggle with `role="group"`, `aria-pressed`, and `ev.isTrusted !== false`).
+- **Central Host i18n Synchronization Fix (`src/adapters/antigravity/renderer/host-runtime.mjs`)**:
+  - Fixed `onLocaleChange` so switching Extenra's central host language (`ctx.i18n.onDidChange`) immediately updates `savedLang` and `ctx.storage` even if a stale plugin-local language override was previously saved, keeping the Customizations header button, Quick Panel, Settings Page, and Full Modal in lockstep.
+- **Real Antigravity `v2.35.2` DOM Parity Tests (`test/adapters/v40-addon-v3-sdk-parity.test.mjs`, `test/adapters/addon-manifest-and-main-hook.test.mjs`, `test/helpers/cdp-browser.mjs`)**:
+  - Extended `@extenra/sdk v3.3.1` parity suites (`NMCP-TC-037`, `NMCP-TC-038`, `NMCP-TC-040`) with Extenra's real `ANTIGRAVITY_HOST_PROFILE.uiSectionTargets` / `ANTIGRAVITY_REMOTE_WEB_PROFILE.uiSectionTargets` and simulated Antigravity `v2.35.2` nested `<button><span>MCP 서버</span><span>3</span><svg/></button>` + right-side action cluster + `[data-testid="conversation-view"]` decoy DOM, verifying real DOM mounting, trusted click modal launch, live central i18n override sync, Tier-2 `segmented` control, and clean DOM removal on `disposePlugin()`.
+
 ## 4.3.0 — Extenra `v3.3.0` Customizations `MCP Servers` Header Action (`registerSectionAction`) & Global Locale Sync
 - **Tier-1 Zero-DOM Customizations Header Action (`ctx.ui.registerSectionAction`)**:
   - Declared `permissions.ui.sectionActions: true` and bumped `addon-manifest.json` (`version: "4.3.0"`, `minHostVersion: "3.3.0"`), `package.json`, and `plugin.json`.

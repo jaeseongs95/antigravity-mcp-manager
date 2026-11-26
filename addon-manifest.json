@@ -5,7 +5,7 @@
   "pluginId": "antigravity-mcp-manager",
   "displayName": "Antigravity MCP Manager",
   "description": "Safe visual manager for global MCP servers in mcp_config.json with read-only plugin inventory, Extenra Desktop & Unified Remote Host Bridge Config Bridge, and Remote Web storage draft sync.",
-  "version": "4.3.0",
+  "version": "4.3.1",
   "trustLevel": "trusted",
   "compatibility": {
     "surfaces": [
@@ -16,7 +16,7 @@
       "antigravity-desktop",
       "antigravity-remote-web"
     ],
-    "minHostVersion": "3.3.0"
+    "minHostVersion": "3.3.1"
   },
   "capabilities": [
     "renderer"

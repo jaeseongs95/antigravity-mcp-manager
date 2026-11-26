@@ -4,7 +4,7 @@
  * SOLID Boundaries:
  * - SRP: Connects Antigravity MCP Manager exclusively through `AddonContextV3` 3-Tier host APIs:
  *   - Tier 1 (Zero-DOM): `registerStatusItem`, `registerSettingsPage`, `registerCommand`, `showToast`, `confirm`
- *   - Tier 2 (Declarative Host Panel): `openPanel` with 16 closed schema primitives + `handle.update(nextTree, nextState)`
+ *   - Tier 2 (Declarative Host Panel): `openPanel` with 17 closed schema primitives (incl. `segmented`) + `handle.update(nextTree, nextState)`
  *     ID-based in-place patching and host-managed mobile bottom-sheet auto-switching (`<=640px`)
  *   - Tier 3 (Host Shadow Canvas): `openModal` + Settings Page `render(canvasRoot)` mounting `NativeMcpPanel`
  *     styled with `ctx.ui.createStyleElementSafe(buildNativePanelCss())`
@@ -201,12 +201,12 @@ export function buildQuickPanelSchema({
         id: 'mcp-quick-divider',
       },
       {
-        type: 'select',
+        type: 'segmented',
         id: 'mcp-lang-select',
         label: dict.languageLabel,
         field: 'lang',
         options: [
-          { value: 'en', label: 'English' },
+          { value: 'en', label: 'EN' },
           { value: 'ko', label: '한국어' },
         ],
       },
@@ -640,7 +640,7 @@ export function createMcpV3Shell({
       });
     }
 
-    // Extenra v3.3.0 Tier-1 Declarative Section Action:
+    // Extenra v3.3.1 Tier-1 Declarative Section Action:
     // Mounts a host-styled action button on the Customizations -> MCP Servers section header
     // (Desktop & Remote Web) with zero plugin-side DOM scraping.
     if (typeof runtime.registerSectionAction === 'function') {
