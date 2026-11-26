@@ -180,6 +180,12 @@ test('NMCP-TC-031 (Unit): HostBridgeConfigStore + McpManagerService adapt AddonC
   forceWriteReason = 'ERR_CONFIG_SYMLINK_FORBIDDEN';
   assert.equal((await store.writeGlobalConfig({ rawText: storedRaw, expectedSha256: storedSha })).code, ERROR_CODES.WRITE_JAIL_VIOLATION);
 
+  forceWriteReason = 'ERR_REMOTE_HOST_NOT_CONNECTED';
+  assert.equal((await store.writeGlobalConfig({ rawText: storedRaw, expectedSha256: storedSha })).code, 'ERR_REMOTE_HOST_NOT_CONNECTED');
+
+  forceWriteReason = 'ERR_REMOTE_CONFIG_BRIDGE_OFFLINE';
+  assert.equal((await store.writeGlobalConfig({ rawText: storedRaw, expectedSha256: storedSha })).code, 'ERR_REMOTE_HOST_NOT_CONNECTED');
+
   // 3e. Corrupt JSON fail-closed detection + Raw JSON CAS repair
   storedRaw = '{ "mcpServers": broken';
   storedSha = await sha256Hex(storedRaw);

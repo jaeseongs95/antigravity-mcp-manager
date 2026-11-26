@@ -67,19 +67,18 @@ test('NMCP-TC-021 (Real Chromium CDP E2E): AddonManifest.v3 registers Tier-1 Set
     const { cdp, evalMain, exceptions } = session;
     await cdp('Page.navigate', { url: `http://localhost:${parentPort}/` });
     assert.equal(
-      await waitUntil(() => evalMain(`Boolean(window.__TEST_V3_DIAG__ && window.__TEST_V3_DIAG__.getStatusItems().length > 0)`), 8000, 30),
+      await waitUntil(() => evalMain(`Boolean(window.__TEST_V3_DIAG__ && window.__TEST_V3_DIAG__.getSettingsPages().length > 0)`), 8000, 30),
       true
     );
 
-    // 1. Tier-1 registrations exist immediately without mutating #host-shell
+    // 1. Tier-1 registrations exist immediately without mutating #host-shell (Desktop omits status item)
     const reg = await evalMain(`({
       statusItems: window.__TEST_V3_DIAG__.getStatusItems().map((s) => ({ id: s.id, label: s.label, badge: s.badge })),
       settingsPages: window.__TEST_V3_DIAG__.getSettingsPages(),
       commands: window.__TEST_V3_DIAG__.getCommands(),
       hostShellChildren: document.getElementById('host-shell').children.length,
     })`);
-    assert.equal(reg.statusItems.length, 1);
-    assert.equal(reg.statusItems[0].id, V3_IDS.STATUS_ITEM);
+    assert.equal(reg.statusItems.length, 0, 'Desktop surface must not register a status item under host v3.0.3 contract');
     assert.deepEqual(reg.settingsPages, [V3_IDS.SETTINGS_PAGE]);
     assert.ok(reg.commands.includes(V3_IDS.CMD_OPEN_MANAGER));
     assert.ok(reg.commands.includes(V3_IDS.CMD_OPEN_PANEL));

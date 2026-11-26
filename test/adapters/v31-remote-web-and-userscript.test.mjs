@@ -246,13 +246,14 @@ test('NMCP-TC-036 (Real Chromium CDP E2E): Remote Web AddonContextV3 opens unifi
       true
     );
 
-    // 1. Verify Remote Web AddonContextV3 omits configBridge/net/dom
+    // 1. Verify Remote Web AddonContextV3 omits configBridge/net/dom and registers Status Item
     const ctxCheck = await evalMain(`({
       surface: window.__TEST_ADDON_CTX_V3__.env.surface,
       hasConfigBridge: window.__TEST_ADDON_CTX_V3__.env.capabilities.hasConfigBridge,
       configBridgeUndef: window.__TEST_ADDON_CTX_V3__.configBridge === undefined,
       netUndef: window.__TEST_ADDON_CTX_V3__.net === undefined,
       domUndef: window.__TEST_ADDON_CTX_V3__.dom === undefined,
+      statusItems: window.__TEST_V3_DIAG__.getStatusItems().map((s) => ({ id: s.id, align: s.align })),
     })`);
     assert.deepEqual(ctxCheck, {
       surface: 'remote-web',
@@ -260,7 +261,18 @@ test('NMCP-TC-036 (Real Chromium CDP E2E): Remote Web AddonContextV3 opens unifi
       configBridgeUndef: true,
       netUndef: true,
       domUndef: true,
+      statusItems: [{ id: V3_IDS.STATUS_ITEM, align: 'right' }],
     });
+
+    // 1b. Clicking Remote Web Status Item opens Tier-2 declarative Quick Panel
+    await evalMain(`window.__TEST_V3_DIAG__.clickStatusItem(${JSON.stringify(V3_IDS.STATUS_ITEM)})`);
+    assert.equal(
+      await waitUntil(() => evalMain(`Boolean(document.querySelector('[data-addon-host-v3-overlay="panel"]'))`)),
+      true,
+      'Remote Web status item click must open Tier-2 Quick Panel'
+    );
+    await evalMain(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))`);
+    assert.equal(await evalMain(`document.querySelectorAll('[data-addon-host-v3-overlay="panel"]').length`), 0);
 
     // 2. Open unified Settings Page -> mounts NativeMcpPanel in remote-draft mode with remote-io-bar
     await evalMain(`window.__TEST_V3_DIAG__.openSettingsPage(${JSON.stringify(V3_IDS.SETTINGS_PAGE)})`);
