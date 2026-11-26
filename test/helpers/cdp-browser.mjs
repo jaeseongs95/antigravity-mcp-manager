@@ -4,8 +4,8 @@
  * SOLID Responsibility (SRP):
  * - Single source of truth for locating Chromium/Edge, allocating ephemeral CDP ports,
  *   capturing stderr on launch failure, connecting CDP WebSocket sessions, and simulating
- *   Extenra (`extenra`, v3.2.1) `AddonManifest.v3` + `AddonContextV3` browser host runtime contract
- *   (3-Tier UI, `PlacementSpec` + mobile `<=640px` sheet, 16-primitive declarative schema +
+ *   Extenra (`extenra`, v3.3.1) `AddonManifest.v3` + `AddonContextV3` browser host runtime contract
+ *   (3-Tier UI, `PlacementSpec` + mobile `<=640px` sheet, 17-primitive declarative schema incl. `segmented` +
  *   `handle.update`, `ctx.storage`, `ctx.configBridge`, `ctx.lifecycle.signal`, and minimal-permission
  *   ISP namespace gating).
  */
@@ -63,10 +63,10 @@ export async function waitUntil(fn, timeoutMs = 8000, intervalMs = 40) {
 }
 
 /**
- * Builds an inline browser script that mirrors Extenra (`extenra`, v3.2.1) `AddonContextV3`:
+ * Builds an inline browser script that mirrors Extenra (`extenra`, v3.3.1) `AddonContextV3`:
  * - Minimal ISP namespaces: `net` and `dom` omitted when undeclared; `configBridge` omitted on remote-web
- * - Tier 1: `showToast`, `confirm`, `prompt`, `registerCommand`, `registerStatusItem`, `registerSettingsPage`
- * - Tier 2: `openPanel` / `openPopup` / `openModal` with 16-primitive declarative schema renderer,
+ * - Tier 1: `showToast`, `confirm`, `prompt`, `registerCommand`, `registerStatusItem`, `registerSectionAction`, `registerSettingsPage`
+ * - Tier 2: `openPanel` / `openPopup` / `openModal` with 17-primitive declarative schema renderer (incl. `segmented`),
  *   `handle.update(nextTree, nextState)` ID-based patching, and responsive mobile `<=640px` bottom-sheet
  * - Tier 3: ShadowRoot canvas `bodyEl` + `createStyleElementSafe` + `--ag-*` tokens
  * - `storage` (KV + `onDidChange`), `theme`, `i18n`, `events`, `services`, `lifecycle.signal` / `onDispose`
@@ -190,6 +190,29 @@ export function buildAddonContextV3HarnessScript(manifest, opts = {}) {
           el.className = 'ag-btn';
           el.textContent = String(node.label ?? node.text ?? 'Action');
           el.addEventListener('click', () => onAction && onAction({ actionId: node.actionId, payload: node.payload, state: { ...state } }));
+        } else if (node.type === 'segmented') {
+          el = document.createElement('div');
+          el.className = 'ag-segmented';
+          el.setAttribute('role', 'group');
+          el.setAttribute('data-ag-segmented', '1');
+          if (node.label) el.setAttribute('aria-label', String(node.label));
+          const currentVal = node.field && state[node.field] !== undefined ? String(state[node.field]) : '';
+          for (const opt of node.options || []) {
+            const optVal = typeof opt === 'object' ? String(opt.value) : String(opt);
+            const optLabel = typeof opt === 'object' ? String(opt.label || opt.value) : String(opt);
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = optLabel;
+            b.setAttribute('data-value', optVal);
+            b.setAttribute('aria-pressed', optVal === currentVal ? 'true' : 'false');
+            if (node.disabled) b.disabled = true;
+            b.addEventListener('click', (ev) => {
+              if (node.disabled || (ev && ev.isTrusted === false)) return;
+              if (node.field) state[node.field] = optVal;
+              if (onChange) onChange({ field: node.field, value: optVal, state: { ...state } });
+            });
+            el.appendChild(b);
+          }
         } else if (node.type === 'select') {
           el = document.createElement('div');
           const sel = document.createElement('select');

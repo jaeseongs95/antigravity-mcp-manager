@@ -30,6 +30,75 @@ function loadAddonHostSdk() {
   return null;
 }
 
+function loadExtenraHostProfiles() {
+  const extenraRoot = path.resolve(ROOT_DIR, '..', 'extenra');
+  const desktopProfilePath = path.join(extenraRoot, 'src', 'profiles', 'antigravity.js');
+  const remoteProfilePath = path.join(extenraRoot, 'src', 'profiles', 'antigravity-remote-web.js');
+  const fallbackTarget = {
+    'customizations.mcp-servers.header': {
+      excludeAncestorSelectors: ['[data-testid="conversation-view"]', '[data-testid="conversation-list-sidebar"]'],
+      headingTexts: ['MCP Servers', 'MCP 서버'],
+      requireSiblingActions: true,
+    },
+  };
+  return {
+    desktopTargets: fs.existsSync(desktopProfilePath)
+      ? require(desktopProfilePath).ANTIGRAVITY_HOST_PROFILE.uiSectionTargets
+      : fallbackTarget,
+    remoteWebTargets: fs.existsSync(remoteProfilePath)
+      ? require(remoteProfilePath).ANTIGRAVITY_REMOTE_WEB_PROFILE.uiSectionTargets
+      : fallbackTarget,
+  };
+}
+
+function mountSimulatedAntigravityMcpHeaderDom(doc) {
+  // Decoy inside conversation-view MUST NEVER receive a mounted section action
+  const convView = doc.createElement('div');
+  convView.setAttribute('data-testid', 'conversation-view');
+  const convRow = doc.createElement('div');
+  const convLabel = doc.createElement('span');
+  convLabel.textContent = 'MCP 서버';
+  const convBtns = doc.createElement('div');
+  const convCopy = doc.createElement('button');
+  convCopy.textContent = 'Copy';
+  convBtns.appendChild(convCopy);
+  convRow.appendChild(convLabel);
+  convRow.appendChild(convBtns);
+  convView.appendChild(convRow);
+  doc.body.appendChild(convView);
+
+  // Real Antigravity v2.35.2 nested collapsible Customizations > Installed > MCP 서버 3 v header
+  const page = doc.createElement('div');
+  const headerRow = doc.createElement('div');
+  headerRow.setAttribute('id', 'mcp-header-row');
+  const leftWrap = doc.createElement('div');
+  const toggleBtn = doc.createElement('button');
+  const titleSpan = doc.createElement('span');
+  titleSpan.textContent = 'MCP 서버';
+  const countSpan = doc.createElement('span');
+  countSpan.textContent = '3';
+  const chevSvg = doc.createElement('svg');
+  toggleBtn.appendChild(titleSpan);
+  toggleBtn.appendChild(countSpan);
+  toggleBtn.appendChild(chevSvg);
+  leftWrap.appendChild(toggleBtn);
+
+  const rightActions = doc.createElement('div');
+  rightActions.setAttribute('id', 'mcp-right-actions');
+  const cfgBtn = doc.createElement('button');
+  cfgBtn.textContent = '설정';
+  const addBtn = doc.createElement('button');
+  addBtn.textContent = '+';
+  rightActions.appendChild(cfgBtn);
+  rightActions.appendChild(addBtn);
+  headerRow.appendChild(leftWrap);
+  headerRow.appendChild(rightActions);
+  page.appendChild(headerRow);
+  doc.body.appendChild(page);
+
+  return { convBtns, rightActions, cfgBtn, addBtn };
+}
+
 function flushMicrotasks(ms = 40) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -56,7 +125,7 @@ function runAssembledRendererInSdkHost(host, ctx) {
   vm.runInNewContext(rendererSrc, sandbox, { filename: 'addon-renderer.js' });
 }
 
-test('NMCP-TC-037 (@extenra/sdk v3.2.1 Desktop Parity): real createTestHost({ surface: "desktop" }) verifies minimal ISP permissions (net/dom omitted, configBridge present), Tier-1 settings page / commands (no desktop status item), Tier-2 declarative openPanel + handle.update + mobile <=640px sheet, Tier-3 openModal CRUD + Extenra v3.2.1 safe CSS tokens/backdrop, and clean disposePlugin()', async (t) => {
+test('NMCP-TC-037 (@extenra/sdk v3.3.1 Desktop Parity): real createTestHost({ surface: "desktop" }) verifies minimal ISP permissions, real Antigravity v2.35.2 nested MCP header DOM section action mount (no false positives), Tier-2 segmented language control + central i18n sync, mobile <=640px sheet, Tier-3 openModal CRUD, and clean disposePlugin()', async (t) => {
   const sdk = loadAddonHostSdk();
   if (!sdk || typeof sdk.createTestHost !== 'function') {
     t.skip('@extenra/sdk sibling repository is not present in this checkout');
@@ -64,11 +133,13 @@ test('NMCP-TC-037 (@extenra/sdk v3.2.1 Desktop Parity): real createTestHost({ su
   }
 
   const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+  const { desktopTargets } = loadExtenraHostProfiles();
   const host = sdk.createTestHost({
     surface: 'desktop',
     locale: 'ko-KR',
     themeMode: 'dark',
     viewport: { width: 1280, height: 800 },
+    uiSectionTargets: desktopTargets,
     configScopes: {
       'antigravity:mcp-config': {
         data: {
@@ -80,6 +151,8 @@ test('NMCP-TC-037 (@extenra/sdk v3.2.1 Desktop Parity): real createTestHost({ su
       },
     },
   });
+
+  const { convBtns, rightActions, cfgBtn } = mountSimulatedAntigravityMcpHeaderDom(host.doc);
 
   const ctx = await host.mountPlugin(manifest, (addonCtx) => {
     runAssembledRendererInSdkHost(host, addonCtx);
@@ -100,7 +173,7 @@ test('NMCP-TC-037 (@extenra/sdk v3.2.1 Desktop Parity): real createTestHost({ su
   assert.ok(ctx.configBridge && typeof ctx.configBridge.read === 'function');
   assert.equal(ctx.configBridge.scopes.length, 3);
 
-  // 2. Tier 1: Desktop uses Settings Page + Section Action + Commands (no Status Item on Desktop)
+  // 2. Tier 1: Desktop uses Settings Page + real DOM-mounted Section Action + Commands (no Status Item on Desktop)
   const statusItems = host.getStatusItems();
   assert.equal(statusItems.length, 0, 'Desktop surface must not register a status item');
 
@@ -109,21 +182,34 @@ test('NMCP-TC-037 (@extenra/sdk v3.2.1 Desktop Parity): real createTestHost({ su
   assert.equal(sectionActions[0].id, V3_IDS.SECTION_ACTION);
   assert.equal(sectionActions[0].target, V3_IDS.SECTION_TARGET);
   assert.equal(sectionActions[0].label, 'MCP 매니저', 'Korean locale must set Korean section action label');
+  assert.equal(sectionActions[0].mounted, true, 'Extenra v3.3.1 must mount button on real Antigravity nested MCP header DOM');
+  assert.equal(convBtns.childNodes.length, 1, 'Decoy inside conversation-view must NEVER receive a section action');
+  assert.equal(rightActions.childNodes.length, 3, 'Section action group must mount inside right-side action container');
+  assert.equal(
+    rightActions.childNodes[0].getAttribute('data-addon-host-section-actions'),
+    V3_IDS.SECTION_TARGET
+  );
+  assert.equal(rightActions.childNodes[1], cfgBtn, 'Section action group must be inserted before native header buttons');
 
-  // Extenra v3.3.0 global locale sync (ctx.i18n.onDidChange) updates section action label live
+  const mountedBtnSelector = `[data-addon-host-section-action-btn="${manifest.pluginId}:${V3_IDS.SECTION_ACTION}"]`;
+  const mountedKoBtn = rightActions.querySelector(mountedBtnSelector);
+  assert.ok(mountedKoBtn && mountedKoBtn.textContent.includes('MCP 매니저'));
+
+  // Extenra v3.3.1 global locale sync (ctx.i18n.onDidChange) updates mounted DOM button live
   host.setLocale('en-US');
   await flushMicrotasks(20);
   assert.equal(host.getSectionActions()[0].label, 'MCP Manager', 'Host locale switch must update section action label via ctx.i18n.onDidChange');
+  assert.equal(rightActions.querySelector(mountedBtnSelector).textContent.includes('MCP Manager'), true);
   host.setLocale('ko-KR');
   await flushMicrotasks(20);
   assert.equal(host.getSectionActions()[0].label, 'MCP 매니저');
+  assert.equal(rightActions.querySelector(mountedBtnSelector).textContent.includes('MCP 매니저'), true);
 
-  // Invoking the Customizations MCP Servers header section action opens the Tier-3 Full Editor modal
-  const invokeRes = host.invokeSectionAction(manifest.pluginId, V3_IDS.SECTION_ACTION);
-  assert.equal(invokeRes.ok, true, 'Invoking section action must succeed');
+  // Trusted click on actual mounted DOM button opens the Tier-3 Full Editor modal
+  rightActions.querySelector(mountedBtnSelector).click({ isTrusted: true });
   await flushMicrotasks(40);
   const dialogEl = host.doc.body.querySelector('dialog[data-addon-host-v3-overlay="modal"]');
-  assert.ok(dialogEl, 'Clicking Customizations MCP Servers header action must open Full Editor modal');
+  assert.ok(dialogEl, 'Clicking mounted Customizations MCP Servers header button must open Full Editor modal');
 
   const settingsPages = host.getSettingsPages();
   assert.equal(settingsPages.length, 1);
@@ -136,7 +222,7 @@ test('NMCP-TC-037 (@extenra/sdk v3.2.1 Desktop Parity): real createTestHost({ su
   assert.ok(commands.includes(V3_IDS.CMD_OPEN_PANEL));
   assert.ok(commands.includes(V3_IDS.CMD_OPEN_SETTINGS));
 
-  // 3. Tier 2: Quick Panel (openPanel) declarative schema + ID-based handle.update + mobile <=640px sheet
+  // 3. Tier 2: Quick Panel (openPanel) with Extenra v3.3.1 segmented language toggle + ID-based handle.update + mobile <=640px sheet
   const panelHandle = ctx.ui.invokeCommand(manifest.pluginId, V3_IDS.CMD_OPEN_PANEL);
   await flushMicrotasks(50);
   assert.ok(panelHandle, 'open-mcp-panel command must open Tier-2 declarative panel');
@@ -145,6 +231,22 @@ test('NMCP-TC-037 (@extenra/sdk v3.2.1 Desktop Parity): real createTestHost({ su
   assert.equal(panelHandle.getState().lang, 'ko');
   assert.equal(panelHandle.getState().serverCount, 1);
   assert.ok(panelHandle.getElementById('mcp-summary-text'));
+  const langSegEl = panelHandle.getElementById('mcp-lang-select');
+  assert.ok(langSegEl, 'Quick Panel must render Extenra v3.3.x segmented language toggle');
+  assert.equal(langSegEl.getAttribute('role'), 'group');
+  assert.equal(langSegEl.getAttribute('data-ag-segmented'), '1');
+  assert.equal(langSegEl.childNodes[1].getAttribute('aria-pressed'), 'true');
+  // Trusted click on EN segment persists language via ctx.storage and updates mounted header button
+  langSegEl.childNodes[0].click({ isTrusted: true });
+  await flushMicrotasks(30);
+  assert.equal(panelHandle.getState().lang, 'en');
+  assert.equal(host.getSectionActions()[0].label, 'MCP Manager');
+  // Central host locale switch STILL overrides per-plugin saved preference immediately
+  host.setLocale('en');
+  host.setLocale('ko');
+  await flushMicrotasks(30);
+  assert.equal(panelHandle.getState().lang, 'ko', 'Central host locale change must override prior plugin-saved language');
+  assert.equal(host.getSectionActions()[0].label, 'MCP 매니저');
   const desktopPlacement = panelHandle.getPlacement();
   assert.equal(desktopPlacement.zone, 'drawer');
 
@@ -155,18 +257,18 @@ test('NMCP-TC-037 (@extenra/sdk v3.2.1 Desktop Parity): real createTestHost({ su
   assert.equal(mobilePlacement.zone, 'sheet', 'Viewport <=640px must auto-switch Tier-2 panel to mobile bottom sheet');
   panelHandle.close();
 
-  // 4. Tier 3: Full Editor Modal mounts NativeMcpPanel via configBridge, passes Extenra v3.2.1 safe CSS + backdrop, and writes a new server
+  // 4. Tier 3: Full Editor Modal mounts NativeMcpPanel via configBridge, passes Extenra v3.2.1+ safe CSS + backdrop, and writes a new server
   host.setViewport(1280, 800);
   const modalHandle = ctx.ui.invokeCommand(manifest.pluginId, V3_IDS.CMD_OPEN_MANAGER);
   await flushMicrotasks(60);
   assert.ok(modalHandle && modalHandle.bodyEl, 'open-mcp-manager must open Tier-3 modal with bodyEl');
   const injectedStyle = modalHandle.bodyEl.querySelector('style');
   assert.ok(injectedStyle, 'Tier-3 modal must inject safe panel <style>');
-  assert.equal(injectedStyle.textContent.includes('--ag-primary'), true, 'Panel CSS must adopt Extenra v3.2.1 --ag-primary token');
-  assert.equal(injectedStyle.textContent.includes('--ag-input-bg'), true, 'Panel CSS must adopt Extenra v3.2.1 --ag-input-bg token');
-  assert.equal(injectedStyle.textContent.includes('::-webkit-scrollbar'), true, 'Panel CSS must include Extenra v3.2.1 sleek scrollbar rules');
+  assert.equal(injectedStyle.textContent.includes('--ag-primary'), true, 'Panel CSS must adopt Extenra --ag-primary token');
+  assert.equal(injectedStyle.textContent.includes('--ag-input-bg'), true, 'Panel CSS must adopt Extenra --ag-input-bg token');
+  assert.equal(injectedStyle.textContent.includes('::-webkit-scrollbar'), true, 'Panel CSS must include Extenra sleek scrollbar rules');
   assert.equal(injectedStyle.textContent.includes('prefers-reduced-motion: reduce'), true, 'Panel CSS must respect prefers-reduced-motion');
-  assert.equal(modalHandle.element.style.borderRadius, 'var(--ag-radius, 12px)', 'Extenra v3.2.1 modal dialog must use rounded --ag-radius');
+  assert.equal(modalHandle.element.style.borderRadius, 'var(--ag-radius, 12px)', 'Extenra modal dialog must use rounded --ag-radius');
   const panelRoot = modalHandle.bodyEl.querySelector('[data-agy-mcp-native-panel="true"]');
   assert.ok(panelRoot, 'NativeMcpPanel must mount inside Tier-3 modal bodyEl');
   assert.equal(panelRoot.getAttribute('data-agy-mcp-mode'), 'host-bridge');
@@ -187,16 +289,18 @@ test('NMCP-TC-037 (@extenra/sdk v3.2.1 Desktop Parity): real createTestHost({ su
   assert.equal(afterRead.data.mcpServers['sdk-desktop-srv'].url, 'https://sdk-desktop.example/mcp');
   assert.equal(host.getStatusItems().length, 0, 'Desktop must remain free of status items after CRUD save');
 
-  // 5. Clean disposal via host.disposePlugin()
+  // 5. Clean disposal via host.disposePlugin() removes mounted header group cleanly
   assert.equal(ctx.lifecycle.signal.aborted, false);
   assert.equal(host.disposePlugin(manifest.pluginId), true);
   assert.equal(ctx.lifecycle.signal.aborted, true);
   assert.equal(host.getStatusItems().length, 0);
   assert.equal(host.getSectionActions().length, 0);
+  assert.equal(rightActions.childNodes.length, 2, 'disposePlugin() must remove mounted section action group from header');
+  assert.equal(rightActions.childNodes[0], cfgBtn);
   assert.equal(host.getSettingsPages().length, 0);
 });
 
-test('NMCP-TC-038 (@extenra/sdk v3.2.1 Remote Web Parity — Disconnected): real createTestHost({ surface: "remote-web", remoteBridgeConnected: false }) omits configBridge/net/dom, shows Host Bridge pairing notice without plugin URL/token inputs, persists CRUD drafts via ctx.storage, renders remote-io-bar, and supports mobile sheet + disposePlugin()', async (t) => {
+test('NMCP-TC-038 (@extenra/sdk v3.3.1 Remote Web Parity — Disconnected): real createTestHost({ surface: "remote-web", remoteBridgeConnected: false }) omits configBridge/net/dom, mounts section action on real Antigravity DOM, shows Host Bridge pairing notice without plugin URL/token inputs, persists CRUD drafts via ctx.storage, renders remote-io-bar, and supports mobile sheet + disposePlugin()', async (t) => {
   const sdk = loadAddonHostSdk();
   if (!sdk || typeof sdk.createTestHost !== 'function') {
     t.skip('@extenra/sdk sibling repository is not present in this checkout');
@@ -204,13 +308,17 @@ test('NMCP-TC-038 (@extenra/sdk v3.2.1 Remote Web Parity — Disconnected): real
   }
 
   const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+  const { remoteWebTargets } = loadExtenraHostProfiles();
   const host = sdk.createTestHost({
     surface: 'remote-web',
     remoteBridgeConnected: false,
     locale: 'ko-KR',
     themeMode: 'light',
     viewport: { width: 1280, height: 800 },
+    uiSectionTargets: remoteWebTargets,
   });
+
+  const { convBtns, rightActions, cfgBtn } = mountSimulatedAntigravityMcpHeaderDom(host.doc);
 
   const ctx = await host.mountPlugin(manifest, (addonCtx) => {
     runAssembledRendererInSdkHost(host, addonCtx);
@@ -227,11 +335,14 @@ test('NMCP-TC-038 (@extenra/sdk v3.2.1 Remote Web Parity — Disconnected): real
   assert.equal(ctx.net, undefined);
   assert.equal(ctx.dom, undefined);
 
-  // 2. Tier-1 Status Item, Section Action & Settings Page parity
+  // 2. Tier-1 Status Item, real DOM-mounted Section Action & Settings Page parity
   assert.equal(host.getStatusItems().length, 1);
   assert.equal(host.getStatusItems()[0].badge, '0');
   assert.equal(host.getSectionActions().length, 1);
   assert.equal(host.getSectionActions()[0].target, V3_IDS.SECTION_TARGET);
+  assert.equal(host.getSectionActions()[0].mounted, true);
+  assert.equal(convBtns.childNodes.length, 1);
+  assert.equal(rightActions.childNodes.length, 3);
   assert.equal(host.invokeSectionAction(manifest.pluginId, V3_IDS.SECTION_ACTION).ok, true);
   assert.equal(host.getSettingsPages().length, 1);
 
@@ -266,12 +377,13 @@ test('NMCP-TC-038 (@extenra/sdk v3.2.1 Remote Web Parity — Disconnected): real
   assert.ok(storedDraft.rawText.includes('sdk-remote-srv'));
   assert.equal(host.getStatusItems()[0].badge, '1');
 
-  // 4. Tier-2 Quick Panel shows Remote Draft badge, Host Bridge notice, and mobile bottom sheet at <=640px
+  // 4. Tier-2 Quick Panel shows Remote Draft badge, Host Bridge notice, segmented language toggle, and mobile bottom sheet at <=640px
   const quickPanel = ctx.ui.invokeCommand(manifest.pluginId, V3_IDS.CMD_OPEN_PANEL);
   await flushMicrotasks(50);
   assert.equal(quickPanel.getState().mode, 'remote-draft');
   assert.equal(quickPanel.getState().showRemoteBridgeNotice, true);
   assert.equal(quickPanel.getState().serverCount, 1);
+  assert.equal(quickPanel.getElementById('mcp-lang-select')?.getAttribute('data-ag-segmented'), '1');
   host.setViewport(390, 844);
   assert.equal(ctx.env.layoutMode, 'mobile');
   assert.equal(quickPanel.reposition().zone, 'sheet');
@@ -281,10 +393,12 @@ test('NMCP-TC-038 (@extenra/sdk v3.2.1 Remote Web Parity — Disconnected): real
   assert.equal(ctx.lifecycle.signal.aborted, true);
   assert.equal(host.getStatusItems().length, 0);
   assert.equal(host.getSectionActions().length, 0);
+  assert.equal(rightActions.childNodes.length, 2);
+  assert.equal(rightActions.childNodes[0], cfgBtn);
   assert.equal(host.getSettingsPages().length, 0);
 });
 
-test('NMCP-TC-040 (@extenra/sdk v3.2.1 Remote Web Connected): real createTestHost({ surface: "remote-web", remoteBridgeConnected: true }) routes ctx.configBridge live to Desktop mcp_config.json without disconnected notice or plugin URL/token inputs', async (t) => {
+test('NMCP-TC-040 (@extenra/sdk v3.3.1 Remote Web Connected): real createTestHost({ surface: "remote-web", remoteBridgeConnected: true }) mounts section action on real Antigravity DOM and routes ctx.configBridge live to Desktop mcp_config.json without disconnected notice or plugin URL/token inputs', async (t) => {
   const sdk = loadAddonHostSdk();
   if (!sdk || typeof sdk.createTestHost !== 'function') {
     t.skip('@extenra/sdk sibling repository is not present in this checkout');
@@ -292,12 +406,14 @@ test('NMCP-TC-040 (@extenra/sdk v3.2.1 Remote Web Connected): real createTestHos
   }
 
   const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+  const { remoteWebTargets } = loadExtenraHostProfiles();
   const host = sdk.createTestHost({
     surface: 'remote-web',
     remoteBridgeConnected: true,
     locale: 'ko-KR',
     themeMode: 'dark',
     viewport: { width: 1280, height: 800 },
+    uiSectionTargets: remoteWebTargets,
     configScopes: {
       'antigravity:mcp-config': {
         data: {
@@ -309,6 +425,8 @@ test('NMCP-TC-040 (@extenra/sdk v3.2.1 Remote Web Connected): real createTestHos
       },
     },
   });
+
+  const { convBtns, rightActions, cfgBtn } = mountSimulatedAntigravityMcpHeaderDom(host.doc);
 
   const ctx = await host.mountPlugin(manifest, (addonCtx) => {
     runAssembledRendererInSdkHost(host, addonCtx);
@@ -325,12 +443,15 @@ test('NMCP-TC-040 (@extenra/sdk v3.2.1 Remote Web Connected): real createTestHos
   assert.equal(ctx.net, undefined);
   assert.equal(ctx.dom, undefined);
 
-  // 2. Remote Web keeps Status Item with live Desktop server count & registers Customizations MCP header action
+  // 2. Remote Web keeps Status Item with live Desktop server count & mounts real DOM Customizations MCP header action
   assert.equal(host.getStatusItems().length, 1);
   assert.equal(host.getStatusItems()[0].badge, '1');
   assert.equal(host.getSectionActions().length, 1);
   assert.equal(host.getSectionActions()[0].target, V3_IDS.SECTION_TARGET);
   assert.equal(host.getSectionActions()[0].badge, null);
+  assert.equal(host.getSectionActions()[0].mounted, true);
+  assert.equal(convBtns.childNodes.length, 1);
+  assert.equal(rightActions.childNodes.length, 3);
   assert.equal(host.invokeSectionAction(manifest.pluginId, V3_IDS.SECTION_ACTION).ok, true);
 
   // 3. Tier-2 Quick Panel shows host-bridge mode and hides disconnected notice
@@ -372,6 +493,8 @@ test('NMCP-TC-040 (@extenra/sdk v3.2.1 Remote Web Connected): real createTestHos
   assert.equal(ctx.lifecycle.signal.aborted, true);
   assert.equal(host.getStatusItems().length, 0);
   assert.equal(host.getSectionActions().length, 0);
+  assert.equal(rightActions.childNodes.length, 2);
+  assert.equal(rightActions.childNodes[0], cfgBtn);
   assert.equal(host.getSettingsPages().length, 0);
 });
 

@@ -33,14 +33,14 @@ test('NMCP-TC-022 (Contract & SOLID Parity): addon-manifest.json satisfies Addon
   assert.equal(manifest.schemaVersion, 3);
   assert.equal(manifest.apiVersion, 3);
   assert.equal(manifest.pluginId, 'antigravity-mcp-manager');
-  assert.equal(manifest.version, '4.3.0');
+  assert.equal(manifest.version, '4.3.1');
   assert.equal(manifest.version, pkg.version);
   assert.equal(pluginJson.version, pkg.version);
   assert.equal(manifest.trustLevel, 'trusted');
   assert.deepEqual(manifest.compatibility, {
     surfaces: ['desktop', 'remote-web'],
     hostProfiles: ['antigravity-desktop', 'antigravity-remote-web'],
-    minHostVersion: '3.3.0',
+    minHostVersion: '3.3.1',
   });
   assert.deepEqual(manifest.capabilities, ['renderer']);
   assert.equal(manifest.entry.rendererScript, 'src/adapters/antigravity/addon-renderer.js');
@@ -214,6 +214,33 @@ test('NMCP-TC-024 (Unit): host-runtime enforces AddonContextV3 contract, branche
   assert.equal(await rtKoDefault.loadSavedLang(), 'en', 'Saved user preference must override host locale');
   kv.delete(LANG_STORAGE_KEY);
   assert.equal(await rtKoDefault.loadSavedLang(), 'ko', 'Clearing saved preference must revert to host locale');
+
+  // 2c. Central Extenra host locale switch (ctx.i18n.onDidChange) overrides stale savedLang immediately
+  let hostLocale = 'ko-KR';
+  const localeCbs = new Set();
+  kv.set(LANG_STORAGE_KEY, 'en');
+  const rtCentralSync = createHostRuntime({
+    ctx: makeCtx({
+      i18n: {
+        getLocale: () => hostLocale,
+        t: (k) => k,
+        onDidChange: (fn) => {
+          localeCbs.add(fn);
+          return () => localeCbs.delete(fn);
+        },
+      },
+    }),
+    doc: null,
+  });
+  assert.equal(await rtCentralSync.loadSavedLang(), 'en');
+  const observedLocales = [];
+  const unsubLocale = rtCentralSync.onLocaleChange((loc) => observedLocales.push(loc));
+  hostLocale = 'ko';
+  for (const fn of localeCbs) fn('ko');
+  assert.deepEqual(observedLocales, ['ko']);
+  assert.equal(rtCentralSync.resolveEffectiveLang(), 'ko', 'Central host locale switch must immediately override stale savedLang');
+  assert.equal(kv.get(LANG_STORAGE_KEY), 'ko', 'Central host locale switch must sync stored preference');
+  unsubLocale();
 
   // 3. Desktop with hasConfigBridge: true + rw antigravity:mcp-config -> host-bridge mode
   const rtBridge = createHostRuntime({
