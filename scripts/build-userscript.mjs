@@ -2,17 +2,19 @@
 /**
  * Zero-Dependency Modular Public HTTPS Userscript Builder (`scripts/build-userscript.mjs`).
  *
- * Emits `antigravity-addons` v3.0.0-compatible modular `@require` Userscript artifacts:
+ * Emits Extenra (`extenra` v3.2.1)-compatible modular `@require` Userscript artifacts:
  * - `antigravity-mcp-manager.user.js`
  * - `antigravity-mcp-manager.meta.js`
  * - `build-manifest.json`
  *
  * Guarantees:
  * - Zero external npm dependencies (Node 22+ built-ins only) so 3-OS CI passes standalone.
- * - Matches `antigravity-addons v3.0.0` `addon-host --build-addon-userscript` contract
+ * - Matches Extenra `extenra --build-addon-userscript` (`addon-host` alias) contract
  *   (`schemaVersion: 3`, `apiVersion: 3`, Remote-Web-sanitized `permissions` stripping
  *   desktop-only `configBridge`/`localLoopback`, fail-closed `trustLevel: "restricted"`,
- *   `@require .../antigravity-remote-host.lib.js`, `@inject-into content`, `GM_*` grants).
+ *   `@namespace https://github.com/jaeseongs95/extenra`,
+ *   `@require https://github.com/jaeseongs95/extenra/releases/latest/download/antigravity-remote-host.lib.js`
+ *   with optional `#sha256=<64hex>` SRI pinning, `@inject-into content`, `GM_*` grants).
  * - `--check` verifies syntax (`vm.Script`), zero unsafe DOM/eval sinks, renderer bundle parity,
  *   and byte-exact determinism across two independent temp builds.
  */
@@ -28,8 +30,9 @@ import { assembleRendererSource } from './build-renderer.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT_DIR = path.resolve(__dirname, '..');
 export const DEFAULT_OUT_DIR = path.join(ROOT_DIR, 'dist', 'userscript');
+export const DEFAULT_NAMESPACE = 'https://github.com/jaeseongs95/extenra';
 export const DEFAULT_HOST_LIB_URL =
-  'https://github.com/jaeseongs95/antigravity-addons/releases/latest/download/antigravity-remote-host.lib.js';
+  'https://github.com/jaeseongs95/extenra/releases/latest/download/antigravity-remote-host.lib.js';
 export const DEFAULT_UPDATE_BASE_URL =
   'https://github.com/jaeseongs95/antigravity-mcp-manager/releases/latest/download';
 export const REMOTE_WEB_PROFILE = Object.freeze({
@@ -38,6 +41,9 @@ export const REMOTE_WEB_PROFILE = Object.freeze({
   allowedOrigins: Object.freeze(['https://antigravity.google.com']),
 });
 export const USERSCRIPT_GRANTS = Object.freeze(['GM_getValue', 'GM_setValue', 'GM_deleteValue']);
+
+const SRI_SHA256_HASH_RE = /^#sha256=([a-f0-9]{64})$/i;
+const HEX_SHA256_RE = /^[a-f0-9]{64}$/i;
 
 const FORBIDDEN_SINK_PATTERNS = Object.freeze([
   /\.innerHTML\b/,
@@ -78,6 +84,57 @@ function normalizeHttpsUrl(rawUrl, errPrefix) {
   return parsed.href.replace(/\/+$/, '');
 }
 
+export function normalizeHostLibUrl(rawUrl, { hostLibSha256 = null, hostLibFile = null } = {}) {
+  const effective = typeof rawUrl === 'string' && rawUrl.trim() ? rawUrl.trim() : DEFAULT_HOST_LIB_URL;
+  let parsed;
+  try {
+    parsed = new URL(effective);
+  } catch {
+    throw new Error(`ERR_INVALID_HOST_LIB_URL:${rawUrl}`);
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Error(`ERR_HOST_LIB_URL_MUST_BE_HTTPS:${rawUrl}`);
+  }
+  if (parsed.username || parsed.password || parsed.search) {
+    throw new Error(`ERR_HOST_LIB_URL_UNSAFE:${rawUrl}`);
+  }
+  let urlSha = null;
+  if (parsed.hash) {
+    const m = parsed.hash.match(SRI_SHA256_HASH_RE);
+    if (!m) {
+      throw new Error(`ERR_HOST_LIB_URL_UNSAFE:${rawUrl}`);
+    }
+    urlSha = m[1].toLowerCase();
+  }
+
+  let computedSha = null;
+  if (typeof hostLibSha256 === 'string' && hostLibSha256.trim()) {
+    const cleaned = hostLibSha256.trim().toLowerCase();
+    if (!HEX_SHA256_RE.test(cleaned)) {
+      throw new Error(`ERR_INVALID_HOST_LIB_SHA256:${hostLibSha256}`);
+    }
+    computedSha = cleaned;
+  }
+  if (typeof hostLibFile === 'string' && hostLibFile.trim()) {
+    const absLib = path.resolve(hostLibFile.trim());
+    if (!fs.existsSync(absLib) || !fs.statSync(absLib).isFile()) {
+      throw new Error(`ERR_HOST_LIB_FILE_NOT_FOUND:${absLib}`);
+    }
+    const fileSha = sha256Hex(fs.readFileSync(absLib));
+    if (computedSha && computedSha !== fileSha) {
+      throw new Error(`ERR_HOST_LIB_SHA256_MISMATCH:${computedSha}:${fileSha}`);
+    }
+    computedSha = fileSha;
+  }
+
+  if (urlSha && computedSha && urlSha !== computedSha) {
+    throw new Error(`ERR_HOST_LIB_SHA256_MISMATCH:${urlSha}:${computedSha}`);
+  }
+  const finalSha = computedSha || urlSha;
+  const baseHref = parsed.href.replace(/#.*$/, '');
+  return finalSha ? `${baseHref}#sha256=${finalSha}` : baseHref;
+}
+
 function serializeSafeInlineJson(value) {
   return JSON.stringify(value)
     .replace(/</g, '\\u003c')
@@ -97,7 +154,11 @@ function sanitizeRemotePermissions(rawPerms, finalTrustLevel) {
   if (rawPerms.net && typeof rawPerms.net === 'object') {
     out.net = {
       httpsHosts: Array.isArray(rawPerms.net.httpsHosts) ? rawPerms.net.httpsHosts.slice() : [],
-      localLoopback: [],
+      localLoopback:
+        finalTrustLevel === 'trusted' && Array.isArray(rawPerms.net.localLoopback)
+          ? rawPerms.net.localLoopback.slice()
+          : [],
+      ...(rawPerms.net.userApprovedHttps === true ? { userApprovedHttps: true } : {}),
     };
   }
   if (rawPerms.dom && typeof rawPerms.dom === 'object') {
@@ -133,8 +194,10 @@ export function buildUserscriptArtifacts({
   pluginDir = ROOT_DIR,
   outDir = DEFAULT_OUT_DIR,
   hostLibUrl = DEFAULT_HOST_LIB_URL,
+  hostLibSha256 = null,
+  hostLibFile = null,
   updateBaseUrl = DEFAULT_UPDATE_BASE_URL,
-  namespace = 'https://github.com/jaeseongs95/antigravity-addons',
+  namespace = DEFAULT_NAMESPACE,
 } = {}) {
   const absManifest = path.resolve(manifestPath);
   const manifest = JSON.parse(fs.readFileSync(absManifest, 'utf8'));
@@ -156,7 +219,7 @@ export function buildUserscriptArtifacts({
   const rendererSha256 = sha256Hex(rendererBuf);
   const rendererSource = toLf(rendererBuf.toString('utf8'));
 
-  const safeHostLibUrl = normalizeHttpsUrl(hostLibUrl, 'ERR_INVALID_HOST_LIB_URL');
+  const safeHostLibUrl = normalizeHostLibUrl(hostLibUrl, { hostLibSha256, hostLibFile });
   const safeUpdateBaseUrl = updateBaseUrl ? normalizeHttpsUrl(updateBaseUrl, 'ERR_INVALID_UPDATE_BASE_URL') : null;
 
   const pluginId = String(manifest.pluginId);
@@ -165,7 +228,7 @@ export function buildUserscriptArtifacts({
   const userscriptFile = `${pluginId}.user.js`;
   const metaFile = `${pluginId}.meta.js`;
 
-  // Fail closed on unpinned public Userscript builds matching antigravity-addons v3.0.0 build-remote.js
+  // Fail closed on unpinned public Userscript builds matching Extenra build-remote.js
   const finalTrustLevel = 'restricted';
   const remotePermissions = sanitizeRemotePermissions(manifest.permissions, finalTrustLevel);
 
@@ -300,6 +363,8 @@ function parseCliArgs(argv) {
     check: false,
     outDir: DEFAULT_OUT_DIR,
     hostLibUrl: DEFAULT_HOST_LIB_URL,
+    hostLibSha256: null,
+    hostLibFile: null,
     updateBaseUrl: DEFAULT_UPDATE_BASE_URL,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -310,6 +375,10 @@ function parseCliArgs(argv) {
       opts.outDir = argv[++i];
     } else if (arg === '--host-lib-url' && argv[i + 1]) {
       opts.hostLibUrl = argv[++i];
+    } else if (arg === '--host-lib-sha256' && argv[i + 1]) {
+      opts.hostLibSha256 = argv[++i];
+    } else if (arg === '--host-lib-file' && argv[i + 1]) {
+      opts.hostLibFile = argv[++i];
     } else if (arg === '--update-base-url' && argv[i + 1]) {
       opts.updateBaseUrl = argv[++i];
     }
@@ -329,8 +398,20 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const tmpA = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-mcp-us-a-'));
     const tmpB = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-mcp-us-b-'));
     try {
-      const a = buildUserscriptArtifacts({ outDir: tmpA, hostLibUrl: opts.hostLibUrl, updateBaseUrl: opts.updateBaseUrl });
-      const b = buildUserscriptArtifacts({ outDir: tmpB, hostLibUrl: opts.hostLibUrl, updateBaseUrl: opts.updateBaseUrl });
+      const a = buildUserscriptArtifacts({
+        outDir: tmpA,
+        hostLibUrl: opts.hostLibUrl,
+        hostLibSha256: opts.hostLibSha256,
+        hostLibFile: opts.hostLibFile,
+        updateBaseUrl: opts.updateBaseUrl,
+      });
+      const b = buildUserscriptArtifacts({
+        outDir: tmpB,
+        hostLibUrl: opts.hostLibUrl,
+        hostLibSha256: opts.hostLibSha256,
+        hostLibFile: opts.hostLibFile,
+        updateBaseUrl: opts.updateBaseUrl,
+      });
       if (a.buildManifest.buildSha256 !== b.buildManifest.buildSha256) {
         process.stderr.write('Non-deterministic Userscript build detected.\n');
         process.exit(1);
@@ -343,7 +424,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       fs.rmSync(tmpB, { recursive: true, force: true });
     }
   } else {
-    const res = buildUserscriptArtifacts({ outDir: opts.outDir, hostLibUrl: opts.hostLibUrl, updateBaseUrl: opts.updateBaseUrl });
+    const res = buildUserscriptArtifacts({
+      outDir: opts.outDir,
+      hostLibUrl: opts.hostLibUrl,
+      hostLibSha256: opts.hostLibSha256,
+      hostLibFile: opts.hostLibFile,
+      updateBaseUrl: opts.updateBaseUrl,
+    });
     process.stdout.write(
       `Built ${path.relative(ROOT_DIR, res.userscriptPath)} & ${path.relative(ROOT_DIR, res.metaPath)} (sha8=${res.buildManifest.buildSha8})\n`
     );

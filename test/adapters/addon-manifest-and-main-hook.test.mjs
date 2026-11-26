@@ -29,10 +29,11 @@ test('NMCP-TC-022 (Contract & SOLID Parity): addon-manifest.json satisfies Addon
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
   const pluginJson = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'plugin.json'), 'utf8'));
 
+  assert.equal(manifest.$schema, 'https://github.com/jaeseongs95/extenra/schemas/addon-manifest.v3.schema.json');
   assert.equal(manifest.schemaVersion, 3);
   assert.equal(manifest.apiVersion, 3);
   assert.equal(manifest.pluginId, 'antigravity-mcp-manager');
-  assert.equal(manifest.version, '4.1.0');
+  assert.equal(manifest.version, '4.2.0');
   assert.equal(manifest.version, pkg.version);
   assert.equal(pluginJson.version, pkg.version);
   assert.equal(manifest.trustLevel, 'trusted');

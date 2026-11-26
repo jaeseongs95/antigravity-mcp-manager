@@ -5,7 +5,7 @@
  * - SRP: Renders the full interactive MCP Manager UI (Global CRUD, Stdio confirmation gate,
  *   Declarative Smart Paste, Raw JSON with CAS conflict & backup restore, Read-Only Plugin
  *   list + Clone to Global, Legacy import, EN/KO switcher) inside Shadow DOM with ZERO
- *   unsafe DOM sinks (`innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`).
+ *   unsafe HTML injection or dynamic script execution sinks (DOM APIs + textContent only).
  * - DIP: Consumes `McpManagerService` via `runtime.createConfigService()` (backed by
  *   `HostBridgeConfigStore`), remaining completely decoupled from Electron IPC or filesystem.
  */

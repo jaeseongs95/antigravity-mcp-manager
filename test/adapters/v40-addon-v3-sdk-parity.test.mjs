@@ -17,7 +17,9 @@ const require = createRequire(import.meta.url);
 
 function loadAddonHostSdk() {
   const candidates = [
+    process.env.EXTENRA_SDK_PATH,
     process.env.ANTIGRAVITY_ADDONS_SDK_PATH,
+    path.resolve(ROOT_DIR, '..', 'extenra', 'packages', 'sdk', 'src', 'index.js'),
     path.resolve(ROOT_DIR, '..', 'antigravity-addons', 'packages', 'sdk', 'src', 'index.js'),
   ].filter(Boolean);
   for (const candidate of candidates) {
@@ -54,10 +56,10 @@ function runAssembledRendererInSdkHost(host, ctx) {
   vm.runInNewContext(rendererSrc, sandbox, { filename: 'addon-renderer.js' });
 }
 
-test('NMCP-TC-037 (@antigravity-addons/sdk Desktop Parity): real createTestHost({ surface: "desktop" }) verifies minimal ISP permissions (net/dom omitted, configBridge present), Tier-1 status item / settings page / commands, Tier-2 declarative openPanel + handle.update + mobile <=640px sheet, Tier-3 openModal CRUD, and clean disposePlugin()', async (t) => {
+test('NMCP-TC-037 (@extenra/sdk v3.2.1 Desktop Parity): real createTestHost({ surface: "desktop" }) verifies minimal ISP permissions (net/dom omitted, configBridge present), Tier-1 settings page / commands (no desktop status item), Tier-2 declarative openPanel + handle.update + mobile <=640px sheet, Tier-3 openModal CRUD + Extenra v3.2.1 safe CSS tokens/backdrop, and clean disposePlugin()', async (t) => {
   const sdk = loadAddonHostSdk();
   if (!sdk || typeof sdk.createTestHost !== 'function') {
-    t.skip('@antigravity-addons/sdk sibling repository is not present in this checkout');
+    t.skip('@extenra/sdk sibling repository is not present in this checkout');
     return;
   }
 
@@ -132,11 +134,18 @@ test('NMCP-TC-037 (@antigravity-addons/sdk Desktop Parity): real createTestHost(
   assert.equal(mobilePlacement.zone, 'sheet', 'Viewport <=640px must auto-switch Tier-2 panel to mobile bottom sheet');
   panelHandle.close();
 
-  // 4. Tier 3: Full Editor Modal mounts NativeMcpPanel via configBridge and writes a new server
+  // 4. Tier 3: Full Editor Modal mounts NativeMcpPanel via configBridge, passes Extenra v3.2.1 safe CSS + backdrop, and writes a new server
   host.setViewport(1280, 800);
   const modalHandle = ctx.ui.invokeCommand(manifest.pluginId, V3_IDS.CMD_OPEN_MANAGER);
   await flushMicrotasks(60);
   assert.ok(modalHandle && modalHandle.bodyEl, 'open-mcp-manager must open Tier-3 modal with bodyEl');
+  const injectedStyle = modalHandle.bodyEl.querySelector('style');
+  assert.ok(injectedStyle, 'Tier-3 modal must inject safe panel <style>');
+  assert.equal(injectedStyle.textContent.includes('--ag-primary'), true, 'Panel CSS must adopt Extenra v3.2.1 --ag-primary token');
+  assert.equal(injectedStyle.textContent.includes('--ag-input-bg'), true, 'Panel CSS must adopt Extenra v3.2.1 --ag-input-bg token');
+  assert.equal(injectedStyle.textContent.includes('::-webkit-scrollbar'), true, 'Panel CSS must include Extenra v3.2.1 sleek scrollbar rules');
+  assert.equal(injectedStyle.textContent.includes('prefers-reduced-motion: reduce'), true, 'Panel CSS must respect prefers-reduced-motion');
+  assert.equal(modalHandle.element.style.borderRadius, 'var(--ag-radius, 12px)', 'Extenra v3.2.1 modal dialog must use rounded --ag-radius');
   const panelRoot = modalHandle.bodyEl.querySelector('[data-agy-mcp-native-panel="true"]');
   assert.ok(panelRoot, 'NativeMcpPanel must mount inside Tier-3 modal bodyEl');
   assert.equal(panelRoot.getAttribute('data-agy-mcp-mode'), 'host-bridge');
@@ -165,10 +174,10 @@ test('NMCP-TC-037 (@antigravity-addons/sdk Desktop Parity): real createTestHost(
   assert.equal(host.getSettingsPages().length, 0);
 });
 
-test('NMCP-TC-038 (@antigravity-addons/sdk Remote Web Parity — Disconnected): real createTestHost({ surface: "remote-web", remoteBridgeConnected: false }) omits configBridge/net/dom, shows Host Bridge pairing notice without plugin URL/token inputs, persists CRUD drafts via ctx.storage, renders remote-io-bar, and supports mobile sheet + disposePlugin()', async (t) => {
+test('NMCP-TC-038 (@extenra/sdk v3.2.1 Remote Web Parity — Disconnected): real createTestHost({ surface: "remote-web", remoteBridgeConnected: false }) omits configBridge/net/dom, shows Host Bridge pairing notice without plugin URL/token inputs, persists CRUD drafts via ctx.storage, renders remote-io-bar, and supports mobile sheet + disposePlugin()', async (t) => {
   const sdk = loadAddonHostSdk();
   if (!sdk || typeof sdk.createTestHost !== 'function') {
-    t.skip('@antigravity-addons/sdk sibling repository is not present in this checkout');
+    t.skip('@extenra/sdk sibling repository is not present in this checkout');
     return;
   }
 
@@ -249,10 +258,10 @@ test('NMCP-TC-038 (@antigravity-addons/sdk Remote Web Parity — Disconnected): 
   assert.equal(host.getSettingsPages().length, 0);
 });
 
-test('NMCP-TC-040 (@antigravity-addons/sdk v3.1.1 Remote Web Connected): real createTestHost({ surface: "remote-web", remoteBridgeConnected: true }) routes ctx.configBridge live to Desktop mcp_config.json without disconnected notice or plugin URL/token inputs', async (t) => {
+test('NMCP-TC-040 (@extenra/sdk v3.2.1 Remote Web Connected): real createTestHost({ surface: "remote-web", remoteBridgeConnected: true }) routes ctx.configBridge live to Desktop mcp_config.json without disconnected notice or plugin URL/token inputs', async (t) => {
   const sdk = loadAddonHostSdk();
   if (!sdk || typeof sdk.createTestHost !== 'function') {
-    t.skip('@antigravity-addons/sdk sibling repository is not present in this checkout');
+    t.skip('@extenra/sdk sibling repository is not present in this checkout');
     return;
   }
 

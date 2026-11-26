@@ -4,7 +4,7 @@
  *
  * Assembles the modular SOLID renderer sources (`src/adapters/antigravity/renderer/*.mjs`)
  * into the single browser-executable `AddonManifest.v3` entry script
- * (`src/adapters/antigravity/addon-renderer.js`) executed by `antigravity-addons` v3.0.0+
+ * (`src/adapters/antigravity/addon-renderer.js`) executed by Extenra (`extenra`, v3.1.0+/v3.2.1)
  * (Desktop & Remote Web) inside `(function(addonHost){ ... })(__addonHandle)`.
  */
 
@@ -66,7 +66,7 @@ export function assembleRendererSource() {
     ' * AUTO-GENERATED AddonManifest.v3 Renderer Entry (`src/adapters/antigravity/addon-renderer.js`).',
     ' * Source of truth: `src/adapters/antigravity/renderer/*.mjs` (run `npm run build:renderer`).',
     ' *',
-    ' * Executed by `antigravity-addons` v3.0.0+ (Desktop & Remote Web) as',
+    ' * Executed by Extenra (`extenra`, v3.1.0+/v3.2.1, Desktop & Remote Web) as',
     ' * `(function(addonHost){ ... })(__addonHandle)` with `AddonContextV3` (`apiVersion: 3`).',
     ' * ZERO unsafe DOM sinks, ZERO direct DOM scraping, 100% 3-Tier API-First.',
     ' */',
