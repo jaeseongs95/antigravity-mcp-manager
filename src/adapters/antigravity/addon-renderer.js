@@ -1439,6 +1439,27 @@
     PLUGIN_MCP: 'antigravity:plugin-mcp-configs',
     LEGACY_MCP: 'antigravity:mcp-config-legacy',
   });
+  const REMOTE_HOST_NOT_CONNECTED_CODE = 'ERR_REMOTE_HOST_NOT_CONNECTED';
+
+  const REMOTE_BRIDGE_DISCONNECTED_REASONS = Object.freeze([
+    'ERR_REMOTE_HOST_NOT_CONNECTED',
+    'ERR_REMOTE_CONFIG_BRIDGE_OFFLINE',
+    'ERR_REMOTE_CONFIG_BRIDGE_READ_ONLY',
+    'ERR_REMOTE_TRANSPORT_UNAVAILABLE',
+  ]);
+  function isRemoteBridgeDisconnectedReason(reasonOrError) {
+    if (!reasonOrError) return false;
+    const code = typeof reasonOrError === 'object' ? String(reasonOrError.code || '') : '';
+    const msg = typeof reasonOrError === 'object' ? String(reasonOrError.message || reasonOrError.reason || '') : String(reasonOrError);
+    const haystack = `${code} ${msg}`;
+    return REMOTE_BRIDGE_DISCONNECTED_REASONS.some((token) => haystack.includes(token));
+  }
+
+  function createRemoteDisconnectedError(rawReason) {
+    const err = new Error(String(rawReason || REMOTE_HOST_NOT_CONNECTED_CODE));
+    err.code = REMOTE_HOST_NOT_CONNECTED_CODE;
+    return err;
+  }
 
   const DEFAULT_DISPLAY_PATHS = Object.freeze({
     [HOST_CONFIG_SCOPES.GLOBAL_MCP]: '~/.gemini/config/mcp_config.json',
@@ -1465,6 +1486,9 @@
   function mapHostBridgeReasonToErrorCode(reason) {
     const code = String(reason || '').trim();
     if (!code) return ERROR_CODES.IO_ERROR;
+    if (isRemoteBridgeDisconnectedReason(code)) {
+      return REMOTE_HOST_NOT_CONNECTED_CODE;
+    }
     if (code === 'ERR_CONFIG_CAS_CONFLICT' || code === ERROR_CODES.CONFLICT) {
       return ERROR_CODES.CONFLICT;
     }
@@ -1526,6 +1550,9 @@
           sha256: null,
           displayPath: DEFAULT_DISPLAY_PATHS[HOST_CONFIG_SCOPES.GLOBAL_MCP],
         };
+      }
+      if (res.status === 'unavailable' || isRemoteBridgeDisconnectedReason(res.reason)) {
+        throw createRemoteDisconnectedError(res.reason);
       }
       if (res.ok === false || res.status === 'error') {
         throw new Error(String(res.reason || 'ERR_CONFIG_READ_FAILED'));
@@ -1592,6 +1619,9 @@
       }
       if (res.status === 'missing') {
         return [];
+      }
+      if (res.status === 'unavailable' || isRemoteBridgeDisconnectedReason(res.reason)) {
+        throw createRemoteDisconnectedError(res.reason);
       }
       if (res.ok === false || res.status === 'error') {
         throw new Error(String(res.reason || 'ERR_CONFIG_PLUGIN_READ_FAILED'));
@@ -1807,6 +1837,7 @@
    *   than host internals.
    */
   const LANG_STORAGE_KEY = 'lang';
+  const REMOTE_BRIDGE_CHANGED_EVENT = 'host:remote-bridge-changed';
   function normalizeLangCode(raw) {
     const val = String(raw || '').trim().toLowerCase();
     if (val === 'ko' || val.startsWith('ko-') || val.startsWith('ko_')) return 'ko';
@@ -1844,7 +1875,7 @@
     const v3 = assertAddonContextV3(ctx);
     const pluginId = String(v3.meta.pluginId || 'antigravity-mcp-manager');
     const displayName = String(v3.meta.displayName || 'Antigravity MCP Manager');
-    const version = String(v3.meta.version || '4.0.1');
+    const version = String(v3.meta.version || '4.1.0');
     const trustLevel = String(v3.meta.trustLevel || 'restricted');
     const surface = v3.env.surface === 'remote-web' ? 'remote-web' : 'desktop';
 
@@ -1902,8 +1933,27 @@
       return Boolean(resolveHostConfigBridge(v3));
     }
 
+    function hasRemoteHostBridge() {
+      return Boolean(v3.env?.capabilities?.hasRemoteHostBridge === true);
+    }
+
     function getConfigStoreMode() {
+      if (surface === 'remote-web') {
+        if (hasConfigBridge()) {
+          return hasRemoteHostBridge() ? 'host-bridge' : 'remote-bridge-disconnected';
+        }
+        return 'remote-draft';
+      }
       return hasConfigBridge() ? 'host-bridge' : 'remote-draft';
+    }
+
+    function onRemoteBridgeChange(cb) {
+      if (typeof cb !== 'function' || !v3.events || typeof v3.events.on !== 'function') {
+        return () => {};
+      }
+      return v3.events.on(REMOTE_BRIDGE_CHANGED_EVENT, (payload) => {
+        cb(payload && typeof payload === 'object' ? payload : {});
+      });
     }
 
     function createConfigService() {
@@ -1965,6 +2015,7 @@
       getSurface,
       getLayoutMode,
       hasConfigBridge,
+      hasRemoteHostBridge,
       getConfigStoreMode,
       createConfigService,
       readSavedLang,
@@ -1983,6 +2034,7 @@
       getThemeMode: () => (typeof v3.theme.getMode === 'function' ? v3.theme.getMode() : 'dark'),
       onThemeChange,
       onStorageChange,
+      onRemoteBridgeChange,
       signal: v3.lifecycle.signal || null,
       onDispose: (fn) => v3.lifecycle.onDispose(fn),
       addManagedListener: (target, type, listener, opts) =>
@@ -2013,6 +2065,10 @@
       langAria: 'Language',
       loading: 'Loading…',
       bridgeConnected: 'Host Bridge Connected',
+      remoteBridgeDisconnectedBadge: 'Host Bridge Disconnected',
+      remoteBridgeDisconnectedTitle: 'Desktop Host Bridge Not Connected',
+      remoteBridgeDisconnectedNotice:
+        'Connect your Desktop host in the bottom-right Addons → Host Bridge tab on Remote Web.',
       remoteDraftBadge: 'Remote Draft (Browser)',
       refresh: 'Refresh',
       addServer: '+ Add Server',
@@ -2095,6 +2151,10 @@
       langAria: '언어 선택',
       loading: '불러오는 중…',
       bridgeConnected: '호스트 브리지 연결됨',
+      remoteBridgeDisconnectedBadge: '호스트 브리지 미연결',
+      remoteBridgeDisconnectedTitle: '데스크톱 호스트 브리지 미연결',
+      remoteBridgeDisconnectedNotice:
+        '원격 웹 우측 하단 Addons → Host Bridge 탭에서 데스크톱 호스트를 연결하세요.',
       remoteDraftBadge: '원격 초안 (브라우저 저장)',
       refresh: '새로고침',
       addServer: '+ 서버 추가',
@@ -2188,17 +2248,38 @@
       throw new Error('ERR_MISSING_MCP_MANAGER_SERVICE');
     }
 
-    const panelMode =
-      mode === 'remote-draft' || mode === 'host-bridge'
-        ? mode
-        : typeof runtime.getConfigStoreMode === 'function' && runtime.getConfigStoreMode() === 'remote-draft'
-          ? 'remote-draft'
-          : 'host-bridge';
-    const isRemoteDraft = panelMode === 'remote-draft';
+    const fixedMode =
+      mode === 'remote-draft' || mode === 'host-bridge' || mode === 'remote-bridge-disconnected' ? mode : null;
     const win = winOverride || doc?.defaultView || (typeof window !== 'undefined' ? window : null);
 
     let disposed = false;
+    let remoteBridgeDisconnected = false;
     let activeTab = 'servers';
+
+    function getPanelMode() {
+      if (fixedMode) return fixedMode;
+      const liveMode =
+        typeof runtime.getConfigStoreMode === 'function' ? runtime.getConfigStoreMode() : 'host-bridge';
+      if (remoteBridgeDisconnected && liveMode !== 'remote-draft') {
+        return 'remote-bridge-disconnected';
+      }
+      return liveMode;
+    }
+
+    function isRemoteDraftMode() {
+      return getPanelMode() === 'remote-draft';
+    }
+
+    function isRemoteBridgeDisconnectedMode() {
+      return getPanelMode() === 'remote-bridge-disconnected';
+    }
+
+    function shouldShowRemoteBridgeGuide() {
+      if (isRemoteBridgeDisconnectedMode()) return true;
+      const isRemoteSurface = typeof runtime.getSurface === 'function' && runtime.getSurface() === 'remote-web';
+      const connected = typeof runtime.hasRemoteHostBridge === 'function' && runtime.hasRemoteHostBridge();
+      return isRemoteSurface && !connected;
+    }
     let snapshot = null;
     let bannerState = null;
     let legacyDismissed = false;
@@ -2317,7 +2398,7 @@
     const root = el('section', {
       [NATIVE_PANEL_ATTR]: 'true',
       'data-agy-mcp-surface': surface,
-      'data-agy-mcp-mode': panelMode,
+      'data-agy-mcp-mode': getPanelMode(),
       ...(inline ? { 'data-agy-mcp-inline': 'true' } : {}),
     });
     const shell = el('div', { className: 'mcp-shell' });
@@ -2325,7 +2406,11 @@
     const titleGroup = el('div', { className: 'mcp-title-group' });
     const titleEl = surface === 'settings' ? el('h1', { className: 'mcp-title' }) : null;
     const statusBadge = el('span', {
-      className: isRemoteDraft ? 'mcp-badge mcp-badge-info' : 'mcp-badge mcp-badge-ok',
+      className: isRemoteBridgeDisconnectedMode()
+        ? 'mcp-badge mcp-badge-warn'
+        : isRemoteDraftMode()
+          ? 'mcp-badge mcp-badge-info'
+          : 'mcp-badge mcp-badge-ok',
       dataset: { testid: 'bridge-status-badge' },
     });
     if (titleEl) titleGroup.appendChild(titleEl);
@@ -2533,6 +2618,17 @@
     async function loadSnapshot(includeRawText = activeTab === 'raw') {
       if (disposed) return;
       const seq = ++snapshotRequestSeq;
+      const liveMode =
+        fixedMode || (typeof runtime.getConfigStoreMode === 'function' ? runtime.getConfigStoreMode() : 'host-bridge');
+      if (liveMode === 'remote-bridge-disconnected') {
+        remoteBridgeDisconnected = true;
+        snapshot = null;
+        bannerState = null;
+        busy = false;
+        syncStaticLabels();
+        renderAll();
+        return;
+      }
       busy = true;
       syncStaticLabels();
       try {
@@ -2540,10 +2636,20 @@
         if (disposed || seq !== snapshotRequestSeq) return;
         busy = false;
         if (!data || !data.ok) {
-          setBanner('error', (data?.errors || [t('loadFailed')]).join(' '));
+          const joinedErr = (data?.errors || [t('loadFailed')]).join(' ');
+          if (isRemoteBridgeDisconnectedReason(data?.code || joinedErr)) {
+            remoteBridgeDisconnected = true;
+            snapshot = null;
+            bannerState = null;
+            syncStaticLabels();
+            renderAll();
+            return;
+          }
+          setBanner('error', joinedErr);
           syncStaticLabels();
           return;
         }
+        remoteBridgeDisconnected = false;
         snapshot = data;
         if (typeof data.globalConfig?.rawText === 'string' && (includeRawText || (!rawDraftDirty && !rawDraft))) {
           rawDraft = data.globalConfig.rawText;
@@ -2562,6 +2668,14 @@
       } catch (err) {
         if (disposed || seq !== snapshotRequestSeq) return;
         busy = false;
+        if (isRemoteBridgeDisconnectedReason(err)) {
+          remoteBridgeDisconnected = true;
+          snapshot = null;
+          bannerState = null;
+          syncStaticLabels();
+          renderAll();
+          return;
+        }
         setBanner('error', err?.message || t('loadFailed'));
         syncStaticLabels();
       }
@@ -2578,7 +2692,15 @@
         }
       } catch (err) {
         if (disposed) return;
-        setBanner('error', err?.message || t(fallbackErrorKey));
+        if (isRemoteBridgeDisconnectedReason(err)) {
+          remoteBridgeDisconnected = true;
+          snapshot = null;
+          bannerState = null;
+          syncStaticLabels();
+          renderAll();
+        } else {
+          setBanner('error', err?.message || t(fallbackErrorKey));
+        }
       } finally {
         mutating = false;
       }
@@ -3403,12 +3525,48 @@
       );
     }
 
+    function renderRemoteBridgeDisconnectedNotice({ card = false } = {}) {
+      if (card) {
+        return el(
+          'section',
+          { className: 'mcp-card', dataset: { testid: 'remote-bridge-disconnected-notice' } },
+          el('strong', null, t('remoteBridgeDisconnectedTitle')),
+          el('div', { className: 'mcp-subtitle' }, t('remoteBridgeDisconnectedNotice')),
+          el(
+            'div',
+            { className: 'mcp-row-actions' },
+            el(
+              'button',
+              {
+                type: 'button',
+                className: 'mcp-btn mcp-btn-sm',
+                dataset: { testid: 'btn-retry-remote-bridge' },
+                onClick: () => void loadSnapshot(activeTab === 'raw'),
+              },
+              t('refresh')
+            )
+          )
+        );
+      }
+      return el(
+        'div',
+        { className: 'mcp-banner mcp-banner-info', dataset: { testid: 'remote-bridge-disconnected-notice' } },
+        el('span', null, t('remoteBridgeDisconnectedNotice'))
+      );
+    }
+
     function renderServersTab() {
+      if (isRemoteBridgeDisconnectedMode()) {
+        return [renderRemoteBridgeDisconnectedNotice({ card: true })];
+      }
       const nodes = [];
-      if (isRemoteDraft) {
+      if (shouldShowRemoteBridgeGuide()) {
+        nodes.push(renderRemoteBridgeDisconnectedNotice({ card: false }));
+      }
+      if (isRemoteDraftMode()) {
         nodes.push(renderRemoteIoBar());
       }
-      if (pendingStdioConfirm && (pendingStdioConfirm.kind === 'clone' || pendingStdioConfirm.kind === 'legacy' || (isRemoteDraft && pendingStdioConfirm.kind === 'raw'))) {
+      if (pendingStdioConfirm && (pendingStdioConfirm.kind === 'clone' || pendingStdioConfirm.kind === 'legacy' || (isRemoteDraftMode() && pendingStdioConfirm.kind === 'raw'))) {
         nodes.push(renderStdioConfirmPanel());
       }
 
@@ -3621,6 +3779,9 @@
     }
 
     function renderRawTab() {
+      if (isRemoteBridgeDisconnectedMode()) {
+        return [renderRemoteBridgeDisconnectedNotice({ card: true })];
+      }
       const ta = el('textarea', {
         className: 'mcp-textarea mcp-mono',
         value: rawDraft,
@@ -3631,7 +3792,8 @@
         },
       });
       return [
-        isRemoteDraft ? renderRemoteIoBar() : null,
+        shouldShowRemoteBridgeGuide() ? renderRemoteBridgeDisconnectedNotice({ card: false }) : null,
+        isRemoteDraftMode() ? renderRemoteIoBar() : null,
         el(
           'section',
           { className: 'mcp-card' },
@@ -3658,9 +3820,24 @@
 
     function syncStaticLabels() {
       const lang = getLang();
+      const currentMode = getPanelMode();
       root.setAttribute('data-agy-mcp-lang', lang);
+      root.setAttribute('data-agy-mcp-mode', currentMode);
       if (titleEl) titleEl.textContent = t('appTitle');
-      statusBadge.textContent = busy && !snapshot ? t('loading') : isRemoteDraft ? t('remoteDraftBadge') : t('bridgeConnected');
+      statusBadge.className =
+        currentMode === 'remote-bridge-disconnected'
+          ? 'mcp-badge mcp-badge-warn'
+          : currentMode === 'remote-draft'
+            ? 'mcp-badge mcp-badge-info'
+            : 'mcp-badge mcp-badge-ok';
+      statusBadge.textContent =
+        busy && !snapshot
+          ? t('loading')
+          : currentMode === 'remote-bridge-disconnected'
+            ? t('remoteBridgeDisconnectedBadge')
+            : currentMode === 'remote-draft'
+              ? t('remoteDraftBadge')
+              : t('bridgeConnected');
       langSwitch.setAttribute('aria-label', t('langAria'));
       btnLangEn.setAttribute('aria-pressed', lang === 'en' ? 'true' : 'false');
       btnLangKo.setAttribute('aria-pressed', lang === 'ko' ? 'true' : 'false');
@@ -4132,13 +4309,18 @@
       statusLabel: 'MCP',
       statusTooltip: (mode, count) =>
         mode === 'host-bridge'
-          ? `MCP Manager (Desktop Config Bridge · ${count} servers)`
-          : `MCP Manager (Remote Draft · ${count} servers)`,
+          ? `MCP Manager (Host Bridge · ${count} servers)`
+          : mode === 'remote-bridge-disconnected'
+            ? 'MCP Manager (Host Bridge Disconnected)'
+            : `MCP Manager (Remote Draft · ${count} servers)`,
       cmdOpenManager: 'Open MCP Manager',
       cmdOpenPanel: 'Open MCP Quick Panel',
       cmdOpenSettings: 'Open MCP Manager Settings',
-      modeHostBridge: 'Desktop Config Bridge',
+      modeHostBridge: 'Host Bridge Connected',
+      modeRemoteBridgeDisconnected: 'Host Bridge Disconnected',
       modeRemoteDraft: 'Remote Draft (ctx.storage)',
+      remoteBridgeDisconnectedNotice:
+        'Connect your Desktop host in the bottom-right Addons → Host Bridge tab on Remote Web.',
       summaryHeading: 'Configured MCP Servers',
       summaryLine: (globalCount, enabledCount, pluginCount) =>
         `Global: ${globalCount} (${enabledCount} active) · Plugins: ${pluginCount}`,
@@ -4163,13 +4345,18 @@
       statusLabel: 'MCP',
       statusTooltip: (mode, count) =>
         mode === 'host-bridge'
-          ? `MCP 매니저 (데스크톱 Config Bridge · 서버 ${count}개)`
-          : `MCP 매니저 (원격 초안 · 서버 ${count}개)`,
+          ? `MCP 매니저 (호스트 브리지 · 서버 ${count}개)`
+          : mode === 'remote-bridge-disconnected'
+            ? 'MCP 매니저 (호스트 브리지 미연결)'
+            : `MCP 매니저 (원격 초안 · 서버 ${count}개)`,
       cmdOpenManager: 'MCP 매니저 열기',
       cmdOpenPanel: 'MCP 빠른 패널 열기',
       cmdOpenSettings: 'MCP 매니저 설정 열기',
-      modeHostBridge: '데스크톱 Config Bridge',
+      modeHostBridge: '호스트 브리지 연결됨',
+      modeRemoteBridgeDisconnected: '호스트 브리지 미연결',
       modeRemoteDraft: '원격 초안 (ctx.storage)',
+      remoteBridgeDisconnectedNotice:
+        '원격 웹 우측 하단 Addons → Host Bridge 탭에서 데스크톱 호스트를 연결하세요.',
       summaryHeading: '등록된 MCP 서버',
       summaryLine: (globalCount, enabledCount, pluginCount) =>
         `전역: ${globalCount}개 (활성 ${enabledCount}개) · 플러그인: ${pluginCount}개`,
@@ -4189,12 +4376,29 @@
       toggleFailedToast: 'MCP 서버 상태 변경에 실패했습니다.',
     }),
   });
-  function buildQuickPanelSchema({ snapshot, mode, surface, lang, errorMessage = '' }) {
+  function buildQuickPanelSchema({
+    snapshot,
+    mode,
+    surface,
+    lang,
+    errorMessage = '',
+    remoteBridgeConnected = false,
+  }) {
     const dict = SHELL_I18N[lang === 'ko' ? 'ko' : 'en'];
     const globalServers = snapshot?.globalConfig?.servers || [];
     const enabledCount = globalServers.filter((s) => !s.disabled).length;
     const pluginCount = (snapshot?.pluginServers || []).length;
     const malformed = Boolean(snapshot?.globalConfig?.malformed);
+    const showRemoteBridgeNotice =
+      surface === 'remote-web' && (!remoteBridgeConnected || mode === 'remote-bridge-disconnected');
+    const modeBadgeText =
+      mode === 'host-bridge'
+        ? dict.modeHostBridge
+        : mode === 'remote-bridge-disconnected'
+          ? dict.modeRemoteBridgeDisconnected
+          : dict.modeRemoteDraft;
+    const modeBadgeVariant =
+      mode === 'host-bridge' ? 'success' : mode === 'remote-bridge-disconnected' ? 'warning' : 'default';
 
     const serverItems =
       globalServers.length > 0
@@ -4218,8 +4422,8 @@
             {
               type: 'badge',
               id: 'mcp-mode-badge',
-              text: mode === 'host-bridge' ? dict.modeHostBridge : dict.modeRemoteDraft,
-              variant: mode === 'host-bridge' ? 'success' : 'default',
+              text: modeBadgeText,
+              variant: modeBadgeVariant,
             },
             {
               type: 'badge',
@@ -4227,6 +4431,13 @@
               text: surface,
             },
           ],
+        },
+        {
+          type: 'alert',
+          id: 'mcp-remote-bridge-notice',
+          variant: 'info',
+          text: dict.remoteBridgeDisconnectedNotice,
+          visibleWhen: { field: 'showRemoteBridgeNotice', eq: true },
         },
         {
           type: 'alert',
@@ -4299,6 +4510,8 @@
       lang: lang === 'ko' ? 'ko' : 'en',
       mode,
       surface,
+      remoteBridgeConnected: Boolean(remoteBridgeConnected),
+      showRemoteBridgeNotice,
       serverCount: globalServers.length,
       enabledCount,
       pluginCount,
@@ -4313,13 +4526,13 @@
     doc = typeof document !== 'undefined' ? document : null,
     win = typeof window !== 'undefined' ? window : null,
   }) {
-    const mode = runtime.getConfigStoreMode();
     const surface = runtime.getSurface();
     const service = runtime.createConfigService();
 
     let disposed = false;
     let latestSnapshot = null;
     let latestError = '';
+    let remoteBridgeDisconnected = false;
     let statusItemHandle = null;
     let settingsPageHandle = null;
     let quickPanelHandle = null;
@@ -4328,6 +4541,17 @@
     let settingsCanvasPanel = null;
     const commandHandles = [];
     const unsubscribers = [];
+
+    function isRemoteBridgeConnected() {
+      return typeof runtime.hasRemoteHostBridge === 'function' ? runtime.hasRemoteHostBridge() : false;
+    }
+
+    function getMode() {
+      if (remoteBridgeDisconnected && surface === 'remote-web' && !isRemoteBridgeConnected()) {
+        return 'remote-bridge-disconnected';
+      }
+      return runtime.getConfigStoreMode();
+    }
 
     function getLang() {
       return runtime.resolveEffectiveLang() === 'ko' ? 'ko' : 'en';
@@ -4339,13 +4563,14 @@
 
     function syncStatusItem() {
       if (!statusItemHandle || disposed) return;
+      const mode = getMode();
       const count = latestSnapshot?.globalConfig?.servers?.length ?? 0;
       const d = dict();
       try {
         statusItemHandle.update({
           label: d.statusLabel,
           tooltip: d.statusTooltip(mode, count),
-          badge: latestSnapshot ? String(count) : null,
+          badge: mode === 'remote-bridge-disconnected' ? '!' : latestSnapshot ? String(count) : null,
         });
       } catch {
         // Ignore updates during disposal
@@ -4356,10 +4581,11 @@
       if (!quickPanelHandle || disposed) return;
       const { tree, state } = buildQuickPanelSchema({
         snapshot: latestSnapshot,
-        mode,
+        mode: getMode(),
         surface,
         lang: getLang(),
         errorMessage: latestError,
+        remoteBridgeConnected: isRemoteBridgeConnected(),
       });
       try {
         quickPanelHandle.update(tree, state);
@@ -4378,18 +4604,40 @@
 
     async function refreshSnapshot() {
       if (disposed) return null;
+      if (runtime.getConfigStoreMode() === 'remote-bridge-disconnected') {
+        remoteBridgeDisconnected = true;
+        latestSnapshot = null;
+        latestError = '';
+        syncStatusItem();
+        syncQuickPanel();
+        return null;
+      }
       try {
         const snap = await service.getSnapshot({ includeRawText: false });
         if (disposed) return null;
         if (snap && snap.ok) {
+          remoteBridgeDisconnected = false;
           latestSnapshot = snap;
           latestError = '';
         } else {
-          latestError = (snap?.errors || [dict().loadErrorAlert]).join(' ');
+          const joinedErr = (snap?.errors || [dict().loadErrorAlert]).join(' ');
+          if (isRemoteBridgeDisconnectedReason(snap?.code || joinedErr)) {
+            remoteBridgeDisconnected = true;
+            latestSnapshot = null;
+            latestError = '';
+          } else {
+            latestError = joinedErr;
+          }
         }
       } catch (err) {
         if (disposed) return null;
-        latestError = err?.message || dict().loadErrorAlert;
+        if (isRemoteBridgeDisconnectedReason(err)) {
+          remoteBridgeDisconnected = true;
+          latestSnapshot = null;
+          latestError = '';
+        } else {
+          latestError = err?.message || dict().loadErrorAlert;
+        }
       }
       syncStatusItem();
       syncQuickPanel();
@@ -4414,6 +4662,14 @@
           await refreshSnapshot();
           return;
         }
+        if (isRemoteBridgeDisconnectedReason(res.code || (res.errors || []).join(' '))) {
+          remoteBridgeDisconnected = true;
+          latestSnapshot = null;
+          latestError = '';
+          runtime.showToast({ message: dict().remoteBridgeDisconnectedNotice, variant: 'warning' });
+          syncAllUi();
+          return;
+        }
         if (!res.ok) {
           runtime.showToast({ message: (res.errors || [dict().toggleFailedToast]).join(' '), variant: 'error' });
           return;
@@ -4424,7 +4680,15 @@
         if (settingsCanvasPanel) void settingsCanvasPanel.refresh();
       } catch (err) {
         if (!disposed) {
-          runtime.showToast({ message: err?.message || dict().toggleFailedToast, variant: 'error' });
+          if (isRemoteBridgeDisconnectedReason(err)) {
+            remoteBridgeDisconnected = true;
+            latestSnapshot = null;
+            latestError = '';
+            runtime.showToast({ message: dict().remoteBridgeDisconnectedNotice, variant: 'warning' });
+            syncAllUi();
+          } else {
+            runtime.showToast({ message: err?.message || dict().toggleFailedToast, variant: 'error' });
+          }
         }
       }
     }
@@ -4438,13 +4702,14 @@
       const panel = createNativeMcpPanel({
         runtime,
         service,
-        mode,
+        mode: null,
         surface: panelSurface,
         inline: overlayHandle?.kind === 'inline-settings',
         doc,
         win,
         onLangChange: () => syncAllUi(),
         onSnapshotChange: (snap) => {
+          remoteBridgeDisconnected = false;
           latestSnapshot = snap;
           latestError = '';
           syncStatusItem();
@@ -4502,10 +4767,11 @@
 
       const { tree, state } = buildQuickPanelSchema({
         snapshot: latestSnapshot,
-        mode,
+        mode: getMode(),
         surface,
         lang: getLang(),
         errorMessage: latestError,
+        remoteBridgeConnected: isRemoteBridgeConnected(),
       });
 
       const placement = {
@@ -4614,7 +4880,7 @@
         statusItemHandle = runtime.registerStatusItem({
           id: V3_IDS.STATUS_ITEM,
           label: d.statusLabel,
-          tooltip: d.statusTooltip(mode, 0),
+          tooltip: d.statusTooltip(getMode(), 0),
           align: 'right',
           priority: 60,
           onClick: (ev) => {
@@ -4669,7 +4935,18 @@
         }),
         runtime.onThemeChange(() => {
           syncQuickPanel();
-        })
+        }),
+        typeof runtime.onRemoteBridgeChange === 'function'
+          ? runtime.onRemoteBridgeChange(() => {
+              if (disposed) return;
+              remoteBridgeDisconnected = false;
+              latestError = '';
+              void refreshSnapshot();
+              if (fullModalPanel) void fullModalPanel.refresh();
+              if (settingsCanvasPanel) void settingsCanvasPanel.refresh();
+              syncAllUi();
+            })
+          : () => {}
       );
 
       if (runtime.signal && typeof runtime.signal.addEventListener === 'function') {

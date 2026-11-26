@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.1.0 — Native Host `v3.1.1` Unified Remote Host Bridge Integration
+- **Transparent Remote Web Host Bridge Integration (`antigravity-addons` `v3.1.0` / `v3.1.1+`)**:
+  - Declared minimal `permissions.events.subscribe: ["host:remote-bridge-changed"]` in `addon-manifest.json` (`version: "4.1.0"`, `minHostVersion: "3.1.0"`), keeping `compatibility.surfaces: ["desktop", "remote-web"]` and `compatibility.hostProfiles: ["antigravity-desktop", "antigravity-remote-web"]` cleanly compatible with `v3.1.1` `remote-dist` packing (`hasConfigBridge: true`, 3 scopes, zero rejections).
+  - Updated `src/adapters/antigravity/renderer/host-runtime.mjs` to expose dynamic `hasRemoteHostBridge()` (`ctx.env.capabilities.hasRemoteHostBridge`), `onRemoteBridgeChange()` (`ctx.events.on('host:remote-bridge-changed', ...)`), and live 3-state config mode resolution (`host-bridge` / `remote-bridge-disconnected` / `remote-draft`).
+  - Updated `src/adapters/antigravity/renderer/host-config-store.mjs` to map `ERR_REMOTE_HOST_NOT_CONNECTED` and `ERR_REMOTE_CONFIG_BRIDGE_OFFLINE` / `ERR_REMOTE_CONFIG_BRIDGE_READ_ONLY` to a dedicated non-crashing disconnected error code.
+  - Updated `src/adapters/antigravity/renderer/mcp-v3-shell.mjs` and `src/adapters/antigravity/renderer/native-mcp-panel.mjs` to auto-refresh MCP server lists, status badges, Tier-2 Quick Panel, and Tier-3 Settings/Modal views whenever `host:remote-bridge-changed` fires, and to show a clean KO/EN guidance notice (*"원격 웹 우측 하단 Addons → Host Bridge 탭에서 데스크톱 호스트를 연결하세요"*) when disconnected — with zero plugin-owned URL/token inputs or standalone remote servers.
+- **Regression Tests**:
+  - Added `NMCP-TC-040` (real `@antigravity-addons/sdk v3.1.1` `createTestHost({ surface: 'remote-web', remoteBridgeConnected: true })` live Desktop `mcp_config.json` CRUD), enhanced `NMCP-TC-038` (`remoteBridgeConnected: false` disconnected notice + zero URL/token inputs), and added standalone `NMCP-TC-041` (`ERR_REMOTE_HOST_NOT_CONNECTED` + live `host:remote-bridge-changed` connect/disconnect auto-reload).
+
 ## 4.0.1 — `antigravity-addons` `v3.0.3` Inline Desktop Settings Alignment, Surface-Scoped Status Item & Locale Default
 - **Surface-Scoped `registerStatusItem()` (`src/adapters/antigravity/renderer/mcp-v3-shell.mjs`)**:
   - Stopped calling `ctx.ui.registerStatusItem()` on Desktop (`ctx.env.surface === 'desktop'`) so native Antigravity Desktop uses the inline Settings page (`ctx.ui.registerSettingsPage()`) exclusively without rendering an unwanted MCP button even when `host.statusbar` v3 service is registered.

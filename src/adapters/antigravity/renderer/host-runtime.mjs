@@ -15,6 +15,7 @@ import { createHostBridgeConfigStore, resolveHostConfigBridge } from './host-con
 import { STORAGE_DRAFT_KEY, createStorageDraftConfigStore } from './storage-draft-config-store.mjs';
 
 export const LANG_STORAGE_KEY = 'lang';
+export const REMOTE_BRIDGE_CHANGED_EVENT = 'host:remote-bridge-changed';
 
 export function normalizeLangCode(raw) {
   const val = String(raw || '').trim().toLowerCase();
@@ -55,7 +56,7 @@ export function createHostRuntime({ ctx, doc = typeof document !== 'undefined' ?
   const v3 = assertAddonContextV3(ctx);
   const pluginId = String(v3.meta.pluginId || 'antigravity-mcp-manager');
   const displayName = String(v3.meta.displayName || 'Antigravity MCP Manager');
-  const version = String(v3.meta.version || '4.0.1');
+  const version = String(v3.meta.version || '4.1.0');
   const trustLevel = String(v3.meta.trustLevel || 'restricted');
   const surface = v3.env.surface === 'remote-web' ? 'remote-web' : 'desktop';
 
@@ -113,8 +114,27 @@ export function createHostRuntime({ ctx, doc = typeof document !== 'undefined' ?
     return Boolean(resolveHostConfigBridge(v3));
   }
 
+  function hasRemoteHostBridge() {
+    return Boolean(v3.env?.capabilities?.hasRemoteHostBridge === true);
+  }
+
   function getConfigStoreMode() {
+    if (surface === 'remote-web') {
+      if (hasConfigBridge()) {
+        return hasRemoteHostBridge() ? 'host-bridge' : 'remote-bridge-disconnected';
+      }
+      return 'remote-draft';
+    }
     return hasConfigBridge() ? 'host-bridge' : 'remote-draft';
+  }
+
+  function onRemoteBridgeChange(cb) {
+    if (typeof cb !== 'function' || !v3.events || typeof v3.events.on !== 'function') {
+      return () => {};
+    }
+    return v3.events.on(REMOTE_BRIDGE_CHANGED_EVENT, (payload) => {
+      cb(payload && typeof payload === 'object' ? payload : {});
+    });
   }
 
   function createConfigService() {
@@ -176,6 +196,7 @@ export function createHostRuntime({ ctx, doc = typeof document !== 'undefined' ?
     getSurface,
     getLayoutMode,
     hasConfigBridge,
+    hasRemoteHostBridge,
     getConfigStoreMode,
     createConfigService,
     readSavedLang,
@@ -194,6 +215,7 @@ export function createHostRuntime({ ctx, doc = typeof document !== 'undefined' ?
     getThemeMode: () => (typeof v3.theme.getMode === 'function' ? v3.theme.getMode() : 'dark'),
     onThemeChange,
     onStorageChange,
+    onRemoteBridgeChange,
     signal: v3.lifecycle.signal || null,
     onDispose: (fn) => v3.lifecycle.onDispose(fn),
     addManagedListener: (target, type, listener, opts) =>

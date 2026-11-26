@@ -10,6 +10,8 @@
  *   `HostBridgeConfigStore`), remaining completely decoupled from Electron IPC or filesystem.
  */
 
+import { isRemoteBridgeDisconnectedReason } from './host-config-store.mjs';
+
 export const NATIVE_PANEL_ATTR = 'data-agy-mcp-native-panel';
 
 const NATIVE_PANEL_I18N = Object.freeze({
@@ -18,6 +20,10 @@ const NATIVE_PANEL_I18N = Object.freeze({
     langAria: 'Language',
     loading: 'Loading…',
     bridgeConnected: 'Host Bridge Connected',
+    remoteBridgeDisconnectedBadge: 'Host Bridge Disconnected',
+    remoteBridgeDisconnectedTitle: 'Desktop Host Bridge Not Connected',
+    remoteBridgeDisconnectedNotice:
+      'Connect your Desktop host in the bottom-right Addons → Host Bridge tab on Remote Web.',
     remoteDraftBadge: 'Remote Draft (Browser)',
     refresh: 'Refresh',
     addServer: '+ Add Server',
@@ -100,6 +106,10 @@ const NATIVE_PANEL_I18N = Object.freeze({
     langAria: '언어 선택',
     loading: '불러오는 중…',
     bridgeConnected: '호스트 브리지 연결됨',
+    remoteBridgeDisconnectedBadge: '호스트 브리지 미연결',
+    remoteBridgeDisconnectedTitle: '데스크톱 호스트 브리지 미연결',
+    remoteBridgeDisconnectedNotice:
+      '원격 웹 우측 하단 Addons → Host Bridge 탭에서 데스크톱 호스트를 연결하세요.',
     remoteDraftBadge: '원격 초안 (브라우저 저장)',
     refresh: '새로고침',
     addServer: '+ 서버 추가',
@@ -194,17 +204,38 @@ export function createNativeMcpPanel({
     throw new Error('ERR_MISSING_MCP_MANAGER_SERVICE');
   }
 
-  const panelMode =
-    mode === 'remote-draft' || mode === 'host-bridge'
-      ? mode
-      : typeof runtime.getConfigStoreMode === 'function' && runtime.getConfigStoreMode() === 'remote-draft'
-        ? 'remote-draft'
-        : 'host-bridge';
-  const isRemoteDraft = panelMode === 'remote-draft';
+  const fixedMode =
+    mode === 'remote-draft' || mode === 'host-bridge' || mode === 'remote-bridge-disconnected' ? mode : null;
   const win = winOverride || doc?.defaultView || (typeof window !== 'undefined' ? window : null);
 
   let disposed = false;
+  let remoteBridgeDisconnected = false;
   let activeTab = 'servers';
+
+  function getPanelMode() {
+    if (fixedMode) return fixedMode;
+    const liveMode =
+      typeof runtime.getConfigStoreMode === 'function' ? runtime.getConfigStoreMode() : 'host-bridge';
+    if (remoteBridgeDisconnected && liveMode !== 'remote-draft') {
+      return 'remote-bridge-disconnected';
+    }
+    return liveMode;
+  }
+
+  function isRemoteDraftMode() {
+    return getPanelMode() === 'remote-draft';
+  }
+
+  function isRemoteBridgeDisconnectedMode() {
+    return getPanelMode() === 'remote-bridge-disconnected';
+  }
+
+  function shouldShowRemoteBridgeGuide() {
+    if (isRemoteBridgeDisconnectedMode()) return true;
+    const isRemoteSurface = typeof runtime.getSurface === 'function' && runtime.getSurface() === 'remote-web';
+    const connected = typeof runtime.hasRemoteHostBridge === 'function' && runtime.hasRemoteHostBridge();
+    return isRemoteSurface && !connected;
+  }
   let snapshot = null;
   let bannerState = null;
   let legacyDismissed = false;
@@ -323,7 +354,7 @@ export function createNativeMcpPanel({
   const root = el('section', {
     [NATIVE_PANEL_ATTR]: 'true',
     'data-agy-mcp-surface': surface,
-    'data-agy-mcp-mode': panelMode,
+    'data-agy-mcp-mode': getPanelMode(),
     ...(inline ? { 'data-agy-mcp-inline': 'true' } : {}),
   });
   const shell = el('div', { className: 'mcp-shell' });
@@ -331,7 +362,11 @@ export function createNativeMcpPanel({
   const titleGroup = el('div', { className: 'mcp-title-group' });
   const titleEl = surface === 'settings' ? el('h1', { className: 'mcp-title' }) : null;
   const statusBadge = el('span', {
-    className: isRemoteDraft ? 'mcp-badge mcp-badge-info' : 'mcp-badge mcp-badge-ok',
+    className: isRemoteBridgeDisconnectedMode()
+      ? 'mcp-badge mcp-badge-warn'
+      : isRemoteDraftMode()
+        ? 'mcp-badge mcp-badge-info'
+        : 'mcp-badge mcp-badge-ok',
     dataset: { testid: 'bridge-status-badge' },
   });
   if (titleEl) titleGroup.appendChild(titleEl);
@@ -539,6 +574,17 @@ export function createNativeMcpPanel({
   async function loadSnapshot(includeRawText = activeTab === 'raw') {
     if (disposed) return;
     const seq = ++snapshotRequestSeq;
+    const liveMode =
+      fixedMode || (typeof runtime.getConfigStoreMode === 'function' ? runtime.getConfigStoreMode() : 'host-bridge');
+    if (liveMode === 'remote-bridge-disconnected') {
+      remoteBridgeDisconnected = true;
+      snapshot = null;
+      bannerState = null;
+      busy = false;
+      syncStaticLabels();
+      renderAll();
+      return;
+    }
     busy = true;
     syncStaticLabels();
     try {
@@ -546,10 +592,20 @@ export function createNativeMcpPanel({
       if (disposed || seq !== snapshotRequestSeq) return;
       busy = false;
       if (!data || !data.ok) {
-        setBanner('error', (data?.errors || [t('loadFailed')]).join(' '));
+        const joinedErr = (data?.errors || [t('loadFailed')]).join(' ');
+        if (isRemoteBridgeDisconnectedReason(data?.code || joinedErr)) {
+          remoteBridgeDisconnected = true;
+          snapshot = null;
+          bannerState = null;
+          syncStaticLabels();
+          renderAll();
+          return;
+        }
+        setBanner('error', joinedErr);
         syncStaticLabels();
         return;
       }
+      remoteBridgeDisconnected = false;
       snapshot = data;
       if (typeof data.globalConfig?.rawText === 'string' && (includeRawText || (!rawDraftDirty && !rawDraft))) {
         rawDraft = data.globalConfig.rawText;
@@ -568,6 +624,14 @@ export function createNativeMcpPanel({
     } catch (err) {
       if (disposed || seq !== snapshotRequestSeq) return;
       busy = false;
+      if (isRemoteBridgeDisconnectedReason(err)) {
+        remoteBridgeDisconnected = true;
+        snapshot = null;
+        bannerState = null;
+        syncStaticLabels();
+        renderAll();
+        return;
+      }
       setBanner('error', err?.message || t('loadFailed'));
       syncStaticLabels();
     }
@@ -584,7 +648,15 @@ export function createNativeMcpPanel({
       }
     } catch (err) {
       if (disposed) return;
-      setBanner('error', err?.message || t(fallbackErrorKey));
+      if (isRemoteBridgeDisconnectedReason(err)) {
+        remoteBridgeDisconnected = true;
+        snapshot = null;
+        bannerState = null;
+        syncStaticLabels();
+        renderAll();
+      } else {
+        setBanner('error', err?.message || t(fallbackErrorKey));
+      }
     } finally {
       mutating = false;
     }
@@ -1409,12 +1481,48 @@ export function createNativeMcpPanel({
     );
   }
 
+  function renderRemoteBridgeDisconnectedNotice({ card = false } = {}) {
+    if (card) {
+      return el(
+        'section',
+        { className: 'mcp-card', dataset: { testid: 'remote-bridge-disconnected-notice' } },
+        el('strong', null, t('remoteBridgeDisconnectedTitle')),
+        el('div', { className: 'mcp-subtitle' }, t('remoteBridgeDisconnectedNotice')),
+        el(
+          'div',
+          { className: 'mcp-row-actions' },
+          el(
+            'button',
+            {
+              type: 'button',
+              className: 'mcp-btn mcp-btn-sm',
+              dataset: { testid: 'btn-retry-remote-bridge' },
+              onClick: () => void loadSnapshot(activeTab === 'raw'),
+            },
+            t('refresh')
+          )
+        )
+      );
+    }
+    return el(
+      'div',
+      { className: 'mcp-banner mcp-banner-info', dataset: { testid: 'remote-bridge-disconnected-notice' } },
+      el('span', null, t('remoteBridgeDisconnectedNotice'))
+    );
+  }
+
   function renderServersTab() {
+    if (isRemoteBridgeDisconnectedMode()) {
+      return [renderRemoteBridgeDisconnectedNotice({ card: true })];
+    }
     const nodes = [];
-    if (isRemoteDraft) {
+    if (shouldShowRemoteBridgeGuide()) {
+      nodes.push(renderRemoteBridgeDisconnectedNotice({ card: false }));
+    }
+    if (isRemoteDraftMode()) {
       nodes.push(renderRemoteIoBar());
     }
-    if (pendingStdioConfirm && (pendingStdioConfirm.kind === 'clone' || pendingStdioConfirm.kind === 'legacy' || (isRemoteDraft && pendingStdioConfirm.kind === 'raw'))) {
+    if (pendingStdioConfirm && (pendingStdioConfirm.kind === 'clone' || pendingStdioConfirm.kind === 'legacy' || (isRemoteDraftMode() && pendingStdioConfirm.kind === 'raw'))) {
       nodes.push(renderStdioConfirmPanel());
     }
 
@@ -1627,6 +1735,9 @@ export function createNativeMcpPanel({
   }
 
   function renderRawTab() {
+    if (isRemoteBridgeDisconnectedMode()) {
+      return [renderRemoteBridgeDisconnectedNotice({ card: true })];
+    }
     const ta = el('textarea', {
       className: 'mcp-textarea mcp-mono',
       value: rawDraft,
@@ -1637,7 +1748,8 @@ export function createNativeMcpPanel({
       },
     });
     return [
-      isRemoteDraft ? renderRemoteIoBar() : null,
+      shouldShowRemoteBridgeGuide() ? renderRemoteBridgeDisconnectedNotice({ card: false }) : null,
+      isRemoteDraftMode() ? renderRemoteIoBar() : null,
       el(
         'section',
         { className: 'mcp-card' },
@@ -1664,9 +1776,24 @@ export function createNativeMcpPanel({
 
   function syncStaticLabels() {
     const lang = getLang();
+    const currentMode = getPanelMode();
     root.setAttribute('data-agy-mcp-lang', lang);
+    root.setAttribute('data-agy-mcp-mode', currentMode);
     if (titleEl) titleEl.textContent = t('appTitle');
-    statusBadge.textContent = busy && !snapshot ? t('loading') : isRemoteDraft ? t('remoteDraftBadge') : t('bridgeConnected');
+    statusBadge.className =
+      currentMode === 'remote-bridge-disconnected'
+        ? 'mcp-badge mcp-badge-warn'
+        : currentMode === 'remote-draft'
+          ? 'mcp-badge mcp-badge-info'
+          : 'mcp-badge mcp-badge-ok';
+    statusBadge.textContent =
+      busy && !snapshot
+        ? t('loading')
+        : currentMode === 'remote-bridge-disconnected'
+          ? t('remoteBridgeDisconnectedBadge')
+          : currentMode === 'remote-draft'
+            ? t('remoteDraftBadge')
+            : t('bridgeConnected');
     langSwitch.setAttribute('aria-label', t('langAria'));
     btnLangEn.setAttribute('aria-pressed', lang === 'en' ? 'true' : 'false');
     btnLangKo.setAttribute('aria-pressed', lang === 'ko' ? 'true' : 'false');

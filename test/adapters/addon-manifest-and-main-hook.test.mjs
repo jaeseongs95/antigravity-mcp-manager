@@ -32,25 +32,27 @@ test('NMCP-TC-022 (Contract & SOLID Parity): addon-manifest.json satisfies Addon
   assert.equal(manifest.schemaVersion, 3);
   assert.equal(manifest.apiVersion, 3);
   assert.equal(manifest.pluginId, 'antigravity-mcp-manager');
-  assert.equal(manifest.version, '4.0.1');
+  assert.equal(manifest.version, '4.1.0');
   assert.equal(manifest.version, pkg.version);
   assert.equal(pluginJson.version, pkg.version);
   assert.equal(manifest.trustLevel, 'trusted');
   assert.deepEqual(manifest.compatibility, {
     surfaces: ['desktop', 'remote-web'],
     hostProfiles: ['antigravity-desktop', 'antigravity-remote-web'],
-    minHostVersion: '3.0.3',
+    minHostVersion: '3.1.0',
   });
   assert.deepEqual(manifest.capabilities, ['renderer']);
   assert.equal(manifest.entry.rendererScript, 'src/adapters/antigravity/addon-renderer.js');
   assert.equal(manifest.entry.mainHookScript, undefined);
   assert.equal(fs.existsSync(path.join(ROOT_DIR, manifest.entry.rendererScript)), true);
 
-  // Minimal permissions: ONLY ui, storage, configBridge (net, dom, events, services omitted)
-  assert.deepEqual(Object.keys(manifest.permissions).sort(), ['configBridge', 'storage', 'ui']);
+  // Minimal permissions: ONLY ui, storage, events (remote-bridge subscribe), configBridge (net, dom, services omitted)
+  assert.deepEqual(Object.keys(manifest.permissions).sort(), ['configBridge', 'events', 'storage', 'ui']);
+  assert.deepEqual(manifest.permissions.events, {
+    subscribe: ['host:remote-bridge-changed'],
+  });
   assert.equal(manifest.permissions.net, undefined, 'permissions.net must be omitted');
   assert.equal(manifest.permissions.dom, undefined, 'permissions.dom must be omitted');
-  assert.equal(manifest.permissions.events, undefined, 'permissions.events must be omitted');
   assert.equal(manifest.permissions.services, undefined, 'permissions.services must be omitted');
   assert.equal(manifest.uiSlots, undefined, 'Legacy v2 uiSlots must be omitted');
   assert.equal(manifest.settingsBridge, undefined, 'Legacy v2 top-level settingsBridge must be omitted');
@@ -236,4 +238,49 @@ test('NMCP-TC-024 (Unit): host-runtime enforces AddonContextV3 contract, branche
   assert.equal(rtBridge.getConfigStoreMode(), 'host-bridge');
   assert.equal(rtBridge.getLayoutMode(), 'compact');
   assert.ok(rtBridge.createConfigService());
+
+  // 4. Remote Web with dynamic hasRemoteHostBridge getter + host:remote-bridge-changed subscription
+  let remoteConnected = false;
+  const eventHandlers = new Map();
+  const rtRemoteBridge = createHostRuntime({
+    ctx: makeCtx({
+      env: {
+        surface: 'remote-web',
+        layoutMode: 'desktop',
+        capabilities: {
+          hasLocalLoopback: false,
+          hasNetHttps: false,
+          hasConfigBridge: true,
+          get hasRemoteHostBridge() {
+            return remoteConnected;
+          },
+          hasSettingsBridge: false,
+          hasDocumentTransform: false,
+        },
+      },
+      events: {
+        on(topic, fn) {
+          eventHandlers.set(topic, fn);
+          return () => eventHandlers.delete(topic);
+        },
+      },
+      configBridge: {
+        scopes: [{ scopeId: HOST_CONFIG_SCOPES.GLOBAL_MCP, access: 'rw', maxBytes: 262144 }],
+        read: async () => ({ ok: false, status: 'unavailable', reason: 'ERR_REMOTE_HOST_NOT_CONNECTED' }),
+        write: async () => ({ ok: false, reason: 'ERR_REMOTE_HOST_NOT_CONNECTED' }),
+      },
+    }),
+    doc: null,
+  });
+  assert.equal(rtRemoteBridge.hasRemoteHostBridge(), false);
+  assert.equal(rtRemoteBridge.getConfigStoreMode(), 'remote-bridge-disconnected');
+  const seenBridgeEvents = [];
+  const unsubBridge = rtRemoteBridge.onRemoteBridgeChange((ev) => seenBridgeEvents.push(ev));
+  remoteConnected = true;
+  eventHandlers.get('host:remote-bridge-changed')({ connected: true, baseUrl: 'http://127.0.0.1:19384' });
+  assert.equal(rtRemoteBridge.hasRemoteHostBridge(), true);
+  assert.equal(rtRemoteBridge.getConfigStoreMode(), 'host-bridge');
+  assert.equal(seenBridgeEvents.length, 1);
+  assert.equal(seenBridgeEvents[0].connected, true);
+  unsubBridge();
 });
