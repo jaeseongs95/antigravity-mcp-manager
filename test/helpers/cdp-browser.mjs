@@ -99,6 +99,7 @@ export function buildAddonContextV3HarnessScript(manifest, opts = {}) {
     const disposers = [];
     const managedListeners = [];
     const statusItems = new Map();
+    const sectionActions = new Map();
     const settingsPages = new Map();
     const commands = new Map();
     const toasts = [];
@@ -106,6 +107,7 @@ export function buildAddonContextV3HarnessScript(manifest, opts = {}) {
     const storageMap = new Map();
     const storageListeners = new Set();
     const themeListeners = new Set();
+    const localeListeners = new Set();
     const escapeStack = [];
     let disposed = false;
     let overlaySeq = 0;
@@ -424,6 +426,17 @@ export function buildAddonContextV3HarnessScript(manifest, opts = {}) {
           dispose: () => statusItems.delete(spec.id),
         });
       },
+      registerSectionAction: (spec) => {
+        assertActive();
+        const rec = { ...spec };
+        sectionActions.set(spec.id, rec);
+        return Object.freeze({
+          id: spec.id,
+          target: spec.target,
+          update: (patch) => Object.assign(rec, patch),
+          dispose: () => sectionActions.delete(spec.id),
+        });
+      },
       registerSettingsPage: (spec) => {
         assertActive();
         let activeHandle = null;
@@ -492,6 +505,7 @@ export function buildAddonContextV3HarnessScript(manifest, opts = {}) {
         for (const close of Array.from(activeOverlays)) { try { close(); } catch {} }
         activeOverlays.clear();
         statusItems.clear();
+        sectionActions.clear();
         settingsPages.clear();
         commands.clear();
       },
@@ -529,6 +543,7 @@ export function buildAddonContextV3HarnessScript(manifest, opts = {}) {
       i18n: Object.freeze({
         getLocale: () => locale,
         t: (k) => k,
+        onDidChange: (cb) => { localeListeners.add(cb); return () => localeListeners.delete(cb); },
       }),
       ui,
       storage,
@@ -542,6 +557,8 @@ export function buildAddonContextV3HarnessScript(manifest, opts = {}) {
     window.__TEST_V3_DIAG__ = {
       getStatusItems: () => Array.from(statusItems.values()),
       clickStatusItem: (id) => statusItems.get(id)?.onClick?.({ pluginId, itemId: id, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, anchorEl: null }),
+      getSectionActions: () => Array.from(sectionActions.values()),
+      clickSectionAction: (id) => sectionActions.get(id)?.onClick?.({ pluginId, actionId: id, target: sectionActions.get(id)?.target || '', shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, anchorEl: null }),
       getSettingsPages: () => Array.from(settingsPages.keys()),
       openSettingsPage: (id) => settingsPages.get(id)?.open?.(),
       getCommands: () => Array.from(commands.keys()),

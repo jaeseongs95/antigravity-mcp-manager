@@ -1,27 +1,30 @@
-# Antigravity MCP Manager (`v4.2.0`)
+# Antigravity MCP Manager (`v4.3.0`)
 
 [English Documentation (README.md)](./README.md)
 
-[**Extenra**](https://github.com/jaeseongs95/extenra)(`extenra`, 구 `antigravity-addons`) **`v3.1.0+` / `v3.2.1`** API-First 프레임워크(`AddonManifest.v3` + `AddonContextV3`, 최소 권한 ISP `permissions`, 3-Tier 호스트 UI, 외부 런타임 의존성 0개) 기반의 벤더 독립형 **MCP 서버 관리자**입니다.
-- **Antigravity Desktop (`ctx.env.surface === 'desktop'`)**: 데스크톱 Settings 우측 본문에 인라인으로 마운트되는 설정 페이지(`ui.registerSettingsPage`, 데스크톱 상태바 중복 버튼 미등록)와 `permissions.configBridge.scopes` + `ctx.configBridge`를 통해 `~/.gemini/config/mcp_config.json`을 실시간 CRUD 합니다.
+[**Extenra**](https://github.com/jaeseongs95/extenra)(`extenra`, 구 `antigravity-addons`) **`v3.3.0+`** API-First 프레임워크(`AddonManifest.v3` + `AddonContextV3`, 최소 권한 ISP `permissions`, 3-Tier 호스트 UI, 외부 런타임 의존성 0개) 기반의 벤더 독립형 **MCP 서버 관리자**입니다.
+- **Antigravity Desktop (`ctx.env.surface === 'desktop'`)**:
+  - **맞춤 설정 → `MCP 서버` 헤더 버튼**: Zero-DOM `ui.registerSectionAction({ target: 'customizations.mcp-servers.header' })`로 `MCP 서버` 헤더 우측 아이콘 영역에 `MCP 매니저` 버튼을 호스트가 자동 부착·유지합니다.
+  - **인라인 설정 페이지**: 데스크톱 Settings 우측 본문에 인라인으로 마운트되는 설정 페이지(`ui.registerSettingsPage`, 데스크톱 상태바 중복 버튼 미등록)와 `permissions.configBridge.scopes` + `ctx.configBridge`를 통해 `~/.gemini/config/mcp_config.json`을 실시간 CRUD 합니다.
 - **Antigravity Remote Web (`ctx.env.surface === 'remote-web'`)**:
-  - **통합 원격 호스트 브리지 (`Extenra v3.1.0+`)**: 원격 웹 우측 하단 **Addons → Host Bridge** 탭에서 1줄 페어링 코드(`ag-bridge-v1:...`)로 한 번만 연결하면, 플러그인 내 별도 URL/토큰 입력 UI나 독자 서버 없이 `ctx.configBridge`가 데스크톱 실제 `mcp_config.json`으로 실시간 라우팅되며 `host:remote-bridge-changed` 이벤트로 자동 재조회됩니다.
+  - **맞춤 설정 헤더 버튼 + 우측 하단 상태바 + 통합 원격 호스트 브리지**: 원격 웹 우측 하단 **Addons → Host Bridge** 탭에서 1줄 페어링 코드(`ag-bridge-v1:...`)로 한 번만 연결하면, 플러그인 내 별도 URL/토큰 입력 UI나 독자 서버 없이 `ctx.configBridge`가 데스크톱 실제 `mcp_config.json`으로 실시간 라우팅되며 `host:remote-bridge-changed` 이벤트로 자동 재조회됩니다.
   - **오프라인 원격 초안 (`ctx.storage`)**: 공개 HTTPS 모듈형 `@require` Userscript(`antigravity-mcp-manager.user.js`, `@require https://github.com/jaeseongs95/extenra/releases/latest/download/antigravity-remote-host.lib.js`)로 동작하며 `ctx.storage`(`remote-draft:v1`) 브라우저 초안 저장과 **JSON 가져오기 / 복사 / `mcp_config.json` 다운로드**를 지원합니다.
 
-> **API-First 3-Tier 구조 · Extenra `v3.2.1` 정합성**: 모든 UI는 호스트 관리 `AddonContextV3` 표면(`ui.registerSettingsPage`, Remote Web 전용 `ui.registerStatusItem`, `ui.registerCommand`, `ui.showToast`, `ui.openPanel`, `ui.openModal`, `ui.createStyleElementSafe`)만 사용하며, Extenra `v3.2.1` `--ag-*` 디자인 토큰(`--ag-primary`, `--ag-input-bg`, `--ag-surface-hover`, `--ag-border-strong`, `--ag-focus-ring`, `--ag-scrollbar-thumb`)과 커스텀 스크롤바를 적용했습니다.
+> **API-First 3-Tier 구조 · Extenra `v3.3.0` 정합성**: 모든 UI는 호스트 관리 `AddonContextV3` 표면(`ui.registerSectionAction`, `ui.registerSettingsPage`, Remote Web 전용 `ui.registerStatusItem`, `ui.registerCommand`, `ui.showToast`, `ui.openPanel`, `ui.openModal`, `ui.createStyleElementSafe`, `i18n.onDidChange`)만 사용하며, Extenra `v3.2.1+` `--ag-*` 디자인 토큰과 커스텀 스크롤바를 적용했습니다.
 
 ## 3-Tier UI 및 최소 권한 설계
 - **최소 권한 `permissions` 선언**:
   - `$schema`: `https://github.com/jaeseongs95/extenra/schemas/addon-manifest.v3.schema.json`
-  - `permissions.ui`: `toasts`, `dialogs`, `overlays`, `commands`, `statusItems`, `settingsPages`, `canvas`
+  - `permissions.ui`: `toasts`, `dialogs`, `overlays`, `commands`, `statusItems`, `sectionActions`, `settingsPages`, `canvas`
   - `permissions.storage`: `namespace: "antigravity-mcp-manager"`, `maxBytes: 262144`
   - `permissions.events`: `subscribe: ["host:remote-bridge-changed"]`
   - `permissions.configBridge.scopes`:
     - `antigravity:mcp-config` (`rw`, `262144` bytes): `~/.gemini/config/mcp_config.json` (단일 정본 쓰기 대상)
     - `antigravity:plugin-mcp-configs` (`ro`, `262144` bytes): 플러그인 MCP 읽기 전용 현황
     - `antigravity:mcp-config-legacy` (`ro`, `262144` bytes): 레거시 설정 1회 가져오기 미리보기
-  - **미선언(런타임 생략)**: `net`, `dom`, `services`, `uiSlots` (런타임에서 `ctx.net === undefined`, `ctx.dom === undefined`).
+  - **미선언(런타임 생략)**: `net`, `dom`, `secrets`, `services`, `uiSlots` (런타임에서 `ctx.net === undefined`, `ctx.dom === undefined`).
 - **Tier 1 (Zero-DOM 호스트 표면)**:
+  - `ui.registerSectionAction`: `customizations.mcp-servers.header`(맞춤 설정 → `MCP 서버` 헤더 우측)에 `MCP 매니저` 버튼을 등록해 클릭 시 전체 편집기 모달을 열고, `ctx.i18n.onDidChange`로 호스트 전역 언어 전환과 실시간 동기화합니다.
   - `ui.registerSettingsPage`: Desktop 인라인 Settings 페이지 + Remote Web 공용 설정 페이지(`id: "mcp-manager"`). 최초 실행 언어는 `ctx.i18n.getLocale()`(한국어 환경 `ko`)을 따르며 `ctx.storage` 사용자 선택이 우선합니다.
   - `ui.registerStatusItem`: Remote Web(`surface === 'remote-web'`)에서만 등록하여 우측 하단 진입점과 서버 수/미연결(`!`) 배지를 제공합니다.
   - `ui.registerCommand`: `open-mcp-manager`, `open-mcp-panel`, `open-mcp-settings`.

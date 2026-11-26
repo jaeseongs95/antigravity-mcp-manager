@@ -56,7 +56,7 @@ export function createHostRuntime({ ctx, doc = typeof document !== 'undefined' ?
   const v3 = assertAddonContextV3(ctx);
   const pluginId = String(v3.meta.pluginId || 'antigravity-mcp-manager');
   const displayName = String(v3.meta.displayName || 'Antigravity MCP Manager');
-  const version = String(v3.meta.version || '4.2.0');
+  const version = String(v3.meta.version || '4.3.0');
   const trustLevel = String(v3.meta.trustLevel || 'restricted');
   const surface = v3.env.surface === 'remote-web' ? 'remote-web' : 'desktop';
 
@@ -187,6 +187,16 @@ export function createHostRuntime({ ctx, doc = typeof document !== 'undefined' ?
     return v3.theme.onDidChange(cb);
   }
 
+  function onLocaleChange(cb) {
+    if (typeof cb !== 'function' || !v3.i18n || typeof v3.i18n.onDidChange !== 'function') return () => {};
+    return v3.i18n.onDidChange(cb);
+  }
+
+  function registerSectionAction(spec) {
+    if (typeof v3.ui.registerSectionAction !== 'function') return null;
+    return v3.ui.registerSectionAction(spec);
+  }
+
   return Object.freeze({
     apiVersion: 3,
     pluginId,
@@ -207,6 +217,7 @@ export function createHostRuntime({ ctx, doc = typeof document !== 'undefined' ?
     confirm,
     registerCommand: (commandId, spec) => v3.ui.registerCommand(commandId, spec),
     registerStatusItem: (spec) => v3.ui.registerStatusItem(spec),
+    registerSectionAction,
     registerSettingsPage: (spec) => v3.ui.registerSettingsPage(spec),
     openPanel: (opts) => v3.ui.openPanel(opts),
     openModal: (opts) => v3.ui.openModal(opts),
@@ -214,6 +225,7 @@ export function createHostRuntime({ ctx, doc = typeof document !== 'undefined' ?
     createStyleElementSafe,
     getThemeMode: () => (typeof v3.theme.getMode === 'function' ? v3.theme.getMode() : 'dark'),
     onThemeChange,
+    onLocaleChange,
     onStorageChange,
     onRemoteBridgeChange,
     signal: v3.lifecycle.signal || null,

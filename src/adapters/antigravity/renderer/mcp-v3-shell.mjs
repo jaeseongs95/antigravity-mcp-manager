@@ -19,6 +19,8 @@ import { LANG_STORAGE_KEY } from './host-runtime.mjs';
 
 export const V3_IDS = Object.freeze({
   STATUS_ITEM: 'mcp-manager',
+  SECTION_ACTION: 'mcp-manager',
+  SECTION_TARGET: 'customizations.mcp-servers.header',
   SETTINGS_PAGE: 'mcp-manager',
   CMD_OPEN_MANAGER: 'open-mcp-manager',
   CMD_OPEN_PANEL: 'open-mcp-panel',
@@ -259,6 +261,7 @@ export function createMcpV3Shell({
   let latestError = '';
   let remoteBridgeDisconnected = false;
   let statusItemHandle = null;
+  let sectionActionHandle = null;
   let settingsPageHandle = null;
   let quickPanelHandle = null;
   let fullModalHandle = null;
@@ -286,7 +289,24 @@ export function createMcpV3Shell({
     return SHELL_I18N[getLang()];
   }
 
+  function syncSectionAction() {
+    if (!sectionActionHandle || disposed) return;
+    const mode = getMode();
+    const count = latestSnapshot?.globalConfig?.servers?.length ?? 0;
+    const d = dict();
+    try {
+      sectionActionHandle.update({
+        label: d.title,
+        tooltip: d.statusTooltip(mode, count),
+        badge: mode === 'remote-bridge-disconnected' ? '!' : null,
+      });
+    } catch {
+      // Ignore updates during disposal
+    }
+  }
+
   function syncStatusItem() {
+    syncSectionAction();
     if (!statusItemHandle || disposed) return;
     const mode = getMode();
     const count = latestSnapshot?.globalConfig?.servers?.length ?? 0;
@@ -586,6 +606,12 @@ export function createMcpV3Shell({
       } catch {}
       statusItemHandle = null;
     }
+    if (sectionActionHandle) {
+      try {
+        sectionActionHandle.dispose();
+      } catch {}
+      sectionActionHandle = null;
+    }
     if (settingsPageHandle) {
       try {
         settingsPageHandle.dispose();
@@ -610,6 +636,22 @@ export function createMcpV3Shell({
         priority: 60,
         onClick: (ev) => {
           openQuickPanel(ev?.anchorEl || null);
+        },
+      });
+    }
+
+    // Extenra v3.3.0 Tier-1 Declarative Section Action:
+    // Mounts a host-styled action button on the Customizations -> MCP Servers section header
+    // (Desktop & Remote Web) with zero plugin-side DOM scraping.
+    if (typeof runtime.registerSectionAction === 'function') {
+      sectionActionHandle = runtime.registerSectionAction({
+        id: V3_IDS.SECTION_ACTION,
+        target: V3_IDS.SECTION_TARGET,
+        label: d.title,
+        tooltip: d.statusTooltip(getMode(), 0),
+        order: 60,
+        onClick: () => {
+          openFullModal();
         },
       });
     }
@@ -661,6 +703,11 @@ export function createMcpV3Shell({
       runtime.onThemeChange(() => {
         syncQuickPanel();
       }),
+      typeof runtime.onLocaleChange === 'function'
+        ? runtime.onLocaleChange(() => {
+            if (!disposed) syncAllUi();
+          })
+        : () => {},
       typeof runtime.onRemoteBridgeChange === 'function'
         ? runtime.onRemoteBridgeChange(() => {
             if (disposed) return;
