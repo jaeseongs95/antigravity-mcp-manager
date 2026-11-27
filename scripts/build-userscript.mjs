@@ -2,7 +2,7 @@
 /**
  * Zero-Dependency Modular Public HTTPS Userscript Builder (`scripts/build-userscript.mjs`).
  *
- * Emits Extenra (`extenra` v3.3.1)-compatible modular `@require` Userscript artifacts:
+ * Emits Extenra (`extenra` v3.3.3)-compatible modular `@require` Userscript artifacts:
  * - `antigravity-mcp-manager.user.js`
  * - `antigravity-mcp-manager.meta.js`
  * - `build-manifest.json`

@@ -195,6 +195,7 @@ export function createNativeMcpPanel({
   mode = null,
   surface = 'settings',
   inline = false,
+  showLangSwitch = false,
   onLangChange = () => {},
   onSnapshotChange = () => {},
   doc = document,
@@ -423,7 +424,9 @@ export function createNativeMcpPanel({
     dataset: { testid: 'btn-add-server' },
     onClick: () => openEditorForServer(null),
   });
-  actionsGroup.appendChild(langSwitch);
+  if (showLangSwitch) {
+    actionsGroup.appendChild(langSwitch);
+  }
   actionsGroup.appendChild(btnRefresh);
   actionsGroup.appendChild(btnAdd);
   headerEl.appendChild(titleGroup);
@@ -1794,9 +1797,11 @@ export function createNativeMcpPanel({
           : currentMode === 'remote-draft'
             ? t('remoteDraftBadge')
             : t('bridgeConnected');
-    langSwitch.setAttribute('aria-label', t('langAria'));
-    btnLangEn.setAttribute('aria-pressed', lang === 'en' ? 'true' : 'false');
-    btnLangKo.setAttribute('aria-pressed', lang === 'ko' ? 'true' : 'false');
+    if (showLangSwitch) {
+      langSwitch.setAttribute('aria-label', t('langAria'));
+      btnLangEn.setAttribute('aria-pressed', lang === 'en' ? 'true' : 'false');
+      btnLangKo.setAttribute('aria-pressed', lang === 'ko' ? 'true' : 'false');
+    }
     btnRefresh.textContent = t('refresh');
     btnAdd.textContent = t('addServer');
     tabServers.textContent = t('tabServers');

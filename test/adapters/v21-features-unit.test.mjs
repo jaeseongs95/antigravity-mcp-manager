@@ -275,11 +275,18 @@ test('NMCP-TC-026 (Real Chromium CDP): AddonContextV3 switches EN/KO live via ct
       true
     );
 
-    // 1. Switch EN -> KO live inside Tier-3 panel -> persists via ctx.storage with zero reload
+    // 1. Switch EN -> KO live via Extenra v3.3.2+ host header locale switcher with zero reload
     await evalMain(`window.__NO_RELOAD_SENTINEL__ = 42`);
-    await evalMain(`document.querySelector('dialog[data-addon-host-v3-overlay="modal"]').firstElementChild.shadowRoot.querySelector('[data-agy-mcp-lang-btn="ko"]').click()`);
+    const koBtnPos = await evalMain(`(() => {
+      const sr = document.querySelector('dialog[data-addon-host-v3-overlay="modal"]').firstElementChild.shadowRoot;
+      const btn = sr.querySelector('[data-addon-host-lang="ko"]');
+      const rect = btn.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    })()`);
+    await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: koBtnPos.x, y: koBtnPos.y, button: 'left', clickCount: 1 });
+    await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: koBtnPos.x, y: koBtnPos.y, button: 'left', clickCount: 1 });
     assert.equal(
-      await waitUntil(() => evalMain(`window.__TEST_V3_DIAG__.getStorageSnapshot().lang === 'ko'`)),
+      await waitUntil(() => evalMain(`window.__TEST_V3_DIAG__.getLocale() === 'ko'`)),
       true
     );
     assert.equal(await evalMain(`window.__NO_RELOAD_SENTINEL__`), 42);

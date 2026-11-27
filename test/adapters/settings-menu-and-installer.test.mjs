@@ -102,15 +102,44 @@ test('NMCP-TC-021 (Real Chromium CDP E2E): AddonManifest.v3 registers Tier-1 Set
       true
     );
 
-    // 3. Switch language EN -> KO -> persists in ctx.storage (NOT window.localStorage)
-    await evalMain(`document.querySelector('dialog[data-addon-host-v3-overlay="modal"]').firstElementChild.shadowRoot.querySelector('[data-agy-mcp-lang-btn="ko"]').click()`);
+    // 3. Extenra v3.3.2+ host header [한국어|EN] switcher replaces duplicate inner switcher and syncs title + panel live
+    const switchCheck = await evalMain(`(() => {
+      const sr = document.querySelector('dialog[data-addon-host-v3-overlay="modal"]').firstElementChild.shadowRoot;
+      const hostKoBtn = sr.querySelector('[data-addon-host-lang="ko"]');
+      const rect = hostKoBtn ? hostKoBtn.getBoundingClientRect() : null;
+      return {
+        hasHostLangSwitch: Boolean(hostKoBtn),
+        hasDuplicateInnerLangSwitch: Boolean(sr.querySelector('[data-testid="lang-switch"]')),
+        initialHeaderTitle: sr.querySelector('.ag-ui-title')?.textContent?.trim(),
+        x: rect ? rect.left + rect.width / 2 : 0,
+        y: rect ? rect.top + rect.height / 2 : 0,
+      };
+    })()`);
+    assert.equal(switchCheck.hasHostLangSwitch, true, 'Settings Page must expose Extenra host header locale switch');
+    assert.equal(switchCheck.hasDuplicateInnerLangSwitch, false, 'Inner duplicate language switcher must be omitted');
+    assert.equal(switchCheck.initialHeaderTitle, 'MCP Manager');
+
+    // Untrusted synthetic click must be ignored by Extenra host header switch
+    await evalMain(`document.querySelector('dialog[data-addon-host-v3-overlay="modal"]').firstElementChild.shadowRoot.querySelector('[data-addon-host-lang="ko"]').click()`);
+    assert.equal(await evalMain(`window.__TEST_V3_DIAG__.getLocale()`), 'en-US');
+
+    // Real trusted mouse click via CDP switches host locale -> updates header title & panel live
+    await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: switchCheck.x, y: switchCheck.y, button: 'left', clickCount: 1 });
+    await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: switchCheck.x, y: switchCheck.y, button: 'left', clickCount: 1 });
     assert.equal(
-      await waitUntil(() => evalMain(`window.__TEST_V3_DIAG__.getStorageSnapshot().lang === 'ko'`)),
+      await waitUntil(() => evalMain(`window.__TEST_V3_DIAG__.getLocale() === 'ko'`)),
       true,
-      'Language preference must persist via ctx.storage'
+      'Trusted click on Extenra host header locale switch must update central host locale'
     );
-    const koTitle = await evalMain(`document.querySelector('dialog[data-addon-host-v3-overlay="modal"]').firstElementChild.shadowRoot.querySelector('.mcp-title')?.textContent?.trim()`);
-    assert.equal(koTitle, 'MCP 매니저');
+    const koTitles = await evalMain(`(() => {
+      const sr = document.querySelector('dialog[data-addon-host-v3-overlay="modal"]').firstElementChild.shadowRoot;
+      return {
+        headerTitle: sr.querySelector('.ag-ui-title')?.textContent?.trim(),
+        panelTitle: sr.querySelector('.mcp-title')?.textContent?.trim(),
+      };
+    })()`);
+    assert.equal(koTitles.headerTitle, 'MCP 매니저');
+    assert.equal(koTitles.panelTitle, 'MCP 매니저');
 
     // 4. Clean disposal tears down overlays, status item, settings page, and commands
     await evalMain(`window.__TEST_V3_DIAG__.dispose()`);

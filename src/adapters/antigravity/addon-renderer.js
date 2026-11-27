@@ -1875,7 +1875,7 @@
     const v3 = assertAddonContextV3(ctx);
     const pluginId = String(v3.meta.pluginId || 'antigravity-mcp-manager');
     const displayName = String(v3.meta.displayName || 'Antigravity MCP Manager');
-    const version = String(v3.meta.version || '4.3.1');
+    const version = String(v3.meta.version || '4.3.2');
     const trustLevel = String(v3.meta.trustLevel || 'restricted');
     const surface = v3.env.surface === 'remote-web' ? 'remote-web' : 'desktop';
 
@@ -2262,6 +2262,7 @@
     mode = null,
     surface = 'settings',
     inline = false,
+    showLangSwitch = false,
     onLangChange = () => {},
     onSnapshotChange = () => {},
     doc = document,
@@ -2490,7 +2491,9 @@
       dataset: { testid: 'btn-add-server' },
       onClick: () => openEditorForServer(null),
     });
-    actionsGroup.appendChild(langSwitch);
+    if (showLangSwitch) {
+      actionsGroup.appendChild(langSwitch);
+    }
     actionsGroup.appendChild(btnRefresh);
     actionsGroup.appendChild(btnAdd);
     headerEl.appendChild(titleGroup);
@@ -3861,9 +3864,11 @@
             : currentMode === 'remote-draft'
               ? t('remoteDraftBadge')
               : t('bridgeConnected');
-      langSwitch.setAttribute('aria-label', t('langAria'));
-      btnLangEn.setAttribute('aria-pressed', lang === 'en' ? 'true' : 'false');
-      btnLangKo.setAttribute('aria-pressed', lang === 'ko' ? 'true' : 'false');
+      if (showLangSwitch) {
+        langSwitch.setAttribute('aria-label', t('langAria'));
+        btnLangEn.setAttribute('aria-pressed', lang === 'en' ? 'true' : 'false');
+        btnLangKo.setAttribute('aria-pressed', lang === 'ko' ? 'true' : 'false');
+      }
       btnRefresh.textContent = t('refresh');
       btnAdd.textContent = t('addServer');
       tabServers.textContent = t('tabServers');
@@ -4553,16 +4558,6 @@
           id: 'mcp-quick-divider',
         },
         {
-          type: 'segmented',
-          id: 'mcp-lang-select',
-          label: dict.languageLabel,
-          field: 'lang',
-          options: [
-            { value: 'en', label: 'EN' },
-            { value: 'ko', label: '한국어' },
-          ],
-        },
-        {
           type: 'row',
           id: 'mcp-quick-actions',
           children: [
@@ -4616,6 +4611,7 @@
     let settingsPageHandle = null;
     let quickPanelHandle = null;
     let fullModalHandle = null;
+    let settingsOverlayHandle = null;
     let fullModalPanel = null;
     let settingsCanvasPanel = null;
     const commandHandles = [];
@@ -4692,8 +4688,24 @@
 
     function syncAllUi() {
       if (disposed) return;
+      const d = dict();
       syncStatusItem();
       syncQuickPanel();
+      if (quickPanelHandle && typeof quickPanelHandle.setTitle === 'function') {
+        try {
+          quickPanelHandle.setTitle(d.panelTitle);
+        } catch {}
+      }
+      if (fullModalHandle && typeof fullModalHandle.setTitle === 'function') {
+        try {
+          fullModalHandle.setTitle(d.title);
+        } catch {}
+      }
+      if (settingsOverlayHandle && typeof settingsOverlayHandle.setTitle === 'function') {
+        try {
+          settingsOverlayHandle.setTitle(d.title);
+        } catch {}
+      }
       if (fullModalPanel) fullModalPanel.syncLang();
       if (settingsCanvasPanel) settingsCanvasPanel.syncLang();
     }
@@ -4801,6 +4813,7 @@
         mode: null,
         surface: panelSurface,
         inline: overlayHandle?.kind === 'inline-settings',
+        showLangSwitch: false,
         doc,
         win,
         onLangChange: () => syncAllUi(),
@@ -4831,6 +4844,8 @@
 
       const handle = runtime.openModal({
         title: dict().title,
+        getTitle: () => dict().title,
+        showLocaleSwitch: true,
         placement: {
           zone: 'surface-center',
           surface: 'auto',
@@ -4879,6 +4894,8 @@
 
       const handle = runtime.openPanel({
         title: dict().panelTitle,
+        getTitle: () => dict().panelTitle,
+        showLocaleSwitch: true,
         placement,
         tree,
         state,
@@ -4951,6 +4968,7 @@
         settingsCanvasPanel.dispose();
         settingsCanvasPanel = null;
       }
+      settingsOverlayHandle = null;
       if (statusItemHandle) {
         try {
           statusItemHandle.dispose();
@@ -5010,6 +5028,8 @@
       settingsPageHandle = runtime.registerSettingsPage({
         id: V3_IDS.SETTINGS_PAGE,
         title: d.title,
+        getTitle: () => dict().title,
+        showLocaleSwitch: true,
         order: 60,
         width: 820,
         render: (canvasRoot, handle) => {
@@ -5017,9 +5037,11 @@
             settingsCanvasPanel.dispose();
             settingsCanvasPanel = null;
           }
+          settingsOverlayHandle = handle || null;
           settingsCanvasPanel = mountNativePanelInCanvas(canvasRoot, handle, 'settings');
         },
         onClose: () => {
+          settingsOverlayHandle = null;
           if (settingsCanvasPanel) {
             settingsCanvasPanel.dispose();
             settingsCanvasPanel = null;
