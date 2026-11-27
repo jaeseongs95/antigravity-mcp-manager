@@ -4,8 +4,9 @@
  * SOLID Responsibility (SRP):
  * - Single source of truth for locating Chromium/Edge, allocating ephemeral CDP ports,
  *   capturing stderr on launch failure, connecting CDP WebSocket sessions, and simulating
- *   Extenra (`extenra`, v3.3.1) `AddonManifest.v3` + `AddonContextV3` browser host runtime contract
- *   (3-Tier UI, `PlacementSpec` + mobile `<=640px` sheet, 17-primitive declarative schema incl. `segmented` +
+ *   Extenra (`extenra`, v3.3.3) `AddonManifest.v3` + `AddonContextV3` browser host runtime contract
+ *   (3-Tier UI, host header locale switcher `showLocaleSwitch` + dynamic `getTitle`/`setTitle`,
+ *   `PlacementSpec` + mobile `<=640px` sheet, 17-primitive declarative schema incl. `segmented` +
  *   `handle.update`, `ctx.storage`, `ctx.configBridge`, `ctx.lifecycle.signal`, and minimal-permission
  *   ISP namespace gating).
  */
@@ -63,7 +64,7 @@ export async function waitUntil(fn, timeoutMs = 8000, intervalMs = 40) {
 }
 
 /**
- * Builds an inline browser script that mirrors Extenra (`extenra`, v3.3.1) `AddonContextV3`:
+ * Builds an inline browser script that mirrors Extenra (`extenra`, v3.3.3) `AddonContextV3`:
  * - Minimal ISP namespaces: `net` and `dom` omitted when undeclared; `configBridge` omitted on remote-web
  * - Tier 1: `showToast`, `confirm`, `prompt`, `registerCommand`, `registerStatusItem`, `registerSectionAction`, `registerSettingsPage`
  * - Tier 2: `openPanel` / `openPopup` / `openModal` with 17-primitive declarative schema renderer (incl. `segmented`),
@@ -91,9 +92,28 @@ export function buildAddonContextV3HarnessScript(manifest, opts = {}) {
     const version = ${JSON.stringify(version)};
     const surface = ${JSON.stringify(surface)};
     const trustLevel = ${JSON.stringify(trustLevel)};
-    const locale = ${JSON.stringify(locale)};
+    let currentLocale = ${JSON.stringify(locale)};
     const themeMode = ${JSON.stringify(themeMode)};
     const cbScopes = ${JSON.stringify(cbScopes)};
+
+    function normalizeLocale(raw) {
+      const s = String(raw || '').trim().toLowerCase();
+      if (s === 'ko' || s.startsWith('ko-') || s.startsWith('ko_')) return 'ko';
+      if (s === 'en' || s.startsWith('en-') || s.startsWith('en_')) return 'en';
+      return '';
+    }
+    function setHostLocale(next) {
+      const norm = normalizeLocale(next);
+      if (!norm) return currentLocale;
+      const prevNorm = normalizeLocale(currentLocale);
+      currentLocale = norm;
+      if (norm !== prevNorm) {
+        for (const fn of Array.from(localeListeners)) {
+          try { fn(norm); } catch {}
+        }
+      }
+      return currentLocale;
+    }
 
     const abortController = new AbortController();
     const disposers = [];
@@ -297,17 +317,60 @@ export function buildAddonContextV3HarnessScript(manifest, opts = {}) {
       header.className = 'ag-ui-header';
       const titleSpan = document.createElement('span');
       titleSpan.className = 'ag-ui-title';
-      titleSpan.textContent = opts.title || '';
+      titleSpan.textContent = typeof opts.getTitle === 'function' ? String(opts.getTitle() || opts.title || '') : (opts.title || '');
       const badge = document.createElement('span');
       badge.className = 'ag-ui-attribution';
       badge.textContent = displayName;
+      const headerActions = document.createElement('div');
+      headerActions.className = 'ag-ui-header-actions';
+      let headerLangCleanup = null;
+      if (opts.showLocaleSwitch === true) {
+        const langGroup = document.createElement('div');
+        langGroup.className = 'ag-ui-lang-switch';
+        langGroup.setAttribute('role', 'group');
+        const langBtns = [];
+        const syncLangBtns = (loc) => {
+          const active = normalizeLocale(loc || currentLocale) || 'en';
+          for (const item of langBtns) {
+            item.btn.setAttribute('aria-pressed', active === item.code ? 'true' : 'false');
+          }
+        };
+        for (const def of [{ code: 'ko', label: '한국어' }, { code: 'en', label: 'EN' }]) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'ag-ui-lang-btn';
+          b.setAttribute('data-addon-host-lang', def.code);
+          b.textContent = def.label;
+          b.addEventListener('click', (ev) => {
+            if (ev && ev.isTrusted === false) return;
+            setHostLocale(def.code);
+            syncLangBtns(def.code);
+          });
+          langBtns.push({ code: def.code, btn: b });
+          langGroup.appendChild(b);
+        }
+        syncLangBtns(currentLocale);
+        const onLoc = (next) => syncLangBtns(next);
+        localeListeners.add(onLoc);
+        headerLangCleanup = () => localeListeners.delete(onLoc);
+        headerActions.appendChild(langGroup);
+      }
       const closeBtn = document.createElement('button');
       closeBtn.type = 'button';
       closeBtn.className = 'ag-ui-close';
       closeBtn.textContent = '×';
+      headerActions.appendChild(closeBtn);
       header.appendChild(titleSpan);
       header.appendChild(badge);
-      header.appendChild(closeBtn);
+      header.appendChild(headerActions);
+      let titleLocCleanup = null;
+      if (typeof opts.getTitle === 'function') {
+        const onTitleLoc = () => {
+          if (!closed) titleSpan.textContent = String(opts.getTitle() || opts.title || '');
+        };
+        localeListeners.add(onTitleLoc);
+        titleLocCleanup = () => localeListeners.delete(onTitleLoc);
+      }
 
       const body = document.createElement('div');
       body.className = 'ag-ui-body';
@@ -337,6 +400,8 @@ export function buildAddonContextV3HarnessScript(manifest, opts = {}) {
       const close = () => {
         if (closed) return false;
         closed = true;
+        if (headerLangCleanup) { headerLangCleanup(); headerLangCleanup = null; }
+        if (titleLocCleanup) { titleLocCleanup(); titleLocCleanup = null; }
         activeOverlays.delete(close);
         const idx = escapeStack.indexOf(close);
         if (idx !== -1) escapeStack.splice(idx, 1);
@@ -377,6 +442,9 @@ export function buildAddonContextV3HarnessScript(manifest, opts = {}) {
           if (nextState) curState = { ...curState, ...nextState };
           renderSchemaTree(body, curTree, curState, opts.onChange, opts.onAction, idMap);
           applyPlacement();
+        },
+        setTitle(nextTitle) {
+          if (!closed && typeof nextTitle === 'string') titleSpan.textContent = nextTitle;
         },
         getState: () => ({ ...curState }),
         getElementById: (nodeId) => idMap.get(nodeId) || null,
@@ -466,7 +534,9 @@ export function buildAddonContextV3HarnessScript(manifest, opts = {}) {
         const open = () => {
           if (activeHandle) activeHandle.close();
           activeHandle = openOverlay('modal', {
-            title: spec.title,
+            title: typeof spec.getTitle === 'function' ? spec.getTitle() : spec.title,
+            getTitle: typeof spec.getTitle === 'function' ? spec.getTitle : null,
+            showLocaleSwitch: spec.showLocaleSwitch !== false,
             placement: { zone: 'surface-center', width: spec.width || 720 },
             onClose: () => {
               activeHandle = null;
@@ -564,7 +634,7 @@ export function buildAddonContextV3HarnessScript(manifest, opts = {}) {
         onDidChange: (cb) => { themeListeners.add(cb); return () => themeListeners.delete(cb); },
       }),
       i18n: Object.freeze({
-        getLocale: () => locale,
+        getLocale: () => currentLocale,
         t: (k) => k,
         onDidChange: (cb) => { localeListeners.add(cb); return () => localeListeners.delete(cb); },
       }),
@@ -587,6 +657,8 @@ export function buildAddonContextV3HarnessScript(manifest, opts = {}) {
       getCommands: () => Array.from(commands.keys()),
       runCommand: (id) => commands.get(id)?.run?.(),
       getToasts: () => toasts.slice(),
+      getLocale: () => currentLocale,
+      setLocale: (loc) => setHostLocale(loc),
       getStorageSnapshot: () => Object.fromEntries(storageMap.entries()),
       dispose: () => lifecycle.dispose(),
     };

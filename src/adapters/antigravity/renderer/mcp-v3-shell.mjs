@@ -201,16 +201,6 @@ export function buildQuickPanelSchema({
         id: 'mcp-quick-divider',
       },
       {
-        type: 'segmented',
-        id: 'mcp-lang-select',
-        label: dict.languageLabel,
-        field: 'lang',
-        options: [
-          { value: 'en', label: 'EN' },
-          { value: 'ko', label: '한국어' },
-        ],
-      },
-      {
         type: 'row',
         id: 'mcp-quick-actions',
         children: [
@@ -265,6 +255,7 @@ export function createMcpV3Shell({
   let settingsPageHandle = null;
   let quickPanelHandle = null;
   let fullModalHandle = null;
+  let settingsOverlayHandle = null;
   let fullModalPanel = null;
   let settingsCanvasPanel = null;
   const commandHandles = [];
@@ -341,8 +332,24 @@ export function createMcpV3Shell({
 
   function syncAllUi() {
     if (disposed) return;
+    const d = dict();
     syncStatusItem();
     syncQuickPanel();
+    if (quickPanelHandle && typeof quickPanelHandle.setTitle === 'function') {
+      try {
+        quickPanelHandle.setTitle(d.panelTitle);
+      } catch {}
+    }
+    if (fullModalHandle && typeof fullModalHandle.setTitle === 'function') {
+      try {
+        fullModalHandle.setTitle(d.title);
+      } catch {}
+    }
+    if (settingsOverlayHandle && typeof settingsOverlayHandle.setTitle === 'function') {
+      try {
+        settingsOverlayHandle.setTitle(d.title);
+      } catch {}
+    }
     if (fullModalPanel) fullModalPanel.syncLang();
     if (settingsCanvasPanel) settingsCanvasPanel.syncLang();
   }
@@ -450,6 +457,7 @@ export function createMcpV3Shell({
       mode: null,
       surface: panelSurface,
       inline: overlayHandle?.kind === 'inline-settings',
+      showLangSwitch: false,
       doc,
       win,
       onLangChange: () => syncAllUi(),
@@ -480,6 +488,8 @@ export function createMcpV3Shell({
 
     const handle = runtime.openModal({
       title: dict().title,
+      getTitle: () => dict().title,
+      showLocaleSwitch: true,
       placement: {
         zone: 'surface-center',
         surface: 'auto',
@@ -528,6 +538,8 @@ export function createMcpV3Shell({
 
     const handle = runtime.openPanel({
       title: dict().panelTitle,
+      getTitle: () => dict().panelTitle,
+      showLocaleSwitch: true,
       placement,
       tree,
       state,
@@ -600,6 +612,7 @@ export function createMcpV3Shell({
       settingsCanvasPanel.dispose();
       settingsCanvasPanel = null;
     }
+    settingsOverlayHandle = null;
     if (statusItemHandle) {
       try {
         statusItemHandle.dispose();
@@ -659,6 +672,8 @@ export function createMcpV3Shell({
     settingsPageHandle = runtime.registerSettingsPage({
       id: V3_IDS.SETTINGS_PAGE,
       title: d.title,
+      getTitle: () => dict().title,
+      showLocaleSwitch: true,
       order: 60,
       width: 820,
       render: (canvasRoot, handle) => {
@@ -666,9 +681,11 @@ export function createMcpV3Shell({
           settingsCanvasPanel.dispose();
           settingsCanvasPanel = null;
         }
+        settingsOverlayHandle = handle || null;
         settingsCanvasPanel = mountNativePanelInCanvas(canvasRoot, handle, 'settings');
       },
       onClose: () => {
+        settingsOverlayHandle = null;
         if (settingsCanvasPanel) {
           settingsCanvasPanel.dispose();
           settingsCanvasPanel = null;

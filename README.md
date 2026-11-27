@@ -1,16 +1,16 @@
-# Antigravity MCP Manager (`v4.3.1`)
+# Antigravity MCP Manager (`v4.3.2`)
 
 [한국어 문서 (README.ko.md)](./README.ko.md)
 
-A safe, vendor-independent **MCP Server Manager** built on the [**Extenra**](https://github.com/jaeseongs95/extenra) (`extenra`, formerly `antigravity-addons`) **`v3.3.1+`** API-First framework (`AddonManifest.v3` + `AddonContextV3`, minimal ISP `permissions`, 3-Tier host UI, zero runtime dependencies):
+A safe, vendor-independent **MCP Server Manager** built on the [**Extenra**](https://github.com/jaeseongs95/extenra) (`extenra`, formerly `antigravity-addons`) **`v3.3.3+`** API-First framework (`AddonManifest.v3` + `AddonContextV3`, minimal ISP `permissions`, 3-Tier host UI, zero runtime dependencies):
 - **Antigravity Desktop (`ctx.env.surface === 'desktop'`)**:
-  - **Customizations → MCP Servers Header Button**: Zero-DOM `ui.registerSectionAction({ target: 'customizations.mcp-servers.header' })` places an `MCP Manager` / `MCP 매니저` action button directly beside the native header icons (backed by Extenra `v3.3.1` Desktop `uiSectionTargets` serialization & hardened Antigravity `v2.35.2` nested DOM matcher, auto-reattaching across SPA navigation).
-  - **Inline Desktop Settings Page**: `ui.registerSettingsPage` (no extra Desktop statusbar button) with live `~/.gemini/config/mcp_config.json` CRUD via `permissions.configBridge.scopes` + `ctx.configBridge`.
+  - **Customizations → MCP Servers Header Button**: Zero-DOM `ui.registerSectionAction({ target: 'customizations.mcp-servers.header' })` places an `MCP Manager` / `MCP 매니저` action button directly beside the native header icons (backed by Extenra `v3.3.1+` Desktop `uiSectionTargets` serialization & hardened Antigravity `v2.35.2` nested DOM matcher, auto-reattaching across SPA navigation).
+  - **Inline Desktop Settings Page**: `ui.registerSettingsPage` (no extra Desktop statusbar button) with Extenra `v3.3.2+` unified host header `[ 한국어 | EN ]` switcher (`showLocaleSwitch: true`), dynamic `getTitle` / `handle.setTitle` sidebar & header title sync, and live `~/.gemini/config/mcp_config.json` CRUD via `permissions.configBridge.scopes` + `ctx.configBridge`.
 - **Antigravity Remote Web (`ctx.env.surface === 'remote-web'`)**:
   - **Customizations Header Action + Bottom-Right Status Item + Unified Remote Host Bridge**: Pair once in `Addons → Host Bridge` (`ag-bridge-v1:...`) to transparently route `ctx.configBridge` to your Desktop `mcp_config.json` with automatic reload on `host:remote-bridge-changed` — zero plugin-owned URL/token inputs or standalone remote servers.
   - **Offline Remote Draft (`ctx.storage`)**: 1-click public HTTPS modular `@require` Userscript (`antigravity-mcp-manager.user.js`, `@require https://github.com/jaeseongs95/extenra/releases/latest/download/antigravity-remote-host.lib.js`) with browser-local `ctx.storage` draft persistence (`remote-draft:v1`) + **Import JSON / Copy JSON / Download `mcp_config.json`**.
 
-> **API-First 3-Tier Architecture · Extenra `v3.3.1` Alignment**: All UI runs strictly through host-managed `AddonContextV3` surfaces (`ui.registerSectionAction`, `ui.registerSettingsPage`, Remote-Web-scoped `ui.registerStatusItem`, `ui.registerCommand`, `ui.showToast`, `ui.openPanel` with Tier-2 `segmented`, `ui.openModal`, `ui.createStyleElementSafe`, `i18n.onDidChange`) using Extenra `v3.2.1+` `--ag-*` design tokens and custom rounded scrollbars.
+> **API-First 3-Tier Architecture · Extenra `v3.3.3` Alignment**: All UI runs strictly through host-managed `AddonContextV3` surfaces (`ui.registerSectionAction`, `ui.registerSettingsPage`, Remote-Web-scoped `ui.registerStatusItem`, `ui.registerCommand`, `ui.showToast`, `ui.openPanel`, `ui.openModal`, `ui.createStyleElementSafe`, `i18n.onDidChange`) with unified Extenra `v3.3.2+` host header `[ 한국어 | EN ]` switching (`showLocaleSwitch: true`, zero duplicate in-plugin language toggles), dynamic `getTitle` / `setTitle` synchronization, and Extenra `v3.2.1+` `--ag-*` design tokens.
 
 ## 3-Tier UI & Minimal Permissions
 - **Declared `permissions` (Least Privilege)**:
@@ -30,14 +30,14 @@ A safe, vendor-independent **MCP Server Manager** built on the [**Extenra**](htt
   - `ui.registerCommand`: `open-mcp-manager`, `open-mcp-panel`, `open-mcp-settings`.
   - `ui.showToast` / `ui.confirm`: Locale-aware compact notifications on toggle, copy, and download.
 - **Tier 2 (Declarative Host Panel + `PlacementSpec`)**:
-  - `ui.openPanel({ placement: { zone: 'drawer', side: 'right', width: 420 } })` using the 17 closed declarative primitives (including Extenra `v3.3.x` `segmented` pill toggle) with `handle.update(nextTree, nextState)` ID-based in-place patching and automatic mobile bottom-sheet transition at `<= 640px`.
-  - Quick enable/disable toggles, live server summary, Host Bridge pairing guidance, `EN` / `한국어` `segmented` language switcher synced with central `ctx.i18n.onDidChange`, and 1-click launch into the Full Editor.
+  - `ui.openPanel({ showLocaleSwitch: true, getTitle, placement: { zone: 'drawer', side: 'right', width: 420 } })` using Extenra's closed declarative primitives with `handle.update(nextTree, nextState)` ID-based in-place patching, host header `[ 한국어 | EN ]` locale switch, dynamic header title sync, and automatic mobile bottom-sheet transition at `<= 640px`.
+  - Quick enable/disable toggles, live server summary, Host Bridge pairing guidance, and 1-click launch into the Full Editor.
 - **Tier 3 (Host Shadow DOM Canvas)**:
-  - `ui.openModal({ placement: { zone: 'surface-center', surface: 'auto', width: 820, maxHeight: 720 } })` & inline Settings Page `render(canvasRoot)` mount `NativeMcpPanel` styled via `ctx.ui.createStyleElementSafe(buildNativePanelCss())` using Extenra `v3.2.1+` `--ag-*` semantic tokens.
+  - `ui.openModal({ showLocaleSwitch: true, getTitle, placement: { zone: 'surface-center', surface: 'auto', width: 820, maxHeight: 720 } })` & inline Settings Page `render(canvasRoot)` mount `NativeMcpPanel` styled via `ctx.ui.createStyleElementSafe(buildNativePanelCss())` using Extenra `v3.2.1+` `--ag-*` semantic tokens (without duplicating the host header locale switch).
   - Full Global CRUD, authoritative on-disk SHA-256 CAS (CRLF-safe), masked secret preservation, Stdio confirmation gate, Declarative Smart Paste, Raw JSON CAS conflict recovery, Read-Only Plugin Clone-to-Global, Legacy import, and Remote Web JSON Import/Copy/Download.
 
 ## Architecture (SOLID & Vendor-Independent)
-- `addon-manifest.json`: Extenra `AddonManifest.v3` (`$schema`, `schemaVersion: 3`, `apiVersion: 3`, `version: "4.3.1"`, `minHostVersion: "3.3.1"`).
+- `addon-manifest.json`: Extenra `AddonManifest.v3` (`$schema`, `schemaVersion: 3`, `apiVersion: 3`, `version: "4.3.2"`, `minHostVersion: "3.3.3"`).
 - `src/adapters/antigravity/renderer/*.mjs` → `src/adapters/antigravity/addon-renderer.js`:
   - `host-config-store.mjs`: `ConfigStorePort` over `ctx.configBridge` with non-crashing `ERR_REMOTE_HOST_NOT_CONNECTED` handling.
   - `storage-draft-config-store.mjs`: `ConfigStorePort` over `ctx.storage` (`hasConfigBridge === false`) with UTF-8 SHA-256 CAS.
@@ -48,8 +48,8 @@ A safe, vendor-independent **MCP Server Manager** built on the [**Extenra**](htt
 - `scripts/build-renderer.mjs` & `scripts/build-userscript.mjs`: Zero-dependency deterministic builders (supporting Extenra `@namespace`, `@require`, and optional `#sha256=` SRI pinning).
 - `src/core/**`: 100% vendor-independent pure ESM domain logic.
 
-## Install, Register & Trust Approve (Antigravity Desktop via Extenra `v3.3.1+`)
-1. Upgrade [**Extenra**](https://github.com/jaeseongs95/extenra) to **`v3.3.1+`** (`extenra --upgrade`, backward-compatible alias `addon-host --upgrade`).
+## Install, Register & Trust Approve (Antigravity Desktop via Extenra `v3.3.3+`)
+1. Upgrade [**Extenra**](https://github.com/jaeseongs95/extenra) to **`v3.3.3+`** (`extenra --upgrade`, backward-compatible alias `addon-host --upgrade`).
 2. Close Antigravity Desktop and mirror this repository into `~/.gemini/config/plugins/antigravity-mcp-manager/` (excluding `.git` and `node_modules`).
 3. Validate, register, approve SHA-256 trust pin, and verify:
    ```bash
@@ -59,7 +59,7 @@ A safe, vendor-independent **MCP Server Manager** built on the [**Extenra**](htt
    extenra --doctor
    ```
 
-## Remote Web Install (Extenra `v3.3.1+` Public HTTPS `@require` Userscript)
+## Remote Web Install (Extenra `v3.3.3+` Public HTTPS `@require` Userscript)
 1. Install Violentmonkey / Tampermonkey (Desktop) or Userscripts (iOS/iPadOS Safari), or use the Extenra 1-Click Hub.
 2. Install `antigravity-mcp-manager.user.js` from the latest GitHub Release or build locally via `npm run build:userscript`.
 3. Open `https://antigravity.google.com/` and launch MCP Manager from the bottom-right `MCP` statusbar item, Settings Page, or Quick Actions. To edit your live Desktop `mcp_config.json`, pair once in **Addons → Host Bridge**.
