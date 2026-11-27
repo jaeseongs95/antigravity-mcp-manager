@@ -125,7 +125,7 @@ function runAssembledRendererInSdkHost(host, ctx) {
   vm.runInNewContext(rendererSrc, sandbox, { filename: 'addon-renderer.js' });
 }
 
-test('NMCP-TC-037 (@extenra/sdk v3.3.1 Desktop Parity): real createTestHost({ surface: "desktop" }) verifies minimal ISP permissions, real Antigravity v2.35.2 nested MCP header DOM section action mount (no false positives), Tier-2 segmented language control + central i18n sync, mobile <=640px sheet, Tier-3 openModal CRUD, and clean disposePlugin()', async (t) => {
+test('NMCP-TC-037 (@extenra/sdk v3.3.3 Desktop Parity): real createTestHost({ surface: "desktop" }) verifies minimal ISP permissions, real Antigravity v2.35.2 nested MCP header DOM section action mount (no false positives), Extenra v3.3.2+ host header [한국어|EN] switch & dynamic getTitle/setTitle (zero duplicate inner switches), mobile <=640px sheet, Tier-3 openModal CRUD, and clean disposePlugin()', async (t) => {
   const sdk = loadAddonHostSdk();
   if (!sdk || typeof sdk.createTestHost !== 'function') {
     t.skip('@extenra/sdk sibling repository is not present in this checkout');
@@ -215,14 +215,23 @@ test('NMCP-TC-037 (@extenra/sdk v3.3.1 Desktop Parity): real createTestHost({ su
   assert.equal(settingsPages.length, 1);
   assert.equal(settingsPages[0].id, V3_IDS.SETTINGS_PAGE);
   assert.equal(settingsPages[0].kind, 'canvas');
+  assert.equal(settingsPages[0].showLocaleSwitch, true, 'Settings Page must enable Extenra v3.3.2+ host header locale switch');
   assert.equal(settingsPages[0].title, 'MCP 매니저', 'Korean locale must set Korean Settings Page title on first run');
+
+  // Dynamic SettingsPageSpec.getTitle() updates sidebar/page title automatically on locale switch
+  host.setLocale('en');
+  await flushMicrotasks(20);
+  assert.equal(host.getSettingsPages()[0].title, 'MCP Manager', 'Settings Page title must update dynamically via getTitle()');
+  host.setLocale('ko');
+  await flushMicrotasks(20);
+  assert.equal(host.getSettingsPages()[0].title, 'MCP 매니저');
 
   const commands = ctx.ui.listCommands().map((c) => c.actionId);
   assert.ok(commands.includes(V3_IDS.CMD_OPEN_MANAGER));
   assert.ok(commands.includes(V3_IDS.CMD_OPEN_PANEL));
   assert.ok(commands.includes(V3_IDS.CMD_OPEN_SETTINGS));
 
-  // 3. Tier 2: Quick Panel (openPanel) with Extenra v3.3.1 segmented language toggle + ID-based handle.update + mobile <=640px sheet
+  // 3. Tier 2: Quick Panel (openPanel) uses Extenra v3.3.2+ host header [한국어|EN] switch + dynamic getTitle/setTitle (no duplicate inner toggle) + mobile <=640px sheet
   const panelHandle = ctx.ui.invokeCommand(manifest.pluginId, V3_IDS.CMD_OPEN_PANEL);
   await flushMicrotasks(50);
   assert.ok(panelHandle, 'open-mcp-panel command must open Tier-2 declarative panel');
@@ -231,21 +240,34 @@ test('NMCP-TC-037 (@extenra/sdk v3.3.1 Desktop Parity): real createTestHost({ su
   assert.equal(panelHandle.getState().lang, 'ko');
   assert.equal(panelHandle.getState().serverCount, 1);
   assert.ok(panelHandle.getElementById('mcp-summary-text'));
-  const langSegEl = panelHandle.getElementById('mcp-lang-select');
-  assert.ok(langSegEl, 'Quick Panel must render Extenra v3.3.x segmented language toggle');
-  assert.equal(langSegEl.getAttribute('role'), 'group');
-  assert.equal(langSegEl.getAttribute('data-ag-segmented'), '1');
-  assert.equal(langSegEl.childNodes[1].getAttribute('aria-pressed'), 'true');
-  // Trusted click on EN segment persists language via ctx.storage and updates mounted header button
-  langSegEl.childNodes[0].click({ isTrusted: true });
+  assert.equal(panelHandle.getElementById('mcp-lang-select'), null, 'Quick Panel must not duplicate host header locale switch');
+
+  const findOverlayTitleText = (sr) =>
+    sr?.querySelectorAll('div')?.find((node) => node.className === 'ag-ui-title')?.textContent;
+
+  const panelShadow = panelHandle.element.shadowRoot;
+  assert.ok(panelShadow, 'Quick Panel must have ShadowRoot');
+  const panelHostEnBtn = panelShadow.querySelector('[data-addon-host-lang="en"]');
+  const panelHostKoBtn = panelShadow.querySelector('[data-addon-host-lang="ko"]');
+  assert.ok(panelHostEnBtn && panelHostKoBtn, 'Quick Panel header must render Extenra v3.3.2+ [한국어|EN] switcher');
+  assert.equal(panelHostKoBtn.getAttribute('aria-pressed'), 'true');
+  // Untrusted click ignored
+  panelHostEnBtn.click({ isTrusted: false });
+  await flushMicrotasks(20);
+  assert.equal(panelHandle.getState().lang, 'ko');
+  // Trusted click switches global host locale, dynamic header title, panel state, and mounted Customizations button
+  panelHostEnBtn.click({ isTrusted: true });
   await flushMicrotasks(30);
+  assert.equal(ctx.i18n.getLocale(), 'en');
   assert.equal(panelHandle.getState().lang, 'en');
+  assert.equal(findOverlayTitleText(panelShadow), 'MCP Manager · Quick Overview');
   assert.equal(host.getSectionActions()[0].label, 'MCP Manager');
-  // Central host locale switch STILL overrides per-plugin saved preference immediately
-  host.setLocale('en');
-  host.setLocale('ko');
+  // Switch back to Korean via host header button
+  panelHostKoBtn.click({ isTrusted: true });
   await flushMicrotasks(30);
-  assert.equal(panelHandle.getState().lang, 'ko', 'Central host locale change must override prior plugin-saved language');
+  assert.equal(ctx.i18n.getLocale(), 'ko');
+  assert.equal(panelHandle.getState().lang, 'ko');
+  assert.equal(findOverlayTitleText(panelShadow), 'MCP 매니저 · 빠른 요약');
   assert.equal(host.getSectionActions()[0].label, 'MCP 매니저');
   const desktopPlacement = panelHandle.getPlacement();
   assert.equal(desktopPlacement.zone, 'drawer');
@@ -257,11 +279,16 @@ test('NMCP-TC-037 (@extenra/sdk v3.3.1 Desktop Parity): real createTestHost({ su
   assert.equal(mobilePlacement.zone, 'sheet', 'Viewport <=640px must auto-switch Tier-2 panel to mobile bottom sheet');
   panelHandle.close();
 
-  // 4. Tier 3: Full Editor Modal mounts NativeMcpPanel via configBridge, passes Extenra v3.2.1+ safe CSS + backdrop, and writes a new server
+  // 4. Tier 3: Full Editor Modal mounts NativeMcpPanel via configBridge with Extenra v3.3.2+ host header locale switch (zero duplicate inner switch) and writes a new server
   host.setViewport(1280, 800);
   const modalHandle = ctx.ui.invokeCommand(manifest.pluginId, V3_IDS.CMD_OPEN_MANAGER);
   await flushMicrotasks(60);
   assert.ok(modalHandle && modalHandle.bodyEl, 'open-mcp-manager must open Tier-3 modal with bodyEl');
+  const modalShadow = modalHandle.element.firstChild?.shadowRoot || modalHandle.element.shadowRoot;
+  assert.ok(modalShadow, 'Modal must expose ShadowRoot');
+  const modalHostEnBtn = modalShadow.querySelector('[data-addon-host-lang="en"]');
+  const modalHostKoBtn = modalShadow.querySelector('[data-addon-host-lang="ko"]');
+  assert.ok(modalHostEnBtn && modalHostKoBtn, 'Full Editor Modal header must render Extenra v3.3.2+ [한국어|EN] switcher');
   const injectedStyle = modalHandle.bodyEl.querySelector('style');
   assert.ok(injectedStyle, 'Tier-3 modal must inject safe panel <style>');
   assert.equal(injectedStyle.textContent.includes('--ag-primary'), true, 'Panel CSS must adopt Extenra --ag-primary token');
@@ -271,8 +298,19 @@ test('NMCP-TC-037 (@extenra/sdk v3.3.1 Desktop Parity): real createTestHost({ su
   assert.equal(modalHandle.element.style.borderRadius, 'var(--ag-radius, 12px)', 'Extenra modal dialog must use rounded --ag-radius');
   const panelRoot = modalHandle.bodyEl.querySelector('[data-agy-mcp-native-panel="true"]');
   assert.ok(panelRoot, 'NativeMcpPanel must mount inside Tier-3 modal bodyEl');
+  assert.equal(panelRoot.querySelector('[data-testid="lang-switch"]'), null, 'NativeMcpPanel must omit duplicate inner language switcher under Extenra v3.3.2+');
   assert.equal(panelRoot.getAttribute('data-agy-mcp-mode'), 'host-bridge');
   assert.ok(panelRoot.querySelector('[data-testid="global-server-ledger"]'), 'Desktop configBridge server must render');
+
+  // Clicking Full Editor Modal host header EN/KO switch updates modal header title + panel live
+  modalHostEnBtn.click({ isTrusted: true });
+  await flushMicrotasks(30);
+  assert.equal(findOverlayTitleText(modalShadow), 'MCP Manager');
+  assert.equal(panelRoot.getAttribute('data-agy-mcp-lang'), 'en');
+  modalHostKoBtn.click({ isTrusted: true });
+  await flushMicrotasks(30);
+  assert.equal(findOverlayTitleText(modalShadow), 'MCP 매니저');
+  assert.equal(panelRoot.getAttribute('data-agy-mcp-lang'), 'ko');
 
   // Add a server through NativeMcpPanel DOM inside mock SDK host
   panelRoot.querySelector('[data-testid="btn-add-server"]').click();
@@ -300,7 +338,7 @@ test('NMCP-TC-037 (@extenra/sdk v3.3.1 Desktop Parity): real createTestHost({ su
   assert.equal(host.getSettingsPages().length, 0);
 });
 
-test('NMCP-TC-038 (@extenra/sdk v3.3.1 Remote Web Parity — Disconnected): real createTestHost({ surface: "remote-web", remoteBridgeConnected: false }) omits configBridge/net/dom, mounts section action on real Antigravity DOM, shows Host Bridge pairing notice without plugin URL/token inputs, persists CRUD drafts via ctx.storage, renders remote-io-bar, and supports mobile sheet + disposePlugin()', async (t) => {
+test('NMCP-TC-038 (@extenra/sdk v3.3.3 Remote Web Parity — Disconnected): real createTestHost({ surface: "remote-web", remoteBridgeConnected: false }) omits configBridge/net/dom, mounts section action on real Antigravity DOM, uses Extenra host header locale switch without duplicates, shows Host Bridge pairing notice without plugin URL/token inputs, persists CRUD drafts via ctx.storage, renders remote-io-bar, and supports mobile sheet + disposePlugin()', async (t) => {
   const sdk = loadAddonHostSdk();
   if (!sdk || typeof sdk.createTestHost !== 'function') {
     t.skip('@extenra/sdk sibling repository is not present in this checkout');
@@ -377,13 +415,14 @@ test('NMCP-TC-038 (@extenra/sdk v3.3.1 Remote Web Parity — Disconnected): real
   assert.ok(storedDraft.rawText.includes('sdk-remote-srv'));
   assert.equal(host.getStatusItems()[0].badge, '1');
 
-  // 4. Tier-2 Quick Panel shows Remote Draft badge, Host Bridge notice, segmented language toggle, and mobile bottom sheet at <=640px
+  // 4. Tier-2 Quick Panel shows Remote Draft badge, Host Bridge notice, Extenra host header locale switch (zero duplicate inner toggle), and mobile bottom sheet at <=640px
   const quickPanel = ctx.ui.invokeCommand(manifest.pluginId, V3_IDS.CMD_OPEN_PANEL);
   await flushMicrotasks(50);
   assert.equal(quickPanel.getState().mode, 'remote-draft');
   assert.equal(quickPanel.getState().showRemoteBridgeNotice, true);
   assert.equal(quickPanel.getState().serverCount, 1);
-  assert.equal(quickPanel.getElementById('mcp-lang-select')?.getAttribute('data-ag-segmented'), '1');
+  assert.equal(quickPanel.getElementById('mcp-lang-select'), null);
+  assert.ok(quickPanel.element.shadowRoot?.querySelector('[data-addon-host-lang="ko"]'));
   host.setViewport(390, 844);
   assert.equal(ctx.env.layoutMode, 'mobile');
   assert.equal(quickPanel.reposition().zone, 'sheet');
@@ -398,7 +437,7 @@ test('NMCP-TC-038 (@extenra/sdk v3.3.1 Remote Web Parity — Disconnected): real
   assert.equal(host.getSettingsPages().length, 0);
 });
 
-test('NMCP-TC-040 (@extenra/sdk v3.3.1 Remote Web Connected): real createTestHost({ surface: "remote-web", remoteBridgeConnected: true }) mounts section action on real Antigravity DOM and routes ctx.configBridge live to Desktop mcp_config.json without disconnected notice or plugin URL/token inputs', async (t) => {
+test('NMCP-TC-040 (@extenra/sdk v3.3.3 Remote Web Connected): real createTestHost({ surface: "remote-web", remoteBridgeConnected: true }) mounts section action on real Antigravity DOM and routes ctx.configBridge live to Desktop mcp_config.json without disconnected notice or plugin URL/token inputs', async (t) => {
   const sdk = loadAddonHostSdk();
   if (!sdk || typeof sdk.createTestHost !== 'function') {
     t.skip('@extenra/sdk sibling repository is not present in this checkout');
@@ -704,7 +743,7 @@ function createStandaloneMockContext({ surface = 'desktop', locale = 'ko-KR', in
   return { ctx, statusItemCalls, sectionActionCalls, settingsPageCalls, openPanelCalls, openModalCalls, commandCalls, kv, disposers };
 }
 
-test('NMCP-TC-039 (Unit): Host v3.0.3 & Extenra v3.3.0 contract — Desktop omits registerStatusItem, both surfaces register Customizations MCP header section action + inline Settings Page with onClose cleanup, Remote Web registers registerStatusItem, and initial language follows ctx.i18n.getLocale() with saved preference override', async () => {
+test('NMCP-TC-039 (Unit): Host v3.0.3 & Extenra v3.3.3 contract — Desktop omits registerStatusItem, both surfaces register Customizations MCP header section action + inline Settings Page with showLocaleSwitch/getTitle & onClose cleanup, Remote Web registers registerStatusItem, and initial language follows ctx.i18n.getLocale() with saved preference override', async () => {
   // 1. Desktop (ko-KR, no saved preference): NO registerStatusItem, Customizations section action + inline registerSettingsPage + onClose cleanup, Korean default
   const docDesktop = createMinimalMockDoc();
   const desktop = createStandaloneMockContext({ surface: 'desktop', locale: 'ko-KR' });
@@ -723,6 +762,9 @@ test('NMCP-TC-039 (Unit): Host v3.0.3 & Extenra v3.3.0 contract — Desktop omit
   const pageSpec = desktop.settingsPageCalls[0];
   assert.equal(pageSpec.id, V3_IDS.SETTINGS_PAGE);
   assert.equal(pageSpec.title, 'MCP 매니저', 'Initial Korean locale must not default to English');
+  assert.equal(pageSpec.showLocaleSwitch, true, 'Settings Page must opt into Extenra v3.3.2+ host header locale switch');
+  assert.equal(typeof pageSpec.getTitle, 'function', 'Settings Page must provide dynamic getTitle()');
+  assert.equal(pageSpec.getTitle(), 'MCP 매니저');
 
   // Simulate host v3.0.3 inline mount inside mountedContentPane
   const canvasRoot = docDesktop.createElement('div');

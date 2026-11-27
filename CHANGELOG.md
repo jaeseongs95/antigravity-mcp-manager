@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.3.2 — Extenra `v3.3.2` / `v3.3.3` Alignment (Unified Host Header Locale Switch, Dynamic `getTitle`/`setTitle`, Zero Duplicate Language Toggles)
+- **Extenra `v3.3.3` Minimum Host Requirement (`addon-manifest.json`, `package.json`, `plugin.json`)**:
+  - Bumped `version` to `"4.3.2"` and `compatibility.minHostVersion` to `"3.3.3"` to require Extenra `v3.3.2` unified header `[ 한국어 | EN ]` locale switch + dynamic title sync and `v3.3.3` security/WebCrypto/ReDoS hardening.
+- **Unified Host Header Locale Switch & Dynamic Title Sync (`src/adapters/antigravity/renderer/mcp-v3-shell.mjs`, `native-mcp-panel.mjs`)**:
+  - Updated `registerSettingsPage()`, `openFullModal()`, and `openQuickPanel()` to pass `showLocaleSwitch: true` and `getTitle: () => dict().title | dict().panelTitle`, and wired imperative `handle.setTitle(...)` updates in `syncAllUi()` so Desktop Settings sidebar tabs, inline/modal headers, and Quick Panel headers stay synchronized on every language switch.
+  - Removed redundant in-plugin language toggles (`showLangSwitch: false` in `NativeMcpPanel` and removed `mcp-lang-select` from Quick Panel) so every MCP Manager surface cleanly delegates global locale switching to Extenra's single host-owned header `[ 한국어 | EN ]` control.
+- **Tests (`test/adapters/v40-addon-v3-sdk-parity.test.mjs`, `settings-menu-and-installer.test.mjs`, `v21-features-unit.test.mjs`, `addon-manifest-and-main-hook.test.mjs`, `test/helpers/cdp-browser.mjs`)**:
+  - Upgraded `@extenra/sdk v3.3.3` parity suites (`NMCP-TC-037`, `NMCP-TC-038`, `NMCP-TC-040`), unit suite (`NMCP-TC-039`), and Chromium CDP E2E tests (`NMCP-TC-021`, `NMCP-TC-026`) to verify Extenra host header `[data-addon-host-lang]` trusted clicks, untrusted click rejection, dynamic `.ag-ui-title` & `getSettingsPages()[0].title` sync, and zero duplicate inner language switchers.
+
 ## 4.3.1 — Extenra `v3.3.1` Alignment (`minHostVersion: "3.3.1"`, Tier-2 `segmented`, Central i18n Override Sync & Real DOM Parity)
 - **Extenra `v3.3.1` Minimum Host Requirement (`addon-manifest.json`, `package.json`, `plugin.json`)**:
   - Bumped `version` to `"4.3.1"` and `compatibility.minHostVersion` to `"3.3.1"` so Desktop `HOST_CFG.profile.uiSectionTargets` serialization and the hardened Antigravity `v2.35.2` nested Customizations DOM matcher are guaranteed at runtime.

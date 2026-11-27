@@ -56,7 +56,7 @@ export function createHostRuntime({ ctx, doc = typeof document !== 'undefined' ?
   const v3 = assertAddonContextV3(ctx);
   const pluginId = String(v3.meta.pluginId || 'antigravity-mcp-manager');
   const displayName = String(v3.meta.displayName || 'Antigravity MCP Manager');
-  const version = String(v3.meta.version || '4.3.1');
+  const version = String(v3.meta.version || '4.3.2');
   const trustLevel = String(v3.meta.trustLevel || 'restricted');
   const surface = v3.env.surface === 'remote-web' ? 'remote-web' : 'desktop';
 
